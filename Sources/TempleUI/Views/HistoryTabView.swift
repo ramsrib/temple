@@ -1079,7 +1079,7 @@ private struct HistoryPageRow: View, Equatable {
         Divider()
         // The sidebar groups rows by folder: a row without one is not there.
         if inTemple, session.project != nil {
-            Button("Show in sidebar") { history.showInSidebar(session.sessionID) }
+            Button("Show in sidebar") { history.showInSidebar(SessionKey(id: session.sessionID, host: session.host)) }
         }
         if let project = session.project {
             Button("Show only \(project.displayName)") { history.showOnly(project: project) }

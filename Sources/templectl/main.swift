@@ -46,7 +46,7 @@ if CommandLine.arguments.contains("--import-all") {
     let db = try openDatabase()
     let sessions = try await readCatalog()
     var imported = 0
-    for session in sessions where try db.sessionState(session.id) == nil {
+    for session in sessions where try db.sessionState(session.id, host: session.locator.host) == nil {
         try db.join(sessionID: session.id, via: .imported, agent: session.agent,
                     locator: session.locator, core: SessionCore(filling: session))
         imported += 1
@@ -200,7 +200,9 @@ if CommandLine.arguments.contains("--disk") {
             firstPublication = false
         }
         let states = try database.sessionStates()
-        let rows = states.map { Session(state: $0, resolution: snapshot.resolutions[$0.id]) }
+        // The engine is this Mac's: its verdicts are this Mac's sessions
+        // and say nothing about a host's session with the same id (ADR-041).
+        let rows = states.map { Session(state: $0, resolution: $0.host == watcher.host ? snapshot.resolutions[$0.id] : nil) }
             .sorted { $0.sortDate == $1.sortDate ? $0.id < $1.id : $0.sortDate > $1.sortDate }
         printRows(searchQuery.map { SessionRowSearch.rank(rows, query: $0) } ?? rows, compact: true)
         fflush(stdout)

@@ -53,8 +53,8 @@ final class SessionScopeTests: XCTestCase {
         let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: db)
         let facts = summary()
         for _ in 0..<20 {
-            model.receiveEngineSnapshot(.authorized(generation: 1,
-                resolutions: ["legacy": .loaded(facts.locator.localURL!)], summaries: ["legacy": facts], in: db))
+            model.receiveEngineSnapshot(EngineSnapshot.authorized(generation: 1,
+                resolutions: ["legacy": .loaded(facts.locator.localURL!)], summaries: ["legacy": facts], in: db).onThisMac)
         }
         XCTAssertEqual(counter.count, 1)
         let row = try XCTUnwrap(db.sessionState("legacy"))
@@ -64,9 +64,9 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertEqual(row.title, "First prompt")
         XCTAssertNil(row.generatedTitle)
         XCTAssertEqual(row.lastActiveAt, facts.lastEntryAt)
-        XCTAssertEqual(overlay.rows["legacy"], row)
-        model.receiveEngineSnapshot(.authorized(generation: 2, resolutions: [:],
-            summaries: ["legacy": summary(cwd: "/changed", prompt: "Changed", time: 200)], in: db, opRevision: 2))
+        XCTAssertEqual(overlay.rows[.local("legacy")], row)
+        model.receiveEngineSnapshot(EngineSnapshot.authorized(generation: 2, resolutions: [:],
+            summaries: ["legacy": summary(cwd: "/changed", prompt: "Changed", time: 200)], in: db, opRevision: 2).onThisMac)
         XCTAssertEqual(try db.sessionState("legacy"), row)
         XCTAssertEqual(counter.count, 1)
     }
@@ -95,7 +95,7 @@ final class SessionScopeTests: XCTestCase {
         for store in [overlay, SessionOverlayStore(db: db)] {
             XCTAssertNil(store.generatedTitle(for: "legacy"))
             XCTAssertEqual(store.displayTitle(for: legacy), title)
-            XCTAssertEqual(Session(state: try XCTUnwrap(store.rows["legacy"])).displayTitle, title)
+            XCTAssertEqual(Session(state: try XCTUnwrap(store.rows[.local("legacy")])).displayTitle, title)
         }
         // A genuine agent retitle remains a legacy override after reconstruction.
         overlay.recordGeneratedTitle("OSC retitle", for: "legacy")
@@ -103,7 +103,7 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertEqual(SessionOverlayStore(db: db).displayTitle(for: legacy), "OSC retitle")
     }
 
-    func testQueuedLocalFillCannotChangeARowRejoinedOnAnotherHost() throws {
+    func testQueuedLocalFillCannotChangeARowRejoinedOnAnotherHost() async throws {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "legacy", via: .imported)
         let overlay = SessionOverlayStore(db: db)
@@ -121,20 +121,23 @@ final class SessionScopeTests: XCTestCase {
             } catch { XCTFail("leave/rejoin failed: \(error)") }
         }
         XCTAssertEqual(committed.wait(timeout: .now() + 3), .success)
-        XCTAssertEqual(overlay.rows["legacy"]?.host, .local)
-        XCTAssertEqual(try db.sessionState("legacy")?.host, remote)
+        XCTAssertEqual(overlay.rows[.local("legacy")]?.host, .local)
+        XCTAssertEqual(try db.sessionState("legacy", host: remote)?.host, remote)
         var mismatched: [String] = []
-        overlay.onOwnershipMismatch = { id, _ in mismatched.append(id) }
+        overlay.onOwnershipMismatch = { key in mismatched.append(key.id) }
         overlay.applyFacts(["legacy": stale])
         XCTAssertEqual(mismatched, ["legacy"])
-        let row = try XCTUnwrap(db.sessionState("legacy"))
+        let row = try XCTUnwrap(db.sessionState("legacy", host: remote))
         XCTAssertEqual(row.host, remote)
         XCTAssertNil(row.agent)
         XCTAssertNil(row.directory)
         XCTAssertNil(row.directorySource)
         XCTAssertNil(row.title)
         XCTAssertNil(row.lastActiveAt)
-        XCTAssertEqual(overlay.rows["legacy"], row)
+        XCTAssertNil(overlay.rows[.local("legacy")], "the mismatch refreshed this Mac's row away")
+        // The box's row arrives through the row observer's queued refresh.
+        for _ in 0..<200 where overlay.rows[SessionKey(id: "legacy", host: remote)] == nil { try await Task.sleep(for: .milliseconds(5)) }
+        XCTAssertEqual(overlay.rows[SessionKey(id: "legacy", host: remote)], row)
         // A fact from the expected host can still fill the same row.
         XCTAssertEqual(try db.fillCoreFields(sessionID: "legacy", host: remote, title: "Remote prompt"), .changed([.title]))
     }
@@ -144,18 +147,18 @@ final class SessionScopeTests: XCTestCase {
         try db.join(sessionID: "legacy", via: .imported)
         let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: db)
         let resolution: [String: MemberResolution] = ["legacy": .loaded(summary().locator.localURL!)]
-        model.receiveEngineSnapshot(.authorized(generation: 1, resolutions: resolution, summaries: ["legacy": summary()], in: db))
+        model.receiveEngineSnapshot(EngineSnapshot.authorized(generation: 1, resolutions: resolution, summaries: ["legacy": summary()], in: db).onThisMac)
         let filledBuilds = model.sessionPresentationBuildCount
         let filledSessions = model.sessions
         // Each publication has changed transcript facts and generation, but the
         // completed row and its resolution stay identical.
         for tick in 2...30 {
-            model.receiveEngineSnapshot(.authorized(generation: UInt64(tick), resolutions: resolution,
-                summaries: ["legacy": summary(prompt: "Changed \(tick)", time: Double(tick + 100))], in: db, opRevision: UInt64(tick)))
+            model.receiveEngineSnapshot(EngineSnapshot.authorized(generation: UInt64(tick), resolutions: resolution,
+                summaries: ["legacy": summary(prompt: "Changed \(tick)", time: Double(tick + 100))], in: db, opRevision: UInt64(tick)).onThisMac)
         }
         XCTAssertEqual(model.sessionPresentationBuildCount, filledBuilds)
         XCTAssertEqual(model.sessions, filledSessions)
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 31, resolutions: ["legacy": .confirmedAbsent]))
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 31, resolutions: ["legacy": .confirmedAbsent]).onThisMac)
         XCTAssertEqual(model.sessionPresentationBuildCount, filledBuilds + 1)
         XCTAssertNil(model.sessions.first?.transcript)
         overlay.rename("legacy", to: "Renamed")
@@ -196,10 +199,10 @@ final class SessionScopeTests: XCTestCase {
                                       title: "Row title", lastActiveAt: Date(timeIntervalSince1970: 5)))
         try db.join(sessionID: "directoryless", via: .imported)
         let (model, overlay) = makeModel(CatalogFixtureIndex(projects: []), database: db)
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1,
-            resolutions: ["missing": .confirmedAbsent]))
-        XCTAssertEqual(Set(model.sessions.map(\.id)), ["missing", "directoryless"])
-        let session = try XCTUnwrap(model.sessions.first { $0.id == "missing" })
+        model.receiveEngineSnapshot(SessionsSnapshot(generation: 1,
+            resolutions: [SessionKey(id: "missing", host: HostID(rawValue: "remote")): .confirmedAbsent]))
+        XCTAssertEqual(Set(model.sessions.map(\.id)), [SessionKey(id: "missing", host: HostID(rawValue: "remote")), "directoryless"])
+        let session = try XCTUnwrap(model.sessions.first { $0.sessionID == "missing" })
         XCTAssertEqual(session.displayTitle, "Row title")
         XCTAssertEqual(session.directory, "/row")
         XCTAssertEqual(session.project, ProjectKey(host: HostID(rawValue: "remote"), path: "/row"))
@@ -207,14 +210,14 @@ final class SessionScopeTests: XCTestCase {
         XCTAssertNil(session.transcript)
         XCTAssertEqual(model.rowProjects.count, 1)
         try db.setTitle("Changed by row observer", sessionID: "missing", host: HostID(rawValue: "remote"))
-        XCTAssertEqual(overlay.rows["missing"]?.title, "Changed by row observer")
+        XCTAssertEqual(overlay.rows[SessionKey(id: "missing", host: HostID(rawValue: "remote"))]?.title, "Changed by row observer")
         overlay.touch("missing", host: HostID(rawValue: "remote"), at: Date(timeIntervalSince1970: 500))
         let end = Date().addingTimeInterval(2)
-        while model.sessions.first(where: { $0.id == "missing" })?.sortDate != Date(timeIntervalSince1970: 500), Date() < end {
+        while model.sessions.first(where: { $0.sessionID == "missing" })?.sortDate != Date(timeIntervalSince1970: 500), Date() < end {
             try await Task.sleep(for: .milliseconds(10))
         }
-        XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.displayTitle, "Changed by row observer")
-        XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.sortDate, Date(timeIntervalSince1970: 500))
+        XCTAssertEqual(model.sessions.first(where: { $0.sessionID == "missing" })?.displayTitle, "Changed by row observer")
+        XCTAssertEqual(model.sessions.first(where: { $0.sessionID == "missing" })?.sortDate, Date(timeIntervalSince1970: 500))
     }
 
     func testCodexHistoryPromptsFillRowsAtStartupAndOnExplicitEnrichment() async throws {
@@ -239,7 +242,7 @@ final class SessionScopeTests: XCTestCase {
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         model.start()
         let initialDeadline = Date().addingTimeInterval(3)
-        while (model.isLoading || model.sessions.first(where: { $0.id == initial })?.state.title == nil), Date() < initialDeadline {
+        while (model.isLoading || model.sessions.first(where: { $0.sessionID == initial })?.state.title == nil), Date() < initialDeadline {
             try await Task.sleep(for: .milliseconds(15))
         }
         XCTAssertEqual(try db.sessionState(initial)?.title, "First recorded prompt")
@@ -248,7 +251,7 @@ final class SessionScopeTests: XCTestCase {
             .write(to: history, atomically: true, encoding: .utf8)
         await watcher.requestResolution(late)
         let lateDeadline = Date().addingTimeInterval(3)
-        while model.sessions.first(where: { $0.id == late })?.state.title == nil, Date() < lateDeadline {
+        while model.sessions.first(where: { $0.sessionID == late })?.state.title == nil, Date() < lateDeadline {
             try await Task.sleep(for: .milliseconds(15))
         }
         XCTAssertEqual(try db.sessionState(late)?.title, "Late recorded prompt")
@@ -274,20 +277,20 @@ final class SessionScopeTests: XCTestCase {
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         model.start()
         let end = Date().addingTimeInterval(3)
-        while (model.isLoading || model.sessions.first(where: { $0.id == "legacy" })?.state.title == nil), Date() < end {
+        while (model.isLoading || model.sessions.first(where: { $0.sessionID == "legacy" })?.state.title == nil), Date() < end {
             try await Task.sleep(for: .milliseconds(15))
         }
         XCTAssertFalse(model.isLoading)
         XCTAssertEqual(Set(model.sessions.map(\.id)), ["legacy", "missing"])
-        XCTAssertEqual(model.sessions.first { $0.id == "legacy" }?.displayTitle, "Real prompt")
+        XCTAssertEqual(model.sessions.first { $0.sessionID == "legacy" }?.displayTitle, "Real prompt")
         XCTAssertEqual(try db.sessionState("legacy")?.directory, "/facts")
-        XCTAssertEqual(model.sessions.first(where: { $0.id == "legacy" })?.displayTitle, "Real prompt")
-        XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.displayTitle, "Kept row")
-        XCTAssertEqual(model.sessions.first(where: { $0.id == "missing" })?.resolution, .confirmedAbsent)
+        XCTAssertEqual(model.sessions.first(where: { $0.sessionID == "legacy" })?.displayTitle, "Real prompt")
+        XCTAssertEqual(model.sessions.first(where: { $0.sessionID == "missing" })?.displayTitle, "Kept row")
+        XCTAssertEqual(model.sessions.first(where: { $0.sessionID == "missing" })?.resolution, .confirmedAbsent)
         let filled = try XCTUnwrap(db.sessionState("legacy"))
         let activity = try XCTUnwrap(filled.lastActiveAt)
         model.overlay.touch("legacy", host: .local, at: activity.addingTimeInterval(-100))
-        XCTAssertEqual(model.overlay.rows["legacy"]?.lastActiveAt, filled.lastActiveAt)
+        XCTAssertEqual(model.overlay.rows[.local("legacy")]?.lastActiveAt, filled.lastActiveAt)
         await engine.stop()
     }
 
@@ -372,8 +375,8 @@ final class SessionScopeTests: XCTestCase {
 
         let outside = try XCTUnwrap(mixedIndex().allSessions.first { $0.id == "o1" })
         model.openSessions.openSession(outside)
-        model.receiveEngineSnapshot(.authorized(generation: 1, resolutions: [:],
-            summaries: ["o1": summary("o1", cwd: "/p/outside", prompt: "Outside one", time: 50)], in: database))
+        model.receiveEngineSnapshot(EngineSnapshot.authorized(generation: 1, resolutions: [:],
+            summaries: ["o1": summary("o1", cwd: "/p/outside", prompt: "Outside one", time: 50)], in: database).onThisMac)
 
         XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["o1"])
         // A relaunch reads it back from the DB.
@@ -460,14 +463,14 @@ final class SessionScopeTests: XCTestCase {
         let summary = TranscriptSummary(id: "i", agent: .codex, locator: TranscriptLocator(host: .local, path: "/tmp/i.jsonl"),
                                         modifiedAt: Date(timeIntervalSince1970: 10), cwd: "/q", firstPrompt: "Imported")
         try other.join(sessionID: "i", via: .imported, agent: .codex, locator: summary.locator, core: SessionCore(filling: summary))
-        XCTAssertNil(overlay.rows["s"])
-        XCTAssertNil(overlay.rows["i"])
+        XCTAssertNil(overlay.rows[.local("s")])
+        XCTAssertNil(overlay.rows[.local("i")])
 
         XCTAssertTrue(overlay.join("s", via: .opened, agent: .claude).isJoined)
         XCTAssertTrue(overlay.isTempleSession("s"))
-        XCTAssertEqual(overlay.rows["s"]?.directory, "/p")
+        XCTAssertEqual(overlay.rows[.local("s")]?.directory, "/p")
         overlay.touch("s", host: .local, at: Date(timeIntervalSince1970: 100))
-        XCTAssertEqual(overlay.rows["s"]?.lastActiveAt, Date(timeIntervalSince1970: 100), "the touch is not dropped")
+        XCTAssertEqual(overlay.rows[.local("s")]?.lastActiveAt, Date(timeIntervalSince1970: 100), "the touch is not dropped")
         overlay.recordGeneratedTitle("Agent title", for: "s")
         overlay.flushPendingTitles()
         XCTAssertEqual(try other.sessionState("s")?.generatedTitle, "Agent title", "nor the retitle")
@@ -476,7 +479,7 @@ final class SessionScopeTests: XCTestCase {
 
         guard case .joined = overlay.import([summary]).first else { return XCTFail("import") }
         XCTAssertTrue(overlay.isTempleSession("i"), "an import that reports success is a member")
-        XCTAssertEqual(overlay.rows["i"]?.directory, "/q")
+        XCTAssertEqual(overlay.rows[.local("i")]?.directory, "/q")
     }
 
     /// Nothing becomes a Temple session without its row: a failed join leaves
@@ -509,7 +512,7 @@ final class SessionScopeTests: XCTestCase {
         overlay.flushPendingTitles()
 
         XCTAssertNil(overlay.generatedTitle(for: "s"))
-        XCTAssertNil(overlay.rows["s"])
+        XCTAssertNil(overlay.rows[.local("s")])
         XCTAssertFalse(overlay.isTempleSession("s"))
     }
 

@@ -146,7 +146,7 @@ private struct Runner {
         case (.sessions, .search):
             request = ControlRequest(.sessionsSearch, cli: invocation.cli, term: invocation.argument)
         case (.sessions, .get):
-            request = ControlRequest(.sessionsGet, id: invocation.argument)
+            request = ControlRequest(.sessionsGet, id: invocation.argument, host: invocation.host)
         case (.sessions, .new):
             let directory = folder(invocation.argument ?? ".")
             var isDirectory: ObjCBool = false
@@ -156,10 +156,10 @@ private struct Runner {
             request = ControlRequest(.sessionsNew, directory: directory, cli: invocation.cli)
             launches = true
         case (.sessions, .open):
-            request = ControlRequest(.sessionsOpen, id: invocation.argument)
+            request = ControlRequest(.sessionsOpen, id: invocation.argument, host: invocation.host)
             launches = true
         case (.sessions, .close):
-            request = ControlRequest(.sessionsClose, id: invocation.argument, force: invocation.force)
+            request = ControlRequest(.sessionsClose, id: invocation.argument, host: invocation.host, force: invocation.force)
             acts = true
         default:
             throw CLIError("\(invocation.noun.rawValue) has no verb \(invocation.verb.rawValue)")
@@ -241,8 +241,13 @@ private struct Runner {
             console.out(invocation.json ? Output.json(entries) : Output.history(entries))
         case .get:
             let id = invocation.argument!
-            let matches = rows.filter { $0.sessionID == id }
-            guard let row = matches.first else { throw CLIError("No session has the id \(id).") }
+            // A session is its id on a host (ADR-041): this Mac's unless
+            // --host names another.
+            let host = HostID(cliValue: invocation.host ?? "")
+            let matches = rows.filter { $0.sessionID == id && $0.host == host }
+            guard let row = matches.first else {
+                throw CLIError("No session has the id \(id)\(host.isLocal ? "" : " on \(host.displayName)").")
+            }
             guard matches.count == 1 else { throw CLIError("\(matches.count) sessions have the id \(id).") }
             let entry = HistoryEntry(row, detail: true)
             console.out(invocation.json ? Output.json(entry) : Output.historyEntry(entry))

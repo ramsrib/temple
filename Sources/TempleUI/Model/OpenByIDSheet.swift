@@ -22,15 +22,14 @@ enum OpenByIDFolder: Equatable {
 /// The sheet: host and id, then Open. Temple finds the agent and the
 /// folder itself; the agent choice appears only when the id is both a
 /// Claude and a Codex session there, and the folder field only when the
-/// transcript records none. Every answer leads somewhere: a member on
-/// another host opens there, and "not found" is said only after a complete
-/// search, never for a host that couldn't be reached.
+/// transcript records none. The session is the id on the chosen host
+/// (ADR-041): a member there opens, the same id on another host is another
+/// session and changes nothing, and "not found" is said only after a
+/// complete search, never for a host that couldn't be reached.
 @MainActor
 final class OpenByIDSheetModel: ObservableObject {
     enum Check: Equatable {
         case idle, checking
-        /// The id is Temple's on another host: opening it there is offered.
-        case elsewhere(HostID)
         /// Both agents have it: choose one, then Open.
         case chooseAgent
         /// The transcript records no folder: type one, then Open.
@@ -45,10 +44,10 @@ final class OpenByIDSheetModel: ObservableObject {
         var hosts: () -> [HostID]
         var lookup: (HostID, String) async throws -> SessionLookup
         var checkFolder: (HostID, String) async -> OpenByIDFolder
-        /// The row Temple has for the id, if any.
-        var member: (String) -> Session?
-        /// A live tab for the id on that host.
-        var hasLiveTab: (String, HostID) -> Bool
+        /// The row Temple has for the session (the id on that host), if any.
+        var member: (SessionKey) -> Session?
+        /// A live tab of the session.
+        var hasLiveTab: (SessionKey) -> Bool
         var openMember: (Session) -> Void
         var resume: (ResumeRequest) -> Bool
         /// The host's configuration now; an answer for another is dropped.
@@ -135,13 +134,11 @@ final class OpenByIDSheetModel: ObservableObject {
             check = .problem("That isn't a session id. One looks like 3f2a1c7e-5b6d-4c3a-9e1f-2a7b8c9d0e1f.")
             return
         }
-        // 1. Already here.
-        if let member = dependencies.member(id) {
-            if member.host != host {
-                check = .elsewhere(member.host)
-                return
-            }
-            if dependencies.hasLiveTab(id, host) || member.canResume {
+        // 1. Already here: the session is the id on the chosen host. The
+        // same id on another host is another session (ADR-041).
+        let key = SessionKey(id: id, host: host)
+        if let member = dependencies.member(key) {
+            if dependencies.hasLiveTab(key) || member.canResume {
                 dependencies.openMember(member)
                 close()
                 return
@@ -157,13 +154,6 @@ final class OpenByIDSheetModel: ObservableObject {
             guard let self else { return }
             await self.run(id: id, host: host, chosenAgent: chosenAgent, typedFolder: typedFolder, token: token)
         }
-    }
-
-    /// Opens the member that already has this id, on its own host.
-    func openElsewhere() {
-        guard dependencies.canAct(), case .elsewhere = check, let member = dependencies.member(trimmedID) else { return }
-        dependencies.openMember(member)
-        close()
     }
 
     /// An answer for a question no longer asked (the host's settings
@@ -260,9 +250,8 @@ final class OpenByIDSheetModel: ObservableObject {
         if opened {
             check = .idle
             close()
-        } else if let member = dependencies.member(id) {
-            check = member.host != host ? .elsewhere(member.host)
-                : .problem("This session is already in Temple as a \(member.agent?.displayName ?? "different") session.")
+        } else if let member = dependencies.member(SessionKey(id: id, host: host)) {
+            check = .problem("This session is already in Temple as a \(member.agent?.displayName ?? "different") session.")
         } else {
             check = .problem("Temple couldn't open this session.")
         }

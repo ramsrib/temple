@@ -192,7 +192,7 @@ struct CommandPaletteView: View {
 /// …" (`onHistoryRow`); it is reached with ↓ from the last result and left
 /// with ↑.
 struct PaletteCursor: Equatable {
-    private(set) var selectedID: String?
+    private(set) var selectedID: SessionKey?
     /// The trailing "Search history for …" row is highlighted, not a session.
     private(set) var onHistoryRow = false
 

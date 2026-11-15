@@ -26,22 +26,31 @@ public enum TempleDBError: Error, Equatable, LocalizedError {
     case newerSchema
     /// Another opener held the migration lock past the wait limit.
     case migrationLockTimeout
-    /// The session id is already Temple's on another host. Ids are the key,
-    /// so a second host offering the same id is refused, never merged.
-    case hostConflict(existing: HostID)
-    /// The row already names a different agent for this id.
+    /// The row already names a different agent for this id on this host.
     case agentConflict(existing: Agent)
     /// A join's transcript locator names a different host than its core facts.
     case locatorHostMismatch
+    /// A migration that older builds cannot write through (ADR-041) is due,
+    /// and other processes have the file open: they would keep writing the
+    /// old way into the new shape. Nothing was changed.
+    case openElsewhere([FileHolder])
+    /// The same migration is due and Temple couldn't tell whether another
+    /// Temple has the file open: it changes nothing rather than guess.
+    case cannotCheckOthers(String)
 
     public static let updateRequiredMessage = "This Temple is older than the data it found. Update Temple to continue."
     public var errorDescription: String? {
         switch self {
         case .newerSchema: Self.updateRequiredMessage
         case .migrationLockTimeout: "Another Temple process kept the database locked."
-        case .hostConflict(let host): "Already in Temple on \(host.displayName)."
         case .agentConflict(let agent): "Already in Temple as a \(agent.displayName) session."
         case .locatorHostMismatch: "The transcript is on a different host than the session."
+        case .cannotCheckOthers(let reason):
+            "Temple couldn't check whether another copy of Temple is using its data (\(reason)), "
+                + "and this version updates that data the first time it opens. Quit any other Temple, then try again."
+        case .openElsewhere(let holders):
+            "Another copy of Temple is using its data (\(holders.map(\.place).joined(separator: ", "))), "
+                + "and this version updates that data the first time it opens. Quit the other copy, then try again."
         }
     }
 }
@@ -55,11 +64,16 @@ public enum SessionWriteOutcome: Equatable, Sendable {
     case ownershipMismatch
 }
 
-/// A session row's identity at the DB boundary: the id and the host that owns it.
-public struct SessionKey: Hashable, Sendable {
+/// A session's identity: its id on a host (ADR-041). A session id is unique
+/// on one machine only: the same transcript copied to another host is a
+/// second session there, with its own row.
+public struct SessionKey: Hashable, Sendable, Comparable {
     public let id: String
     public let host: HostID
     public init(id: String, host: HostID) { self.id = id; self.host = host }
+    public static func < (lhs: SessionKey, rhs: SessionKey) -> Bool {
+        lhs.id == rhs.id ? lhs.host.rawValue < rhs.host.rawValue : lhs.id < rhs.id
+    }
 }
 
 /// Core facts supplied at join. Launch directory observations are a separate,
@@ -138,6 +152,8 @@ public struct MembershipRef: Hashable, Sendable {
     public init(id: String, host: HostID, incarnation: String) {
         self.id = id; self.host = host; self.incarnation = incarnation
     }
+    /// The session this membership is of.
+    public var key: SessionKey { SessionKey(id: id, host: host) }
 }
 
 /// A name and colour another Temple gave a session, brought in by an import
@@ -195,6 +211,8 @@ public struct SessionState: Codable, Hashable, Sendable {
     /// When the row was last archived, by anyone. Nil for an archive from
     /// before v12 (never backfilled) and for a row never archived.
     public let archivedAt: Date?
+    /// The session this row is (ADR-041).
+    public var key: SessionKey { SessionKey(id: id, host: host) }
 
     public init(id: String, pinned: Bool, archived: Bool, customName: String?, color: String?,
                 generatedTitle: String?, lastOpenedAt: Date?, joinedVia: JoinedVia?, joinedAt: Date?,
@@ -249,6 +267,7 @@ public struct ArchiveState: Hashable, Sendable {
     public let archiveReason: ArchiveReason?
     public let archivedAt: Date?
     public let keptAt: Date?
+    public var key: SessionKey { SessionKey(id: id, host: host) }
 }
 
 /// Per-project state: archived, and where the user placed it in the sidebar.
@@ -263,12 +282,17 @@ public struct ProjectState: Codable, Equatable, Sendable {
 public struct ProcessRecord: Codable, Equatable, Sendable {
     public let pid: Int32
     public let sessionID: String
+    public let host: HostID
     public let startedAt: Date
 }
 
 public struct OpenTabRecord: Codable, Equatable, Sendable {
     public let projectPath: String
     public let sessionID: String
+    /// The host the tab's session is on (ADR-041): with the same id on two
+    /// hosts, the tab says which. `''` (this Mac) for a tab saved before it
+    /// was recorded whose row was gone at the migration.
+    public let host: HostID
     public let position: Int
     public let agent: String
     public let title: String
@@ -276,10 +300,11 @@ public struct OpenTabRecord: Codable, Equatable, Sendable {
     /// record carries it; a set with none simply restores to the launcher.
     public let isActive: Bool
 
-    public init(projectPath: String, sessionID: String, position: Int, agent: String,
+    public init(projectPath: String, sessionID: String, host: HostID = .local, position: Int, agent: String,
                 title: String, isActive: Bool = false) {
         self.projectPath = projectPath
         self.sessionID = sessionID
+        self.host = host
         self.position = position
         self.agent = agent
         self.title = title
@@ -294,12 +319,12 @@ public final class TempleDB: @unchecked Sendable {
     /// The database file; nil for an in-memory database.
     public let fileURL: URL?
     private let observerLock = NSLock()
-    private var joinObservers: [UUID: @Sendable (String, Bool) -> Void] = [:]
+    private var joinObservers: [UUID: @Sendable (SessionKey, Bool) -> Void] = [:]
 
     /// Delivered after committed membership or hint changes. Unchanged existing
     /// joins do not invalidate loaded members; explicit opens retry unresolved IDs.
     /// Observers register before reading rows so concurrent joins survive.
-    public func observeJoins(_ observer: @escaping @Sendable (String, Bool) -> Void) -> UUID {
+    public func observeJoins(_ observer: @escaping @Sendable (SessionKey, Bool) -> Void) -> UUID {
         observerLock.lock(); defer { observerLock.unlock() }
         let token = UUID(); joinObservers[token] = observer; return token
     }
@@ -309,10 +334,10 @@ public final class TempleDB: @unchecked Sendable {
         joinObservers.removeValue(forKey: token)
     }
 
-    private var leaveObservers: [UUID: @Sendable (String) -> Void] = [:]
+    private var leaveObservers: [UUID: @Sendable (SessionKey) -> Void] = [:]
 
     /// Delivered after a committed `leave`: the session is no longer Temple's.
-    public func observeLeaves(_ observer: @escaping @Sendable (String) -> Void) -> UUID {
+    public func observeLeaves(_ observer: @escaping @Sendable (SessionKey) -> Void) -> UUID {
         observerLock.lock(); defer { observerLock.unlock() }
         let token = UUID(); leaveObservers[token] = observer; return token
     }
@@ -322,22 +347,22 @@ public final class TempleDB: @unchecked Sendable {
         leaveObservers.removeValue(forKey: token)
     }
 
-    private func committedLeave(_ id: String) {
+    private func committedLeave(_ id: SessionKey) {
         observerLock.lock(); let callbacks = Array(leaveObservers.values); observerLock.unlock()
         callbacks.forEach { $0(id) }
     }
 
-    private func committedJoin(_ id: String, awaitingCreation: Bool = false) {
+    private func committedJoin(_ id: SessionKey, awaitingCreation: Bool = false) {
         observerLock.lock(); let callbacks = Array(joinObservers.values); observerLock.unlock()
         callbacks.forEach { $0(id, awaitingCreation) }
     }
 
 
-    private var rowObservers: [UUID: @Sendable (String) -> Void] = [:]
+    private var rowObservers: [UUID: @Sendable (SessionKey) -> Void] = [:]
 
     /// Like join observation, callbacks run after commit and outside the lock.
     /// Register before reading rows. This observes this connection's writes only.
-    public func observeRowChanges(_ observer: @escaping @Sendable (String) -> Void) -> UUID {
+    public func observeRowChanges(_ observer: @escaping @Sendable (SessionKey) -> Void) -> UUID {
         observerLock.lock(); defer { observerLock.unlock() }
         let token = UUID(); rowObservers[token] = observer; return token
     }
@@ -347,7 +372,7 @@ public final class TempleDB: @unchecked Sendable {
         rowObservers.removeValue(forKey: token)
     }
 
-    private func committedRowChange(_ id: String) {
+    private func committedRowChange(_ id: SessionKey) {
         observerLock.lock(); let callbacks = Array(rowObservers.values); observerLock.unlock()
         callbacks.forEach { $0(id) }
     }
@@ -358,9 +383,32 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
-    private static func migrateAndReconcile(_ queue: DatabaseQueue) throws {
+    /// Other Temple processes (the app, `temple`, `templectl`, any build of
+    /// them) with the file open. Only a Temple writes it; a backup or an
+    /// indexer reading it for a moment must not stop a launch. A holder
+    /// whose executable the kernel won't name could be one, and counts.
+    static func templeHolders(_ url: URL) throws -> [FileHolder] {
+        try FileHolders.others(holding: url).filter {
+            $0.executable.isEmpty || URL(fileURLWithPath: $0.executable).lastPathComponent.lowercased().contains("temple")
+        }
+    }
+
+    /// Migrations an older build cannot keep writing through: they run only
+    /// when no other process has the file open (`openElsewhere`).
+    static let soleAccessMigrations: Set<String> = ["v14-session-host-key"]
+
+    private static func migrateAndReconcile(_ queue: DatabaseQueue,
+                                            holders: () throws -> [FileHolder] = { [] }) throws {
         try checkSchema(queue)
         if try !queue.read({ try migrator.hasCompletedMigrations($0) }) {
+            let applied = try queue.read { try migrator.appliedIdentifiers($0) }
+            if !soleAccessMigrations.isSubset(of: applied) {
+                let others: [FileHolder]
+                do { others = try holders() } catch let error as FileHoldersUnreadable {
+                    throw TempleDBError.cannotCheckOthers(error.reason)
+                }
+                if !others.isEmpty { throw TempleDBError.openElsewhere(others) }
+            }
             try migrator.migrate(queue)
         }
         // A7: open-time only. Old-process writes after this open are picked up
@@ -445,7 +493,8 @@ public final class TempleDB: @unchecked Sendable {
 
     // The contention callback is an internal test seam, called only after flock
     // proves another opener owns the lock (no timing assumptions in race tests).
-    init(path: URL, onMigrationLockContention: (() -> Void)?, lockTimeout: TimeInterval = 15) throws {
+    init(path: URL, onMigrationLockContention: (() -> Void)?, lockTimeout: TimeInterval = 15,
+         holders: ((URL) throws -> [FileHolder])? = nil) throws {
         let path = path.resolvingSymlinksInPath()
         try FileManager.default.createDirectory(
             at: path.deletingLastPathComponent(),
@@ -463,7 +512,7 @@ public final class TempleDB: @unchecked Sendable {
             configuration.busyMode = .timeout(Self.busyTimeout)
             let queue = try DatabaseQueue(path: path.path, configuration: configuration)
             do {
-                try Self.migrateAndReconcile(queue)
+                try Self.migrateAndReconcile(queue, holders: { try (holders ?? Self.templeHolders)(path) })
             } catch {
                 try? queue.close()
                 throw error
@@ -538,10 +587,10 @@ public final class TempleDB: @unchecked Sendable {
         TempleState.directory.appendingPathComponent("temple.sqlite")
     }
 
-    public func setPinned(_ pinned: Bool, sessionID: String) throws {
-        try updateState(sessionID) { database in
-            try database.execute(sql: "UPDATE session_state SET pinned = ? WHERE id = ? AND pinned IS NOT ?",
-                                 arguments: [pinned, sessionID, pinned])
+    public func setPinned(_ pinned: Bool, sessionID: String, host: HostID) throws {
+        try updateState(sessionID, host: host) { database in
+            try database.execute(sql: "UPDATE session_state SET pinned = ? WHERE id = ? AND host = ? AND pinned IS NOT ?",
+                                 arguments: [pinned, sessionID, host.rawValue, pinned])
         }
     }
 
@@ -553,42 +602,42 @@ public final class TempleDB: @unchecked Sendable {
     /// Temple recorded and any keep, and stamps `archived_at`; unarchiving
     /// stamps `kept_at`, so the sweep leaves the row alone until the
     /// session's next activity. A repeated restore writes nothing.
-    public func setArchived(_ archived: Bool, sessionID: String, at: Date = Date()) throws {
-        try updateState(sessionID) { database in
+    public func setArchived(_ archived: Bool, sessionID: String, host: HostID, at: Date = Date()) throws {
+        try updateState(sessionID, host: host) { database in
             if archived {
                 try database.execute(
                     sql: """
                         UPDATE session_state
                         SET archived = 1, pinned = 0, archive_reason = NULL, kept_at = NULL,
                             archived_at = CASE WHEN archived = 1 AND archive_reason IS NULL THEN archived_at ELSE ? END
-                        WHERE id = ? AND (archived IS NOT 1 OR pinned != 0
+                        WHERE id = ? AND host = ? AND (archived IS NOT 1 OR pinned != 0
                             OR archive_reason IS NOT NULL OR kept_at IS NOT NULL)
                         """,
-                    arguments: [at, sessionID]
+                    arguments: [at, sessionID, host.rawValue]
                 )
             } else {
                 try database.execute(
                     sql: """
                         UPDATE session_state SET archived = 0, kept_at = ?
-                        WHERE id = ? AND archived IS NOT 0
+                        WHERE id = ? AND host = ? AND archived IS NOT 0
                         """,
-                    arguments: [at, sessionID]
+                    arguments: [at, sessionID, host.rawValue]
                 )
             }
         }
     }
 
-    public func setCustomName(_ name: String?, sessionID: String) throws {
-        try updateState(sessionID) { database in
-            try database.execute(sql: "UPDATE session_state SET custom_name = ? WHERE id = ? AND custom_name IS NOT ?",
-                                 arguments: [name, sessionID, name])
+    public func setCustomName(_ name: String?, sessionID: String, host: HostID) throws {
+        try updateState(sessionID, host: host) { database in
+            try database.execute(sql: "UPDATE session_state SET custom_name = ? WHERE id = ? AND host = ? AND custom_name IS NOT ?",
+                                 arguments: [name, sessionID, host.rawValue, name])
         }
     }
 
-    public func setColor(_ color: String?, sessionID: String) throws {
-        try updateState(sessionID) { database in
-            try database.execute(sql: "UPDATE session_state SET color = ? WHERE id = ? AND color IS NOT ?",
-                                 arguments: [color, sessionID, color])
+    public func setColor(_ color: String?, sessionID: String, host: HostID) throws {
+        try updateState(sessionID, host: host) { database in
+            try database.execute(sql: "UPDATE session_state SET color = ? WHERE id = ? AND host = ? AND color IS NOT ?",
+                                 arguments: [color, sessionID, host.rawValue, color])
         }
     }
 
@@ -596,8 +645,7 @@ public final class TempleDB: @unchecked Sendable {
         try setTitle(title, sessionID: sessionID, host: host)
     }
 
-    /// The agent's own retitle, from a tab on `host`. A row owned by another
-    /// host is left alone.
+    /// The agent's own retitle, from a tab on `host`: that host's row only.
     public func setTitle(_ title: String?, sessionID: String, host: HostID) throws {
         try updateState(sessionID, host: host) { database in
             try database.execute(sql: "UPDATE session_state SET title = ?, generated_title = ? WHERE id = ? AND host = ? AND (title IS NOT ? OR generated_title IS NOT ?)",
@@ -610,11 +658,13 @@ public final class TempleDB: @unchecked Sendable {
     /// before that was recorded stays unknown rather than being
     /// credited to whatever touched it next.
     ///
-    /// The row's host is `core.host` (this Mac when there is no core). A row
-    /// already owned by another host throws `hostConflict`, and one that names
-    /// a different agent throws `agentConflict` — inside the same transaction,
-    /// so nothing is written: an id is one session, and a second claim on it
-    /// is refused, never merged. A row with no agent yet takes the incoming one.
+    /// The row's host is `core.host` (this Mac when there is no core). A
+    /// session is its id on a host (ADR-041): the same id on another host is
+    /// another row, and is never touched here. A row on this host that names
+    /// a different agent throws `agentConflict` — inside the same
+    /// transaction, so nothing is written: an id is one session on a host,
+    /// and a second claim on it is refused, never merged. A row with no
+    /// agent yet takes the incoming one.
     /// Returns the membership's incarnation (a new one for a new row), read
     /// in the same transaction, so a caller can later name exactly this
     /// membership (`leave(…, incarnation:)`).
@@ -640,22 +690,21 @@ public final class TempleDB: @unchecked Sendable {
             // so a concurrent join on another connection cannot slip between
             // the check and the write.
             try database.execute(
-                sql: "INSERT INTO session_state (id, joined_via, joined_at, host) VALUES (?, ?, ?, ?) ON CONFLICT(id) DO NOTHING",
+                sql: "INSERT INTO session_state (id, joined_via, joined_at, host) VALUES (?, ?, ?, ?) ON CONFLICT(id, host) DO NOTHING",
                 arguments: [sessionID, via.rawValue, at, host.rawValue])
             let inserted = database.changesCount > 0
-            guard let row = try Row.fetchOne(database, sql: "SELECT host, agent, transcript_path, incarnation FROM session_state WHERE id = ?", arguments: [sessionID]) else {
+            guard let row = try Row.fetchOne(database, sql: "SELECT agent, transcript_path, incarnation FROM session_state WHERE id = ? AND host = ?",
+                                             arguments: [sessionID, host.rawValue]) else {
                 return (false, false, nil, false)
             }
-            let existingHost = HostID(rawValue: (row["host"] as String?) ?? "")
-            guard existingHost == host else { throw TempleDBError.hostConflict(existing: existingHost) }
             let oldAgent = (row["agent"] as String?).flatMap(Agent.init(rawValue:))
             if let oldAgent, let agent, oldAgent != agent { throw TempleDBError.agentConflict(existing: oldAgent) }
             let oldPath: String? = row["transcript_path"]
             let hintChanged = (agent != nil && agent != oldAgent) ||
                 (locator != nil && locator?.path != oldPath)
             if hintChanged {
-                try database.execute(sql: "UPDATE session_state SET agent = COALESCE(?, agent), transcript_path = COALESCE(?, transcript_path) WHERE id = ?",
-                                     arguments: [agent?.rawValue, locator?.path, sessionID])
+                try database.execute(sql: "UPDATE session_state SET agent = COALESCE(?, agent), transcript_path = COALESCE(?, transcript_path) WHERE id = ? AND host = ?",
+                                     arguments: [agent?.rawValue, locator?.path, sessionID, host.rawValue])
             }
             var coreChanged = false
             if let core {
@@ -664,20 +713,22 @@ public final class TempleDB: @unchecked Sendable {
                         directory_source = CASE WHEN directory IS NULL AND ? IS NOT NULL THEN ? ELSE directory_source END,
                         directory = COALESCE(directory, ?), title = COALESCE(title, ?),
                         last_active_at = COALESCE(last_active_at, ?)
-                    WHERE id = ? AND ((directory IS NULL AND ? IS NOT NULL)
+                    WHERE id = ? AND host = ? AND ((directory IS NULL AND ? IS NOT NULL)
                         OR (title IS NULL AND ? IS NOT NULL) OR (last_active_at IS NULL AND ? IS NOT NULL))
                     """, arguments: [core.directory, core.directorySource?.rawValue, core.directory,
-                                       core.title, core.lastActiveAt, sessionID, core.directory, core.title, core.lastActiveAt])
+                                       core.title, core.lastActiveAt, sessionID, host.rawValue,
+                                       core.directory, core.title, core.lastActiveAt])
                 coreChanged = database.changesCount > 0
             }
             if inserted, !marks.isEmpty {
-                try database.execute(sql: "UPDATE session_state SET custom_name = ?, color = ? WHERE id = ?",
-                                     arguments: [marks.name, marks.color, sessionID])
+                try database.execute(sql: "UPDATE session_state SET custom_name = ?, color = ? WHERE id = ? AND host = ?",
+                                     arguments: [marks.name, marks.color, sessionID, host.rawValue])
             }
             return (inserted || hintChanged, inserted || hintChanged || coreChanged, row["incarnation"], inserted)
         }
-        if changed.join { committedJoin(sessionID, awaitingCreation: via == .created && agent == .claude && locator == nil) }
-        if changed.row { committedRowChange(sessionID) }
+        let key = SessionKey(id: sessionID, host: host)
+        if changed.join { committedJoin(key, awaitingCreation: via == .created && agent == .claude && locator == nil) }
+        if changed.row { committedRowChange(key) }
         return JoinReceipt(inserted: changed.inserted, incarnation: changed.incarnation,
                            marks: changed.inserted ? marks : CarriedMarks(name: nil, color: nil))
     }
@@ -716,17 +767,18 @@ public final class TempleDB: @unchecked Sendable {
                       AND ((archived = 0 AND archive_reason IS NULL) OR (archived != 0 AND archive_reason IS NOT NULL))
                       AND custom_name IS ? AND color IS ?
                       AND generated_title IS NULL AND last_opened_at IS NULL
-                      AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
+                      AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ? AND host = ?)
                     """,
                 arguments: [sessionID, host.rawValue, JoinedVia.imported.rawValue,
                             agent?.rawValue, agent?.rawValue, incarnation, incarnation,
-                            marks.name, marks.color, sessionID]
+                            marks.name, marks.color, sessionID, host.rawValue]
             )
             return database.changesCount > 0
         }
         if left {
-            committedLeave(sessionID)
-            committedRowChange(sessionID)
+            let key = SessionKey(id: sessionID, host: host)
+            committedLeave(key)
+            committedRowChange(key)
         }
         return left
     }
@@ -750,11 +802,11 @@ public final class TempleDB: @unchecked Sendable {
     /// Temple created it, no transcript was ever recorded for it, not
     /// pinned, named, coloured, archived or kept, never opened from History,
     /// in no restorable tab — and, when `idleBefore` is given, idle past that
-    /// cutoff by the dates the sweep plans on. Returns the ids that went.
-    public func discardNeverStarted(_ refs: [MembershipRef], idleBefore: Date?) throws -> [String] {
+    /// cutoff by the dates the sweep plans on. Returns the sessions that went.
+    public func discardNeverStarted(_ refs: [MembershipRef], idleBefore: Date?) throws -> [SessionKey] {
         guard !refs.isEmpty else { return [] }
-        let gone = try db.write { database -> [String] in
-            var gone: [String] = []
+        let gone = try db.write { database -> [SessionKey] in
+            var gone: [SessionKey] = []
             for ref in refs {
                 try database.execute(
                     sql: """
@@ -767,11 +819,11 @@ public final class TempleDB: @unchecked Sendable {
                           AND (? IS NULL
                                OR COALESCE(last_active_at, \(Self.activityBeforeRepair), joined_at) IS NULL
                                OR COALESCE(last_active_at, \(Self.activityBeforeRepair), joined_at) <= ?)
-                          AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
+                          AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ? AND host = ?)
                         """,
                     arguments: [ref.id, ref.host.rawValue, ref.incarnation, JoinedVia.created.rawValue,
-                                idleBefore, idleBefore, ref.id])
-                if database.changesCount > 0 { gone.append(ref.id) }
+                                idleBefore, idleBefore, ref.id, ref.host.rawValue])
+                if database.changesCount > 0 { gone.append(ref.key) }
             }
             return gone
         }
@@ -817,9 +869,10 @@ public final class TempleDB: @unchecked Sendable {
                       AND pinned = 0 AND archived = 0
                       AND custom_name IS NULL AND color IS NULL
                       AND last_opened_at IS ?
-                      AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
+                      AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ? AND host = ?)
                     """,
-                arguments: [sessionID, host.rawValue, incarnation, JoinedVia.created.rawValue, lastOpenedAt, sessionID])
+                arguments: [sessionID, host.rawValue, incarnation, JoinedVia.created.rawValue, lastOpenedAt,
+                            sessionID, host.rawValue])
             if database.changesCount > 0 { return .deleted }
             try database.execute(
                 sql: """
@@ -831,12 +884,13 @@ public final class TempleDB: @unchecked Sendable {
                 arguments: [at, sessionID, host.rawValue, incarnation, lastOpenedAt])
             return database.changesCount > 0 ? .archived : .unchanged
         }
+        let key = SessionKey(id: sessionID, host: host)
         switch disposition {
         case .deleted:
-            committedLeave(sessionID)
-            committedRowChange(sessionID)
+            committedLeave(key)
+            committedRowChange(key)
         case .archived:
-            committedRowChange(sessionID)
+            committedRowChange(key)
         case .unchanged:
             break
         }
@@ -863,10 +917,10 @@ public final class TempleDB: @unchecked Sendable {
         """
 
     @discardableResult
-    public func autoArchive(_ entries: [AutoArchiveEntry], idleBefore: Date, at: Date = Date()) throws -> [String] {
+    public func autoArchive(_ entries: [AutoArchiveEntry], idleBefore: Date, at: Date = Date()) throws -> [SessionKey] {
         guard !entries.isEmpty else { return [] }
-        let archived = try db.write { database -> [String] in
-            var archived: [String] = []
+        let archived = try db.write { database -> [SessionKey] in
+            var archived: [SessionKey] = []
             for entry in entries {
                 let ref = entry.ref
                 if entry.reason == .folderMissing && entry.directory == nil { continue }
@@ -879,11 +933,11 @@ public final class TempleDB: @unchecked Sendable {
                           AND (COALESCE(last_active_at, \(Self.activityBeforeRepair), last_opened_at, joined_at) IS NULL
                                OR COALESCE(last_active_at, \(Self.activityBeforeRepair), last_opened_at, joined_at) <= ?)
                           AND (? IS NULL OR directory = ?)
-                          AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
+                          AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ? AND host = ?)
                         """,
                     arguments: [entry.reason.rawValue, at, ref.id, ref.host.rawValue, ref.incarnation,
-                                idleBefore, entry.directory, entry.directory, ref.id])
-                if database.changesCount > 0 { archived.append(ref.id) }
+                                idleBefore, entry.directory, entry.directory, ref.id, ref.host.rawValue])
+                if database.changesCount > 0 { archived.append(ref.key) }
             }
             return archived
         }
@@ -894,12 +948,12 @@ public final class TempleDB: @unchecked Sendable {
     /// Undo of Temple's archive (the notice's Undo): only rows that still
     /// carry it under the same membership come back, kept, so the next sweep
     /// leaves them alone. The reason stays as the record until the next
-    /// activity. Returns the ids restored.
+    /// activity. Returns the sessions restored.
     @discardableResult
-    public func restoreTempleArchives(_ refs: [MembershipRef], at: Date = Date()) throws -> [String] {
+    public func restoreTempleArchives(_ refs: [MembershipRef], at: Date = Date()) throws -> [SessionKey] {
         guard !refs.isEmpty else { return [] }
-        let restored = try db.write { database -> [String] in
-            var restored: [String] = []
+        let restored = try db.write { database -> [SessionKey] in
+            var restored: [SessionKey] = []
             for ref in refs {
                 try database.execute(
                     sql: """
@@ -908,7 +962,7 @@ public final class TempleDB: @unchecked Sendable {
                           AND archived = 1 AND archive_reason IS NOT NULL
                         """,
                     arguments: [at, ref.id, ref.host.rawValue, ref.incarnation])
-                if database.changesCount > 0 { restored.append(ref.id) }
+                if database.changesCount > 0 { restored.append(ref.key) }
             }
             return restored
         }
@@ -958,14 +1012,14 @@ public final class TempleDB: @unchecked Sendable {
                 let key = ProjectKey(host: HostID(rawValue: row["host"]), path: directory)
                 if masked.contains(key), !projects.contains(key) { projects.append(key) }
             }
-            let targetIDs = Set(matching.map(\.ref.id))
+            let targetKeys = Set(matching.map(\.ref.key))
             var before: [ArchiveState] = []
             for project in projects {
                 let others = try Row.fetchAll(database, sql: """
                     SELECT id, host, incarnation, archived, archive_reason, archived_at, kept_at
                     FROM session_state WHERE host = ? AND directory = ? AND archived = 0
                     """, arguments: [project.host.rawValue, project.path])
-                    .map(Self.archiveState).filter { !targetIDs.contains($0.id) }
+                    .map(Self.archiveState).filter { !targetKeys.contains($0.key) }
                 for row in others {
                     try database.execute(sql: """
                         UPDATE session_state SET archived = 1, archive_reason = NULL, archived_at = NULL, kept_at = NULL
@@ -987,7 +1041,7 @@ public final class TempleDB: @unchecked Sendable {
             }
             return RestoreOutcome(states: before, restored: matching.map(\.ref), unmasked: projects)
         }
-        outcome.states.map(\.id).forEach(committedRowChange)
+        outcome.states.map(\.key).forEach(committedRowChange)
         return outcome
     }
 
@@ -1008,7 +1062,7 @@ public final class TempleDB: @unchecked Sendable {
                 try database.execute(sql: "UPDATE project_state SET archived = 1 WHERE path = ?", arguments: [project.path])
             }
         }
-        states.map(\.id).forEach(committedRowChange)
+        states.map(\.key).forEach(committedRowChange)
     }
 
     private static func archiveState(_ row: Row) -> ArchiveState {
@@ -1034,7 +1088,7 @@ public final class TempleDB: @unchecked Sendable {
                                  arguments: [agent.rawValue, locator.path] + owner.arguments)
             return .changed(agentChanged ? [.agent] : [])
         }
-        if case .changed = outcome { committedRowChange(sessionID) }
+        if case .changed = outcome { committedRowChange(SessionKey(id: sessionID, host: locator.host)) }
         return outcome
     }
 
@@ -1078,10 +1132,31 @@ public final class TempleDB: @unchecked Sendable {
         )
     }
 
-    public func sessionState(_ sessionID: String) throws -> SessionState? {
+    public func sessionState(_ sessionID: String, host: HostID) throws -> SessionState? {
         try db.read { database in
-            try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE id = ?", arguments: [sessionID]).map(Self.state)
+            // A read-only open of a file from before v10 has no host column:
+            // its rows are this Mac's.
+            guard try Self.hasHostColumn(database) else {
+                guard host.isLocal else { return nil }
+                return try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE id = ?",
+                                        arguments: [sessionID]).map(Self.state)
+            }
+            return try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE id = ? AND host = ?",
+                                    arguments: [sessionID, host.rawValue]).map(Self.state)
         }
+    }
+
+    /// Every host's row for this id: one per host that has the session.
+    public func sessionStates(id sessionID: String) throws -> [SessionState] {
+        try db.read { database in
+            let order = try Self.hasHostColumn(database) ? " ORDER BY host" : ""
+            return try Row.fetchAll(database, sql: "SELECT * FROM session_state WHERE id = ?\(order)",
+                                    arguments: [sessionID]).map(Self.state)
+        }
+    }
+
+    private static func hasHostColumn(_ database: Database) throws -> Bool {
+        try database.columns(in: "session_state").contains { $0.name == "host" }
     }
 
     public func sessionStates(host: HostID? = nil) throws -> [SessionState] {
@@ -1112,7 +1187,7 @@ public final class TempleDB: @unchecked Sendable {
             if let prior = result.priorDirectory, prior != directory {
                 TempleCoreLog.db.notice("launch directory replaced for \(sessionID, privacy: .public): \(prior, privacy: .public) → \(directory, privacy: .public)")
             }
-            committedRowChange(sessionID)
+            committedRowChange(SessionKey(id: sessionID, host: host))
         }
     }
 
@@ -1144,7 +1219,7 @@ public final class TempleDB: @unchecked Sendable {
                 """, arguments: [agent?.rawValue, directory, directory, title, lastActiveAt] + owner.arguments)
             return .changed(fields)
         }
-        if case .changed = outcome { committedRowChange(sessionID) }
+        if case .changed = outcome { committedRowChange(SessionKey(id: sessionID, host: host)) }
         return outcome
     }
 
@@ -1171,7 +1246,7 @@ public final class TempleDB: @unchecked Sendable {
                 """, arguments: [at, at, at, at, sessionID, host.rawValue, at, at])
             return database.changesCount > 0
         }
-        if changed { committedRowChange(sessionID) }
+        if changed { committedRowChange(SessionKey(id: sessionID, host: host)) }
     }
 
     public func projectStates() throws -> [ProjectState] {
@@ -1209,24 +1284,25 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
-    public func setOpenTabs(projectPath: String, sessionIDs: [String]) throws {
+    public func setOpenTabs(projectPath: String, host: HostID = .local, sessionIDs: [String]) throws {
         try db.write { database in
-            try database.execute(sql: "DELETE FROM open_tabs WHERE project_path = ?", arguments: [projectPath])
+            try database.execute(sql: "DELETE FROM open_tabs WHERE project_path = ? AND host = ?",
+                                 arguments: [projectPath, host.rawValue])
             for (position, sessionID) in sessionIDs.enumerated() {
                 try database.execute(
-                    sql: "INSERT INTO open_tabs (project_path, session_id, position) VALUES (?, ?, ?)",
-                    arguments: [projectPath, sessionID, position]
+                    sql: "INSERT INTO open_tabs (project_path, host, session_id, position) VALUES (?, ?, ?, ?)",
+                    arguments: [projectPath, host.rawValue, sessionID, position]
                 )
             }
         }
     }
 
-    public func openTabs(projectPath: String) throws -> [String] {
+    public func openTabs(projectPath: String, host: HostID = .local) throws -> [String] {
         try db.read { database in
             try String.fetchAll(
                 database,
-                sql: "SELECT session_id FROM open_tabs WHERE project_path = ? ORDER BY position",
-                arguments: [projectPath]
+                sql: "SELECT session_id FROM open_tabs WHERE project_path = ? AND host = ? ORDER BY position",
+                arguments: [projectPath, host.rawValue]
             )
         }
     }
@@ -1240,10 +1316,10 @@ public final class TempleDB: @unchecked Sendable {
                 try database.execute(
                     sql: """
                         INSERT INTO open_tabs
-                            (project_path, session_id, position, agent, title, active)
-                        VALUES (?, ?, ?, ?, ?, ?)
+                            (project_path, host, session_id, position, agent, title, active)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
                         """,
-                    arguments: [record.projectPath, record.sessionID, record.position,
+                    arguments: [record.projectPath, record.host.rawValue, record.sessionID, record.position,
                                 record.agent, record.title, record.isActive]
                 )
             }
@@ -1263,6 +1339,8 @@ public final class TempleDB: @unchecked Sendable {
                 OpenTabRecord(
                     projectPath: row["project_path"],
                     sessionID: row["session_id"],
+                    // A read-only open of a file from before v14 has no column.
+                    host: HostID(rawValue: (row["host"] as String?) ?? ""),
                     position: row["position"],
                     agent: row["agent"],
                     title: row["title"],
@@ -1308,11 +1386,11 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
-    public func registerProcess(pid: Int32, sessionID: String, startedAt: Date = Date()) throws {
+    public func registerProcess(pid: Int32, sessionID: String, host: HostID, startedAt: Date = Date()) throws {
         try db.write { database in
             try database.execute(
-                sql: "INSERT OR REPLACE INTO process_registry (pid, session_id, started_at) VALUES (?, ?, ?)",
-                arguments: [Int64(pid), sessionID, startedAt]
+                sql: "INSERT OR REPLACE INTO process_registry (pid, session_id, host, started_at) VALUES (?, ?, ?, ?)",
+                arguments: [Int64(pid), sessionID, host.rawValue, startedAt]
             )
         }
     }
@@ -1323,11 +1401,11 @@ public final class TempleDB: @unchecked Sendable {
         }
     }
 
-    public func unregisterProcess(sessionID: String) throws {
+    public func unregisterProcess(sessionID: String, host: HostID) throws {
         try db.write { database in
             try database.execute(
-                sql: "DELETE FROM process_registry WHERE session_id = ?",
-                arguments: [sessionID]
+                sql: "DELETE FROM process_registry WHERE session_id = ? AND host = ?",
+                arguments: [sessionID, host.rawValue]
             )
         }
     }
@@ -1338,7 +1416,8 @@ public final class TempleDB: @unchecked Sendable {
             return rows.compactMap { row in
                 let storedPID: Int64 = row["pid"]
                 guard let pid = Int32(exactly: storedPID) else { return nil }
-                return ProcessRecord(pid: pid, sessionID: row["session_id"], startedAt: row["started_at"])
+                return ProcessRecord(pid: pid, sessionID: row["session_id"],
+                                     host: HostID(rawValue: (row["host"] as String?) ?? ""), startedAt: row["started_at"])
             }
         }
     }
@@ -1346,15 +1425,16 @@ public final class TempleDB: @unchecked Sendable {
     /// Setters can create membership. Insert and update commit together so a
     /// failed update neither leaves an empty row nor sends a premature callback.
     /// The update's predicate must exclude unchanged values.
-    private func updateState(_ sessionID: String, host: HostID = .local, _ update: (Database) throws -> Void) throws {
+    private func updateState(_ sessionID: String, host: HostID, _ update: (Database) throws -> Void) throws {
         let result = try db.write { database in
             try database.execute(sql: "INSERT OR IGNORE INTO session_state (id, host) VALUES (?, ?)", arguments: [sessionID, host.rawValue])
             let inserted = database.changesCount > 0
             try update(database)
             return (inserted: inserted, changed: inserted || database.changesCount > 0)
         }
-        if result.inserted { committedJoin(sessionID) }
-        if result.changed { committedRowChange(sessionID) }
+        let key = SessionKey(id: sessionID, host: host)
+        if result.inserted { committedJoin(key) }
+        if result.changed { committedRowChange(key) }
     }
 
     private func ensureProjectState(_ path: String) throws {
@@ -1365,6 +1445,83 @@ public final class TempleDB: @unchecked Sendable {
             )
         }
     }
+
+    /// A session is its id on a host (ADR-041): the same transcript copied
+    /// to another machine is a second session there. Not additive — SQLite
+    /// changes a key only by rebuilding the table — so every build since
+    /// the newer-schema guard refuses the file afterwards and says to
+    /// update (`checkSchema`).
+    ///
+    /// `session_state` is rebuilt keyed by `(id, host)`, every column and
+    /// incarnation kept, the incarnation trigger recreated. `open_tabs`
+    /// gains `host`, part of its keys, backfilled from each tab's row
+    /// (unique by id until now; a tab with no row stays this Mac's) and
+    /// copied in `rowid` order, which is the restore order.
+    /// `process_registry` gains `host`, backfilled the same way, so a
+    /// closing tab unregisters only its own session.
+    static func migrateSessionHostKey(_ database: Database) throws {
+        try database.execute(sql: """
+            CREATE TABLE session_state_v14 (
+                id TEXT NOT NULL,
+                pinned BOOLEAN NOT NULL DEFAULT 0,
+                archived BOOLEAN NOT NULL DEFAULT 0,
+                custom_name TEXT,
+                last_opened_at DATETIME,
+                generated_title TEXT,
+                color TEXT,
+                joined_via TEXT,
+                joined_at DATETIME,
+                agent TEXT,
+                transcript_path TEXT,
+                host TEXT NOT NULL DEFAULT '',
+                directory TEXT,
+                directory_source TEXT,
+                title TEXT,
+                last_active_at DATETIME,
+                incarnation TEXT,
+                archive_reason TEXT,
+                kept_at DATETIME,
+                archived_at DATETIME,
+                PRIMARY KEY (id, host)
+            );
+            INSERT INTO session_state_v14 (\(sessionColumns))
+                SELECT \(sessionColumns) FROM session_state WHERE id IS NOT NULL;
+            CREATE TABLE open_tabs_v14 (
+                project_path TEXT NOT NULL,
+                session_id TEXT NOT NULL,
+                position INTEGER NOT NULL,
+                agent TEXT NOT NULL DEFAULT 'claude',
+                title TEXT NOT NULL DEFAULT '',
+                active BOOLEAN NOT NULL DEFAULT 0,
+                host TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (host, project_path, position),
+                UNIQUE (host, project_path, session_id)
+            );
+            INSERT INTO open_tabs_v14 (project_path, session_id, position, agent, title, active, host)
+                SELECT t.project_path, t.session_id, t.position, t.agent, t.title, t.active,
+                       COALESCE((SELECT s.host FROM session_state s WHERE s.id = t.session_id), '')
+                FROM open_tabs t ORDER BY t.rowid;
+            ALTER TABLE process_registry ADD COLUMN host TEXT NOT NULL DEFAULT '';
+            UPDATE process_registry SET host = COALESCE(
+                (SELECT s.host FROM session_state s WHERE s.id = process_registry.session_id), '');
+            DROP TABLE open_tabs;
+            ALTER TABLE open_tabs_v14 RENAME TO open_tabs;
+            DROP TABLE session_state;
+            ALTER TABLE session_state_v14 RENAME TO session_state;
+            CREATE TRIGGER session_state_incarnation AFTER INSERT ON session_state
+            WHEN NEW.incarnation IS NULL
+            BEGIN
+                UPDATE session_state SET incarnation = lower(hex(randomblob(16))) WHERE rowid = NEW.rowid;
+            END;
+            """)
+    }
+
+    /// Every `session_state` column as of v12, in the v14 table's order.
+    private static let sessionColumns = """
+        id, pinned, archived, custom_name, last_opened_at, generated_title, color, joined_via, joined_at, \
+        agent, transcript_path, host, directory, directory_source, title, last_active_at, incarnation, \
+        archive_reason, kept_at, archived_at
+        """
 
     private static var migrator: DatabaseMigrator {
         var migrator = DatabaseMigrator()
@@ -1468,7 +1625,7 @@ public final class TempleDB: @unchecked Sendable {
         // every existing archive stays the user's, with no date, and older
         // builds keep working on the file (one that unarchives leaves the
         // reason behind, which reads as kept). `v13-project-host` is
-        // reserved for remote.
+        // reserved for remote, and stays unused.
         migrator.registerMigration("v12-archive-provenance") { database in
             try database.alter(table: "session_state") { table in
                 table.add(column: "archive_reason", .text)
@@ -1476,6 +1633,7 @@ public final class TempleDB: @unchecked Sendable {
                 table.add(column: "archived_at", .datetime)  // NULL for an archive from before this
             }
         }
+        migrator.registerMigration("v14-session-host-key", migrate: migrateSessionHostKey)
         return migrator
     }
 }

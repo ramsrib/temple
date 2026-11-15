@@ -5,6 +5,9 @@ import TempleUI
 /// One History row as the command line prints it.
 public struct HistoryEntry: Codable, Equatable, Sendable {
     public var id: String
+    /// The host it is on: its name, or `""` for this Mac. The same id on two
+    /// hosts is two sessions (ADR-041).
+    public var host: String
     public var cli: Agent?
     public var project: String?
     public var title: String
@@ -18,6 +21,7 @@ public struct HistoryEntry: Codable, Equatable, Sendable {
 
     init(_ row: HistoryRow, detail: Bool = false) {
         id = row.sessionID
+        host = row.host.rawValue
         cli = row.agent
         project = row.project?.path
         title = row.title
@@ -93,17 +97,24 @@ enum Output {
         table(["NAME", "SESSIONS", "PATH"], projects.map { (marker: $0.focused, cells: [$0.name, "\($0.sessions)", $0.path]) })
     }
 
+    /// A HOST column only when a row is on a host: this Mac's alone read as
+    /// they always did.
     static func sessions(_ sessions: [ControlSession]) -> String {
-        table(["ID", "CLI", "STATE", "PROJECT", "TITLE"], sessions.map { session in
+        let hosts = sessions.contains { !$0.host.isEmpty }
+        return table(["ID"] + (hosts ? ["HOST"] : []) + ["CLI", "STATE", "PROJECT", "TITLE"], sessions.map { session in
             (marker: session.focused,
-             cells: [session.id ?? "pending", session.cli.rawValue, session.state.rawValue,
-                     projectName(session.project), session.title])
+             cells: [session.id ?? "pending"] + (hosts ? [hostName(session.host)] : [])
+                + [session.cli.rawValue, session.state.rawValue, projectName(session.project), session.title])
         })
     }
+
+    /// A host as the tables print it.
+    static func hostName(_ host: String) -> String { HostID(rawValue: host).displayName }
 
     static func session(_ session: ControlSession) -> String {
         fields([
             ("id", session.id ?? "pending (Codex has not written it yet)"),
+            ("host", session.host.isEmpty ? nil : session.host),
             ("cli", session.cli.rawValue),
             ("project", session.project),
             ("title", session.title),
@@ -116,9 +127,10 @@ enum Output {
     // MARK: History
 
     static func history(_ entries: [HistoryEntry]) -> String {
-        table(["ID", "CLI", "UPDATED", "STATUS", "PROJECT", "TITLE"], entries.map { entry in
-            (marker: false, cells: [entry.id, entry.cli?.rawValue ?? "-", date(entry.updatedAt), entry.status,
-                                    projectName(entry.project), entry.title])
+        let hosts = entries.contains { !$0.host.isEmpty }
+        return table(["ID"] + (hosts ? ["HOST"] : []) + ["CLI", "UPDATED", "STATUS", "PROJECT", "TITLE"], entries.map { entry in
+            (marker: false, cells: [entry.id] + (hosts ? [hostName(entry.host)] : [])
+                + [entry.cli?.rawValue ?? "-", date(entry.updatedAt), entry.status, projectName(entry.project), entry.title])
         }, markers: false)
     }
 
@@ -128,6 +140,7 @@ enum Output {
         if entry.folderMissing == true { conditions.append("no folder") }
         return fields([
             ("id", entry.id),
+            ("host", entry.host.isEmpty ? nil : entry.host),
             ("cli", entry.cli?.rawValue),
             ("project", entry.project),
             ("title", entry.title),

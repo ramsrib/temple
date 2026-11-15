@@ -17,8 +17,8 @@ final class PaletteDirectorylessTests: XCTestCase {
                              database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
                              hostRegistry: Fixture.hostsWithoutFolderEvidence())
         let results = model.paletteResults("Lost")
-        let dirless = try XCTUnwrap(results.first { $0.id == "dirless" })
-        let placed = try XCTUnwrap(results.first { $0.id == "placed" })
+        let dirless = try XCTUnwrap(results.first { $0.sessionID == "dirless" })
+        let placed = try XCTUnwrap(results.first { $0.sessionID == "placed" })
         XCTAssertFalse(model.canOpenFromPalette(dirless))
         XCTAssertTrue(model.canOpenFromPalette(placed))
 

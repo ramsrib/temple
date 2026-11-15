@@ -66,24 +66,27 @@ final class PersistenceAdapterTests: XCTestCase {
         let writer = SessionOverlayStore(db: db)
 
         writer.setColor("purple", for: "session")
-        XCTAssertEqual(writer.rows["session"]?.color, "purple")
+        XCTAssertEqual(writer.rows[.local("session")]?.color, "purple")
         XCTAssertEqual(writer.color(for: "session"), "purple")
 
         let reader = SessionOverlayStore(db: db)
         XCTAssertEqual(reader.color(for: "session"), "purple")
 
         writer.setColor(nil, for: "session")
-        XCTAssertNil(writer.rows["session"]?.color)
+        XCTAssertNil(writer.rows[.local("session")]?.color)
         XCTAssertNil(SessionOverlayStore(db: db).color(for: "session"))
     }
 
     func testDBProcessRegistryUnregistersBySession() throws {
         let db = try TempleDB.inMemory()
         let registry = DBProcessRegistry(db: db)
-        registry.register(pid: 101, sessionID: "one")
-        registry.register(pid: 102, sessionID: "two")
-        registry.unregister(sessionID: "one")
+        let remote = HostID(rawValue: "box")
+        registry.register(pid: 101, session: .local("one"))
+        registry.register(pid: 102, session: .local("two"))
+        registry.register(pid: 103, session: SessionKey(id: "one", host: remote))
+        registry.unregister(session: .local("one"))
 
-        XCTAssertEqual(try db.liveProcesses().map(\.sessionID), ["two"])
+        XCTAssertEqual(try db.liveProcesses().map(\.sessionID), ["two", "one"])
+        XCTAssertEqual(try db.liveProcesses().map(\.host), [.local, remote], "the same id on another host is another session")
     }
 }

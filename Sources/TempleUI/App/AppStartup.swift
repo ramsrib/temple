@@ -12,6 +12,10 @@ public enum AppDatabase {
             return try TempleDB(path: path)
         } catch TempleDBError.newerSchema {
             throw TempleDBError.newerSchema
+        } catch TempleDBError.openElsewhere(let holders) {
+            throw TempleDBError.openElsewhere(holders)
+        } catch TempleDBError.cannotCheckOthers(let reason) {
+            throw TempleDBError.cannotCheckOthers(reason)
         } catch {
             TempleUILog.db.fault("failed to open database at \(path.path, privacy: .public): \(String(describing: error), privacy: .public)")
             throw AppDatabaseError.openFailed(path: path.path, reason: Self.reason(error))
@@ -40,12 +44,18 @@ public enum AppDatabaseError: Error, Equatable, LocalizedError {
 public enum StartupFailure: Equatable {
     /// A newer Temple migrated the database past this build's schema.
     case updateRequired
+    /// This build updates the data on first open, and another Temple has it
+    /// open (ADR-041): where each one is.
+    case otherTempleOpen([String])
+    /// The same, when Temple couldn't tell whether another one has it open.
+    case cannotCheckOtherTemples(String)
     /// Anything else. `path` is nil only when the failure carried none.
     case openFailed(path: String?, reason: String)
 
     public var symbol: String {
         switch self {
         case .updateRequired: "arrow.down.app"
+        case .otherTempleOpen, .cannotCheckOtherTemples: "macwindow.on.rectangle"
         case .openFailed: "exclamationmark.triangle"
         }
     }
@@ -53,6 +63,7 @@ public enum StartupFailure: Equatable {
     public var title: String {
         switch self {
         case .updateRequired: "Update Temple to continue"
+        case .otherTempleOpen, .cannotCheckOtherTemples: "Quit the other Temple to continue"
         case .openFailed: "Temple couldn't open its data"
         }
     }
@@ -61,6 +72,12 @@ public enum StartupFailure: Equatable {
         switch self {
         case .updateRequired:
             "A newer Temple has already upgraded your session data. This version can't read it safely, so nothing was changed."
+        case .otherTempleOpen:
+            "This version updates Temple's data the first time it opens, and another copy of Temple, below, is using it. "
+                + "Quit that copy, then quit this one and open it again. Nothing was changed."
+        case .cannotCheckOtherTemples:
+            "This version updates Temple's data the first time it opens, and it couldn't check whether another copy of Temple is using it. "
+                + "Quit any other Temple, then quit this one and open it again. Nothing was changed."
         case .openFailed:
             "Nothing was changed. Quit and open Temple again. If this keeps happening, the file below may be locked, unreadable or damaged."
         }
@@ -73,6 +90,10 @@ public enum StartupFailure: Equatable {
         switch self {
         case .updateRequired:
             return ["Temple \(version ?? "(development build)")", bundlePath].joined(separator: "\n")
+        case .otherTempleOpen(let places):
+            return places.joined(separator: "\n")
+        case .cannotCheckOtherTemples(let reason):
+            return reason
         case .openFailed(let path, let reason):
             return [path, reason].compactMap { $0 }.joined(separator: "\n")
         }
@@ -107,6 +128,12 @@ public final class AppStartup: ObservableObject {
         } catch TempleDBError.newerSchema {
             model = nil
             failure = .updateRequired
+        } catch TempleDBError.openElsewhere(let holders) {
+            model = nil
+            failure = .otherTempleOpen(holders.map(\.place))
+        } catch TempleDBError.cannotCheckOthers(let reason) {
+            model = nil
+            failure = .cannotCheckOtherTemples(reason)
         } catch AppDatabaseError.openFailed(let path, let reason) {
             model = nil
             failure = .openFailed(path: path, reason: reason)

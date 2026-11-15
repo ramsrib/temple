@@ -43,13 +43,13 @@ public final class RemoteTabController {
     /// Discard on a session whose conversation was never confirmed: the
     /// app lets its row go (or archives it, if the row is the user's), only
     /// while the row is still the membership Discard was chosen for.
-    public var discardHandler: ((_ sessionID: String, _ host: HostID, _ incarnation: String,
+    public var discardHandler: ((_ session: SessionKey, _ incarnation: String,
                                  _ lastOpenedAt: Date?) throws -> Void)?
     /// A row's open state (`last_opened_at`), read when Discard is chosen:
     /// an Open after that keeps the row.
-    public var rowLastOpened: (_ sessionID: String) -> Date? = { _ in nil }
+    public var rowLastOpened: (_ session: SessionKey) -> Date? = { _ in nil }
     /// A row's membership identity, read when Discard is chosen.
-    public var rowIncarnation: (_ sessionID: String) -> String? = { _ in nil }
+    public var rowIncarnation: (_ session: SessionKey) -> String? = { _ in nil }
 
     /// Tabs whose host was removed or edited while connected: their exit
     /// asks nothing of the old host.
@@ -256,7 +256,7 @@ public final class RemoteTabController {
         // creation's pane reported, once persisted.
         tab.launchObservation = SessionTab.LaunchObservation(at: spawnedAt, directory: nil)
         // A reattach of Temple's own is not the person's activity.
-        if let sid = tab.sessionID, !isQuitting, tab.remote?.automatic != true { model.touchHandler?(sid, tab.host, spawnedAt) }
+        if let key = tab.sessionKey, !isQuitting, tab.remote?.automatic != true { model.touchHandler?(key, spawnedAt) }
         // Open in a tab here now: a sidebar line counting it as running
         // without one is reconciled.
         if !plan.creating { runAttachedHandler?(tab.host, plan.handle) }
@@ -381,8 +381,8 @@ public final class RemoteTabController {
     func handleExit(_ tab: SessionTab, surface: TerminalSurface, status: Int32) {
         // As the local exit: an unused tab's end is not the person using the
         // session, and must not spend a keep while a drop is decided.
-        if let sid = tab.sessionID, !model.unusedThisRun(tab), tab.remote?.automatic != true {
-            model.touchHandler?(sid, tab.host, nil)
+        if let key = tab.sessionKey, !model.unusedThisRun(tab), tab.remote?.automatic != true {
+            model.touchHandler?(key, nil)
         }
         // The client is gone: a launch not yet staged never will be.
         if let staging = tab.remote?.stageOperation {
@@ -737,18 +737,19 @@ public final class RemoteTabController {
         guard !isQuitting, let host = remoteHost(for: tab), let sid = tab.sessionID, decisionPending(tab) else { return }
         let hostID = tab.host
         let ticket = gate.ticket(host: hostID)
-        let incarnation = rowIncarnation(sid)
-        let lastOpened = rowLastOpened(sid)
+        let key = SessionKey(id: sid, host: hostID)
+        let incarnation = rowIncarnation(key)
+        let lastOpened = rowLastOpened(key)
         let name = sessionName(tab)
         // Held here, not looked up later: the disposition is durable work
         // and must not depend on this model outliving the window.
         let disposition = discardHandler
         model.removeTab(tab.id)
-        model.forgetClosedTabs(sessionID: sid)
+        model.forgetClosedTabs(session: key)
         operations.run(host: hostID, .write) { [weak self] in
             do {
                 try await host.discard(sessionID: sid)
-                if let incarnation { try disposition?(sid, hostID, incarnation, lastOpened) }
+                if let incarnation { try disposition?(key, incarnation, lastOpened) }
             } catch {
                 guard let self, self.gate.admit(.discardNotice, ticket) else { return }
                 self.noticeHandler?(hostID, RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription, session: name))
@@ -912,7 +913,7 @@ public final class RemoteTabController {
     /// A session's name as a notice gives it: its row's title in quotes,
     /// or "the new Codex session in temple".
     func sessionName(_ tab: SessionTab) -> String {
-        let title = tab.sessionID.flatMap { model.sessionRow($0)?.displayTitle }
+        let title = tab.sessionKey.flatMap { model.sessionRow($0)?.displayTitle }
         return RemoteCopy.sessionName(title: title, agent: tab.agent, directory: tab.projectPath)
     }
 
@@ -963,7 +964,7 @@ public final class RemoteTabController {
     /// run is looked up by row, stopped with no Temple client attached,
     /// and a stop that did not happen is said once, naming the row.
     private func stopByRow(sessionID: String, host: RemoteSessionHost, hostID: HostID) {
-        let row = model.sessionRow(sessionID)
+        let row = model.sessionRow(SessionKey(id: sessionID, host: hostID))
         let name = RemoteCopy.sessionName(title: row?.displayTitle, agent: row?.agent ?? .claude,
                                           directory: row?.directory ?? "")
         let ticket = gate.ticket(host: hostID)
@@ -1159,7 +1160,7 @@ public final class RemoteTabController {
     /// Ids core refused for a run (another host's or another agent's): not
     /// claimed again on schedule (round 2), only on the user's Try again or
     /// once the conflicting row has gone.
-    private var refusedClaims: [String: (id: String, reason: String)] = [:]
+    private var refusedClaims: [String: (session: SessionKey, reason: String)] = [:]
     /// Runs handed over to `open_tabs` whose mark (`tab_closed_at`) is not
     /// written yet, by handle (round 4). Each holds the run store itself, so
     /// it is finished whatever becomes of its host; it is kept until the
@@ -1366,7 +1367,7 @@ public final class RemoteTabController {
             let open = SessionOpen(id: id, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
-                if let directory { model.launchDirectoryHandler?(id, hostID, directory) }
+                if let directory { model.launchDirectoryHandler?(SessionKey(id: id, host: hostID), directory) }
                 operations.run(host: hostID, .write) {
                     do { try await host.markJoined(handle) } catch {
                         // Unmarked, the next launch joins it again (idempotent).
@@ -1375,7 +1376,7 @@ public final class RemoteTabController {
                 }
             case .refused(let conflict):
                 TempleUILog.launch.notice("remote Codex id refused by core: \(conflict.message, privacy: .public)")
-                refusedClaims[handle] = (id, conflict.message)
+                refusedClaims[handle] = (SessionKey(id: id, host: hostID), conflict.message)
                 guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.identityNote = conflict.message
                 tab.remote?.identityRefused = true
@@ -1396,10 +1397,10 @@ public final class RemoteTabController {
         // Display only, so it is the tab's part: nothing after its close,
         // the quit or the host's retirement (sol round 4).
         if let titleHint = titleHint?.trimmingCharacters(in: .whitespacesAndNewlines), !titleHint.isEmpty {
-            model.titleHintHandler?(id, titleHint)
+            model.titleHintHandler?(SessionKey(id: id, host: hostID), titleHint)
         }
         // Temple's own reattach is not the person's activity.
-        if let at = tab.launchObservation?.at, tab.remote?.automatic != true { model.touchHandler?(id, hostID, at) }
+        if let at = tab.launchObservation?.at, tab.remote?.automatic != true { model.touchHandler?(SessionKey(id: id, host: hostID), at) }
         // An ended tab's title is the terminal's last, never the session's
         // own: the transcript's fill titles the row (the hint until then).
         // A tab whose stop is out learned its id at the last chance
@@ -1410,7 +1411,7 @@ public final class RemoteTabController {
             concludeEnded(tab, id: id, host: host)
             return
         }
-        if !tab.title.isEmpty, tab.title != tab.agent.newSessionTitle { model.titleHandler?(id, hostID, tab.title) }
+        if !tab.title.isEmpty, tab.title != tab.agent.newSessionTitle { model.titleHandler?(SessionKey(id: id, host: hostID), tab.title) }
         becomeSession(tab, id: id, host: host)
         // Temple's own yes says so, in the tab only.
         if let linked {
@@ -1636,7 +1637,7 @@ public final class RemoteTabController {
     /// Core's rows changed: a refused id whose conflicting row is gone may
     /// be claimed again (the next check tries it).
     func rowsChanged() {
-        for (handle, refusal) in refusedClaims where model.sessionRow(refusal.id) == nil {
+        for (handle, refusal) in refusedClaims where model.sessionRow(refusal.session) == nil {
             refusedClaims[handle] = nil
             for tab in model.tabs where tab.remote?.handle == handle {
                 tab.remote?.identityRefused = false
@@ -1676,7 +1677,7 @@ public final class RemoteTabController {
             }
             return
         }
-        let refused = refusedClaims[handle]?.id
+        let refused = refusedClaims[handle]?.session.id
         // Never one the user declined for this run, even before the host's
         // own record of the decline is written (Try again included).
         let declinedPaths = declinedHere[handle] ?? []
@@ -1968,7 +1969,7 @@ public final class RemoteTabController {
                             }
                             continue
                         }
-                        let chip = self.model.tabs.first(where: { $0.sessionID == id })
+                        let chip = self.model.tabs.first(where: { $0.sessionKey == SessionKey(id: id, host: hostID) })
                             ?? self.model.appendClaimedChip(host: hostID, sessionID: id, directory: run.directory)
                         self.handOver(chip, handle: run.handle, host: host)
                         continue
@@ -2002,13 +2003,13 @@ public final class RemoteTabController {
             let open = SessionOpen(id: claim.sessionID, host: hostID, via: .created, agent: .codex, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
-                if let directory = claim.directory { model.launchDirectoryHandler?(claim.sessionID, hostID, directory) }
+                if let directory = claim.directory { model.launchDirectoryHandler?(SessionKey(id: claim.sessionID, host: hostID), directory) }
                 joined.insert(claim.handle)
                 do { try await host.markJoined(claim.handle) } catch {
                     TempleUILog.db.error("claim not marked joined: \(error.localizedDescription, privacy: .public)")
                 }
             case .refused(let conflict):
-                refusedClaims[claim.handle] = (claim.sessionID, conflict.message)
+                refusedClaims[claim.handle] = (SessionKey(id: claim.sessionID, host: hostID), conflict.message)
             case .failed(let error):
                 TempleUILog.db.error("reconciliation join failed: \(error.localizedDescription, privacy: .public)")
             }

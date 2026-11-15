@@ -1,5 +1,6 @@
 import Foundation
 import UserNotifications
+import TempleCore
 
 /// Native macOS notifications for attention events (U7).
 ///
@@ -11,7 +12,9 @@ import UserNotifications
 @MainActor
 public final class NotificationController: NSObject {
     /// Wired by `AppModel` → focus the session's tab on notification click.
-    public var onActivateSession: ((String) -> Void)?
+    /// The host is nil for a notification posted by a build that recorded
+    /// only the id: the session is then found only if the id is on one host.
+    public var onActivateSession: ((_ sessionID: String, _ host: HostID?) -> Void)?
 
     private var authorized = false
 
@@ -41,13 +44,13 @@ public final class NotificationController: NSObject {
     }
 
     /// Post "project · session" + message; clicking it focuses that session.
-    public func post(projectName: String, sessionTitle: String, sessionID: String?, body: String) {
+    public func post(projectName: String, sessionTitle: String, session: SessionKey?, body: String) {
         guard isAvailable, authorized else { return }
         let content = UNMutableNotificationContent()
         content.title = "\(projectName) · \(sessionTitle)"
         content.body = body
         content.sound = .default
-        if let sessionID { content.userInfo = ["sessionID": sessionID] }
+        if let session { content.userInfo = ["sessionID": session.id, "host": session.host.rawValue] }
         let request = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)
         UNUserNotificationCenter.current().add(request)
     }
@@ -67,9 +70,11 @@ extension NotificationController: UNUserNotificationCenterDelegate {
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
-        let sessionID = response.notification.request.content.userInfo["sessionID"] as? String
+        let info = response.notification.request.content.userInfo
+        let sessionID = info["sessionID"] as? String
+        let host = (info["host"] as? String).map(HostID.init(rawValue:))
         Task { @MainActor in
-            if let sessionID { self.onActivateSession?(sessionID) }
+            if let sessionID { self.onActivateSession?(sessionID, host) }
             completionHandler()
         }
     }

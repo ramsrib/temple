@@ -64,7 +64,7 @@ final class RemoteHostSeamTests: XCTestCase {
                 persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
                 launcherForHost: { _ in RemoteFixtureLauncher() }, directoryEvidence: { _ in evidence })
             var recorded: String?
-            model.launchDirectoryHandler = { _, _, directory in recorded = directory }
+            model.launchDirectoryHandler = { _, directory in recorded = directory }
             model.openSession(summary)
             model.drainLaunchResults()
             // A host that cannot report where its launch ran records nothing,
@@ -107,27 +107,27 @@ final class RemoteHostSeamTests: XCTestCase {
             settings: settings, hostRegistry: hosts)
         app.start()
         let deadline = Date().addingTimeInterval(3)
-        while app.sessions.first(where: { $0.id == "remote-row" })?.state.title == nil, Date() < deadline {
+        while app.sessions.first(where: { $0.sessionID == "remote-row" })?.state.title == nil, Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
-        let row = try XCTUnwrap(app.sessions.first { $0.id == "remote-row" })
+        let row = try XCTUnwrap(app.sessions.first { $0.sessionID == "remote-row" })
         XCTAssertEqual(row.host, remote)
         XCTAssertEqual(row.agent, .claude)
         XCTAssertEqual(row.directory, "/remote/project")
         XCTAssertEqual(row.displayTitle, "Remote prompt")
         XCTAssertEqual(row.transcript, TranscriptLocator(host: remote, path: "opaque:remote-row"))
         XCTAssertNil(row.transcript?.localURL)
-        XCTAssertEqual(try db.sessionState(row.id)?.directorySource, .transcript)
-        XCTAssertEqual(try db.sessionState(row.id)?.title, "Remote prompt")
-        XCTAssertEqual(try db.sessionState(row.id)?.transcriptPath, "opaque:remote-row")
+        XCTAssertEqual(try db.sessionState(row.sessionID, host: row.host)?.directorySource, .transcript)
+        XCTAssertEqual(try db.sessionState(row.sessionID, host: row.host)?.title, "Remote prompt")
+        XCTAssertEqual(try db.sessionState(row.sessionID, host: row.host)?.transcriptPath, "opaque:remote-row")
         XCTAssertEqual(remoteSource.requested, ["remote-row"])
         XCTAssertEqual(localSource.requested, ["local-row"])
-        XCTAssertEqual(app.sessions.first { $0.id == "local-row" }?.displayTitle, "Local facts")
+        XCTAssertEqual(app.sessions.first { $0.id == .local("local-row") }?.displayTitle, "Local facts")
         app.openSessions.openSession(row)
         app.openSessions.drainLaunchResults()
         // This host's launcher cannot report where it ran, so the folder stays
         // the transcript's: a remote spawn never claims one (D4).
-        XCTAssertEqual(try db.sessionState(row.id)?.directorySource, .transcript)
+        XCTAssertEqual(try db.sessionState(row.sessionID, host: row.host)?.directorySource, .transcript)
         XCTAssertEqual(launcher.specs.count, 1)
         XCTAssertEqual(factory.created.last?.startedCommand?.agentArgv, ["remote-transport", "fake-host", "/remote/bin/claude", "--resume", "remote-row"])
         XCTAssertEqual(factory.created.last?.startedCommand?.cwd, "/transport")
@@ -141,14 +141,14 @@ final class RemoteHostSeamTests: XCTestCase {
         app.openSessions.openSession(catalog)
         XCTAssertEqual(app.openSessions.activeTab?.host, remote)
         XCTAssertEqual(launcher.specs.count, 2)
-        XCTAssertEqual(try db.sessionState(catalog.id)?.host, remote)
+        XCTAssertEqual(try db.sessionStates(id: catalog.id).map(\.host), [remote])
         XCTAssertEqual(launcher.specs.last?.directory, "/remote/catalog")
         let codex = app.openSessions.newSession(agent: .codex,
             project: ProjectKey(host: remote, path: "/remote/new"))
         let adoptionDeadline = Date().addingTimeInterval(3)
         while codex.sessionID == nil, Date() < adoptionDeadline { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(codex.sessionID, "remote-adopted")
-        XCTAssertEqual(try db.sessionState("remote-adopted")?.host, remote)
+        XCTAssertEqual(try db.sessionStates(id: "remote-adopted").map(\.host), [remote])
         XCTAssertEqual(launcher.specs.last?.mode, .new(sessionID: nil))
         XCTAssertEqual(factory.created.last?.startedCommand?.agentArgv, ["remote-transport", "fake-host", "/remote/bin/codex"])
         for surface in factory.created {
@@ -163,27 +163,29 @@ final class RemoteHostSeamTests: XCTestCase {
         // Fills do not replace facts on the next remote observation.
         remoteSource.sendChange(TranscriptLocator(host: remote, path: "opaque:remote-row"))
         try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(try db.sessionState(row.id)?.title, "Remote prompt")
+        XCTAssertEqual(try db.sessionState(row.sessionID, host: row.host)?.title, "Remote prompt")
         await withCheckedContinuation { continuation in app.drainForQuit { continuation.resume() } }
     }
 
     // MARK: Duplicate ids across hosts (0b)
 
-    func testTheOverlayRefusesAJoinForAnotherHostsRowAndAnImportReportsIt() throws {
+    /// ADR-041: another host's row for the id is another session. A join or
+    /// an import on this Mac makes this Mac's own row and leaves the other
+    /// alone; only the other agent on the same host is refused.
+    func testTheSameIDOnAnotherHostJoinsAndImportsAsItsOwnSession() throws {
         let db = try TempleDB.inMemory()
         let remote = HostID(rawValue: "box")
         try db.join(sessionID: "shared", via: .imported, agent: .codex, core: SessionCore(host: remote, title: "Remote row"))
         let overlay = SessionOverlayStore(db: db)
-        XCTAssertEqual(overlay.join("shared", via: .opened, agent: .codex).conflict, .host(remote))
-        XCTAssertEqual(overlay.join("shared", via: .opened, agent: .claude, core: SessionCore(host: remote)).conflict, .agent(.codex))
-        XCTAssertTrue(overlay.join("shared", via: .opened, core: SessionCore(host: remote)).isJoined)
+        XCTAssertEqual(overlay.join(SessionKey(id: "shared", host: remote), via: .opened, agent: .claude).conflict, .agent(.codex))
+        XCTAssertTrue(overlay.join(SessionKey(id: "shared", host: remote), via: .opened).isJoined)
         let summary = TranscriptSummary(id: "shared", agent: .codex, locator: TranscriptLocator(host: .local, path: "/l/x.jsonl"),
                                         modifiedAt: Date(), cwd: "/l", firstPrompt: "Local copy")
         let outcomes = SessionOverlayStore(db: db).import([summary])
-        guard case .failed(let error) = outcomes.first, outcomes.count == 1 else { return XCTFail("\(outcomes)") }
-        XCTAssertEqual(error as? TempleDBError, .hostConflict(existing: remote))
-        XCTAssertEqual(try db.sessionState("shared")?.title, "Remote row")
-        XCTAssertEqual(try db.sessionState("shared")?.host, remote)
+        guard case .joined = outcomes.first, outcomes.count == 1 else { return XCTFail("\(outcomes)") }
+        XCTAssertEqual(try db.sessionState("shared")?.title, "Local copy")
+        XCTAssertEqual(try db.sessionState("shared", host: remote)?.title, "Remote row")
+        XCTAssertEqual(Set(try db.sessionStates(id: "shared").map(\.host)), [.local, remote])
     }
 
     func testATabRefusedAtJoinStartsNothingAndSaysWhere() throws {
@@ -194,17 +196,17 @@ final class RemoteHostSeamTests: XCTestCase {
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
             launcherForHost: { _ in RemoteFixtureLauncher() }, directoryEvidence: { _ in .exists })
         var opens: [SessionOpen] = []
-        model.openedHandler = { open in opens.append(open); return .refused(.host(remote)) }
+        model.openedHandler = { open in opens.append(open); return .refused(.agent(.codex)) }
         var touched: [String] = []
-        model.touchHandler = { id, _, _ in touched.append(id) }
+        model.touchHandler = { key, _ in touched.append(key.id) }
         model.openSession(TranscriptSummary(id: "dup", agent: .claude, locator: TranscriptLocator(host: .local, path: "/l/dup.jsonl"),
                                             modifiedAt: Date(), cwd: "/l"))
         let tab = try XCTUnwrap(model.activeTab)
         XCTAssertEqual(opens.map(\.id), ["dup"])
         XCTAssertEqual(opens.first?.host, .local)
         XCTAssertEqual(opens.first?.locator, TranscriptLocator(host: .local, path: "/l/dup.jsonl"))
-        XCTAssertTrue(factory.created.isEmpty, "no spawn for a session another host owns")
-        XCTAssertEqual(tab.launchPreparationError, "Already in Temple on box.")
+        XCTAssertTrue(factory.created.isEmpty, "no spawn for a session Temple has as the other agent's")
+        XCTAssertEqual(tab.launchPreparationError, "Already in Temple as a Codex session.")
         XCTAssertEqual(tab.activity, .exited(status: -1))
         XCTAssertTrue(touched.isEmpty)
     }
@@ -215,10 +217,10 @@ final class RemoteHostSeamTests: XCTestCase {
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(),
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
             directoryEvidence: { _ in .exists })
-        var result: JoinResult = .refused(.host(remote))
+        var result: JoinResult = .refused(.agent(.claude))
         model.openedHandler = { _ in result }
         var directories: [String] = []
-        model.launchDirectoryHandler = { id, _, _ in directories.append(id) }
+        model.launchDirectoryHandler = { key, _ in directories.append(key.id) }
         let tab = model.newSession(agent: .codex, project: Fixture.key("/tmp"))
         XCTAssertTrue(tab.isProvisional)
         model.adopt(sessionID: "codex-dup", for: tab.id)
@@ -243,14 +245,14 @@ final class RemoteHostSeamTests: XCTestCase {
         overlay.flushPendingTitles()
         overlay.flushPendingTouches()
         overlay.recordOpened("r", host: .local)
-        let row = try XCTUnwrap(db.sessionState("r"))
+        let row = try XCTUnwrap(db.onlySessionState("r"))
         XCTAssertEqual(row.title, "Remote")
         XCTAssertNil(row.lastActiveAt)
         XCTAssertNil(row.directory)
         XCTAssertNil(row.lastOpenedAt)
-        XCTAssertNil(overlay.rows["r"]?.lastActiveAt)
-        XCTAssertEqual(overlay.leave([SessionKey(id: "r", host: .local)]), [])
-        XCTAssertEqual(overlay.leave([SessionKey(id: "r", host: remote)]), ["r"])
+        XCTAssertNil(overlay.rows[only: "r"]?.lastActiveAt)
+        XCTAssertEqual(overlay.leave([SessionKey(id: "r", host: .local)]).map(\.id), [])
+        XCTAssertEqual(overlay.leave([SessionKey(id: "r", host: remote)]).map(\.id), ["r"])
     }
 }
 

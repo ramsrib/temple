@@ -975,19 +975,19 @@ final class RemoteSourceTests: XCTestCase {
         await engine.start()
         defer { Task { await engine.stop() } }
         let deadline = Date().addingTimeInterval(20)
-        while try db.sessionState(id)?.title == nil || (try db.sessionState(titled)?.directory) == nil, Date() < deadline {
+        while try db.sessionState(id, host: Self.host)?.title == nil || (try db.sessionState(titled, host: Self.host)?.directory) == nil, Date() < deadline {
             try await Task.sleep(for: .milliseconds(50))
         }
-        let row = try XCTUnwrap(try db.sessionState(id))
+        let row = try XCTUnwrap(try db.sessionState(id, host: Self.host))
         XCTAssertEqual(row.title, "Fill me in")
         XCTAssertEqual(row.directory, "/work/project")
         XCTAssertNotNil(row.lastActiveAt)
         XCTAssertEqual(row.host, Self.host)
         XCTAssertTrue(row.transcriptPath?.hasSuffix("/\(id).jsonl") == true)
-        XCTAssertEqual(try db.sessionState(titled)?.title, "Mine", "fills are NULL-only")
+        XCTAssertEqual(try db.sessionState(titled, host: Self.host)?.title, "Mine", "fills are NULL-only")
         try await Task.sleep(for: .milliseconds(300))
         let resolution = engine.latestSnapshot?.resolutions[missing]
         XCTAssertNotEqual(resolution, .confirmedAbsent, "a remote row is never absent")
-        XCTAssertNil(try db.sessionState(missing)?.title)
+        XCTAssertNil(try db.sessionState(missing, host: Self.host)?.title)
     }
 }

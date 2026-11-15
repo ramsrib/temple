@@ -185,7 +185,7 @@ final class LegacyRestoreTests: XCTestCase {
         XCTAssertEqual(factory.created.count, 2, "opens by itself, as the message says")
         XCTAssertNil(chip.launchPreparationError)
 
-        app.showInHistory(sessionID: "unplaced")
+        app.showInHistory(.local("unplaced"))
         XCTAssertTrue(app.historyActive)
         XCTAssertEqual(app.history.query, "unplaced")
     }
@@ -220,9 +220,9 @@ final class LegacyRestoreTests: XCTestCase {
         app.closeAndArchive(chip, undoManager: undo)
         undo.endUndoGrouping()
         XCTAssertNil(app.openSessions.openTab(forSessionID: "unplaced"), "the chip closes first")
-        XCTAssertEqual(app.overlay.rows["unplaced"]?.archived, true)
+        XCTAssertEqual(app.overlay.rows[.local("unplaced")]?.archived, true)
         undo.undo()
-        XCTAssertEqual(app.overlay.rows["unplaced"]?.archived, false)
+        XCTAssertEqual(app.overlay.rows[.local("unplaced")]?.archived, false)
     }
 
     /// "Show in History" from a History already narrowed — to sessions not
@@ -240,7 +240,7 @@ final class LegacyRestoreTests: XCTestCase {
         app.history.agentFilter = .claude
         app.history.projectKeyFilter = ProjectKey(host: .local, path: "/somewhere/else")
 
-        app.showInHistory(sessionID: "unplaced")
+        app.showInHistory(.local("unplaced"))
         app.history.activate()
         for _ in 0..<200 where app.history.readState != .done { try await Task.sleep(nanoseconds: 5_000_000) }
 

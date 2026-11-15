@@ -94,8 +94,8 @@ struct RemoteSessionsSheet: View {
 
     private func stopQuestion(_ session: RemoteTrackedSession) -> (title: String, message: String) {
         model.openSessions.remoteTabs.stopQuestion(host: sheet.request.host, agent: session.agent,
-                                                   title: model.trackedTitle(session), handle: session.handle,
-                                                   resumable: model.resumability(session.sessionID))
+                                                   title: model.trackedTitle(session, host: sheet.request.host), handle: session.handle,
+                                                   resumable: model.resumability(session.sessionID.map { SessionKey(id: $0, host: sheet.request.host) }))
     }
 
     /// Open here: a live tab of the run in this Temple ("Running in a tab").
@@ -109,7 +109,7 @@ struct RemoteSessionsSheet: View {
             HStack(alignment: .firstTextBaseline, spacing: 10) {
                 // The tmux session's name only matters to someone who will
                 // ssh in: a tooltip, not a line.
-                Text(model.trackedTitle(session))
+                Text(model.trackedTitle(session, host: sheet.request.host))
                     .font(.system(size: 13))
                     .lineLimit(1)
                     .help(RemoteCopy.trackedHandleHelp(session.handle))

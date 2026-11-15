@@ -70,13 +70,14 @@ public enum HistoryReader {
         return Lookup(facts: await projector.facts(for: id), failures: collected.failures)
     }
 
-    /// History's rows for one id from a lookup and membership as it is now:
+    /// History's rows for one id from a lookup and membership as it is now
+    /// (every host's member for the id):
     /// synchronous, so a caller acting on the verdict acts on state no
     /// later than the verdict's.
     @MainActor
-    static func rows(_ facts: HistoryProjector.IDFacts, member: Session?, archivedProjects: Set<ProjectKey>,
+    static func rows(_ facts: HistoryProjector.IDFacts, members: [HostID: Session], archivedProjects: Set<ProjectKey>,
                      openTabs: Set<SessionKey>) -> [HistoryRow] {
-        HistoryProjector.rows(member: member, disk: facts.disk, builder: HistoryRowBuilder(),
+        HistoryProjector.rows(members: members, disk: facts.disk, builder: HistoryRowBuilder(),
                               context: HistoryRowBuilder.Context(archivedProjects: archivedProjects, openTabs: openTabs,
                                                                  folders: facts.folders, coverage: facts.coverage))
     }

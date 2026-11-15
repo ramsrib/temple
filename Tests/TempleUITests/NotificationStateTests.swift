@@ -162,7 +162,7 @@ final class NotificationStateTests: XCTestCase {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.ringGraceSeconds = -1
         var recorded: [String: String] = [:]
-        model.titleHandler = { recorded[$0] = $2 }
+        model.titleHandler = { recorded[$0.id] = $1 }
         model.openSession(Fixture.row("a", project: "/p/a"))
         let tab = model.activeTab!
         let surface = tab.surface as? FakeTerminalSurface

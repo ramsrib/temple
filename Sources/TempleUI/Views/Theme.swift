@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import TempleCore
 
 enum TabColorMark: String, CaseIterable, Identifiable {
     case red, orange, yellow, green, blue, purple, pink
@@ -25,8 +26,8 @@ enum TabColorMark: String, CaseIterable, Identifiable {
 extension TabColorMark {
     /// The colour a session was marked with, if any.
     @MainActor
-    static func color(for sessionID: String?, in model: AppModel) -> Color? {
-        sessionID
+    static func color(for session: SessionKey?, in model: AppModel) -> Color? {
+        session
             .flatMap { model.overlay.color(for: $0) }
             .flatMap(TabColorMark.init(rawValue:))?
             .color

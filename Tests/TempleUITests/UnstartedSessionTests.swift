@@ -128,7 +128,7 @@ final class UnstartedSessionTests: XCTestCase {
         app.openSessions.closeTab(tab.id)
         // While the check is out: the old membership goes (by any means),
         // and the id joins again as a new one.
-        XCTAssertEqual(try db.discardNeverStarted([MembershipRef(id: id, host: .local, incarnation: old)], idleBefore: nil), [id])
+        XCTAssertEqual(try db.discardNeverStarted([MembershipRef(id: id, host: .local, incarnation: old)], idleBefore: nil).map(\.id), [id])
         try db.join(sessionID: id, via: .created, agent: .claude, core: SessionCore(host: .local, directory: "/p", directorySource: .tab))
         let fresh = try XCTUnwrap(try XCTUnwrap(db.sessionState(id)).incarnation)
         XCTAssertNotEqual(old, fresh)
@@ -155,7 +155,7 @@ final class UnstartedSessionTests: XCTestCase {
         let id = try XCTUnwrap(tab.sessionID)
         try other.setArchived(true, sessionID: id)
         try other.setArchived(false, sessionID: id)
-        XCTAssertNil(app.overlay.rows[id]?.keptAt, "this store never heard of the restore")
+        XCTAssertNil(app.overlay.rows[.local(id)]?.keptAt, "this store never heard of the restore")
         app.openSessions.closeTab(tab.id)
         app.overlay.flushPendingTouches()
         XCTAssertNotNil(try XCTUnwrap(db.sessionState(id)).keptAt, "nothing of this close's spent the keep")
@@ -200,7 +200,7 @@ final class UnstartedSessionTests: XCTestCase {
         let app = model(db, storeRoot: notADirectory)
         let tab = app.openSessions.newSession(agent: .claude, project: Fixture.key("/p"))
         let id = try XCTUnwrap(tab.sessionID)
-        app.receiveEngineSnapshot(EngineSnapshot(generation: .max, resolutions: [id: .awaitingCreation]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: .max, resolutions: [id: .awaitingCreation]).onThisMac)
         app.openSessions.closeTab(tab.id)
         await quiesce()
         XCTAssertNotNil(try db.sessionState(id))
@@ -260,7 +260,7 @@ final class UnstartedSessionTests: XCTestCase {
         try db.join(sessionID: id, via: .created, agent: .claude,
                     core: SessionCore(host: .local, directory: "/p", directorySource: .tab))
         let app = model(db, storeRoot: store)
-        let row = try XCTUnwrap(app.sessions.first { $0.id == id })
+        let row = try XCTUnwrap(app.sessions.first { $0.id == .local(id) })
         app.openSessions.openSession(row)
         let tab = try XCTUnwrap(app.openSessions.openTab(forSessionID: id))
         XCTAssertNotNil(try XCTUnwrap(db.sessionState(id)).lastOpenedAt, "the open is recorded")

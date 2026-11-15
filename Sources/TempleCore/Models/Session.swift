@@ -10,7 +10,11 @@ public struct Session: Identifiable, Hashable, Sendable {
         self.resolution = resolution
     }
 
-    public var id: String { state.id }
+    /// The session: its id on its host (ADR-041). The same id on another
+    /// host is another `Session`.
+    public var id: SessionKey { state.key }
+    /// The agent's session id, unique on this session's host only.
+    public var sessionID: String { state.id }
     public var agent: Agent? { state.agent }
     public var host: HostID { state.host }
     public var directory: String? { state.directory }

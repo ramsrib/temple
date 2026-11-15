@@ -100,7 +100,7 @@ final class MemberStateMachineTests: XCTestCase {
     private func consume(_ watcher: SessionEngine, _ db: TempleDB) {
         let committer = FactCommitter(database: db)
         let stream = watcher.snapshots()
-        tasks.append(Task { for await snapshot in stream { committer.receive(snapshot.facts) } })
+        tasks.append(Task { for await snapshot in stream { committer.receive(snapshot.keyedFacts) } })
     }
 
     /// An append to a member with nothing missing is a stat: no read, no

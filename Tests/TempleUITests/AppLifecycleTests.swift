@@ -71,7 +71,7 @@ final class AppLifecycleTests: XCTestCase {
             XCTAssertTrue(returned)
             XCTAssertEqual(try? db.sessionState("known")?.lastActiveAt, at.addingTimeInterval(1))
             XCTAssertNil(try? db.sessionState("late-codex")?.lastActiveAt)
-            XCTAssertNil(overlay.rows["late-codex"]?.lastActiveAt)
+            XCTAssertNil(overlay.rows[.local("late-codex")]?.lastActiveAt)
             completed.fulfill()
         }
         XCTAssertEqual(delegate.applicationShouldTerminate(NSApplication.shared), .terminateLater)

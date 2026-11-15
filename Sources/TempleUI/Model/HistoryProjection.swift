@@ -236,7 +236,9 @@ actor HistoryProjector {
     private var noise: Set<HistoryKey> = []
     private var folders: [ProjectKey: DirectoryEvidence] = [:]
     private var coverage: [HostID: CatalogCoverage] = [:]
-    private var members: [String: Session] = [:]
+    /// Each id's members, one per host that has it (ADR-041). Rows are
+    /// built per id: everything listed under it, matched host by host.
+    private var members: [String: [HostID: Session]] = [:]
     private var peersByID: [String: [PeerRow]] = [:]
     private var memberIDsByProject: [ProjectKey: Set<String>] = [:]
     private var archivedProjects: Set<ProjectKey> = []
@@ -374,12 +376,15 @@ actor HistoryProjector {
     }
 
     private func applyMembers(_ next: [Session], dirty: inout Set<String>) {
-        let incoming = Dictionary(next.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        for (id, member) in incoming where members[id] != member { dirty.insert(id) }
+        var incoming: [String: [HostID: Session]] = [:]
+        for member in next where incoming[member.sessionID]?[member.host] == nil {
+            incoming[member.sessionID, default: [:]][member.host] = member
+        }
+        for (id, hosts) in incoming where members[id] != hosts { dirty.insert(id) }
         for id in members.keys where incoming[id] == nil { dirty.insert(id) }
         members = incoming
         var byProject: [ProjectKey: Set<String>] = [:]
-        for member in incoming.values { if let project = member.project { byProject[project, default: []].insert(member.id) } }
+        for member in next { if let project = member.project { byProject[project, default: []].insert(member.sessionID) } }
         memberIDsByProject = byProject
     }
 
@@ -418,7 +423,7 @@ actor HistoryProjector {
     }
 
     private func rows(for id: String, context: HistoryRowBuilder.Context) -> [HistoryRow] {
-        let rows = Self.rows(member: members[id], disk: facts(for: id).disk, peers: peersByID[id] ?? [],
+        let rows = Self.rows(members: members[id] ?? [:], disk: facts(for: id).disk, peers: peersByID[id] ?? [],
                              attachingOn: query.page.host, builder: builder, context: context)
         stats.rowsBuilt += rows.count
         return rows
@@ -439,42 +444,46 @@ actor HistoryProjector {
                 folders: folders, coverage: coverage)
     }
 
-    /// History's rule for one id, the one the page uses: a member attaches
-    /// to its own agent's summary on its host; a summary another member owns
-    /// is a conflict; any other is outside; noise shows only attached.
+    /// History's rule for one id, the one the page uses, host by host (the
+    /// same id on two hosts is two sessions, ADR-041): a member attaches to
+    /// its own agent's summary on its host; a summary of the other agent on
+    /// a member's host is a conflict; any other is outside; noise shows only
+    /// attached.
     ///
-    /// Another Temple's row for the id: beside its member when the member
-    /// is on that host as that agent (never changing the member's own
-    /// presentation), a conflict when the id is Temple's elsewhere, outside
-    /// otherwise. A peer row is never a catalog row: it carries no
-    /// transcript evidence at all.
-    static func rows(member: Session?, disk: [(key: HistoryKey, summary: TranscriptSummary, noise: Bool)],
+    /// Another Temple's row for the id: beside the member on that host
+    /// when it is that agent (never changing the member's own
+    /// presentation), a conflict when that host's member is the other
+    /// agent's, outside otherwise. A peer row is never a catalog row: it
+    /// carries no transcript evidence at all.
+    static func rows(members: [HostID: Session], disk: [(key: HistoryKey, summary: TranscriptSummary, noise: Bool)],
                      peers: [PeerRow] = [], attachingOn page: HostID? = nil,
                      builder: HistoryRowBuilder, context: HistoryRowBuilder.Context) -> [HistoryRow] {
         var rows: [HistoryRow] = []
-        var attached = false
-        var memberPeer: PeerRow?
+        var attached: Set<HostID> = []
+        var memberPeers: [HostID: PeerRow] = [:]
         for peer in peers {
+            let member = members[peer.host]
             switch HistoryModel.standing(of: peer.key, member: member?.state, otherAgentListed: false) {
-            case .member: if peer.host == page { memberPeer = memberPeer ?? peer }
+            case .member: if peer.host == page, memberPeers[peer.host] == nil { memberPeers[peer.host] = peer }
             case .conflict(let conflict): rows.append(builder.row(member: nil, catalog: nil, conflict: conflict, peer: peer, context: context))
             case .outside: rows.append(builder.row(member: nil, catalog: nil, conflict: nil, peer: peer, context: context))
             }
         }
         for (key, summary, isNoise) in disk {
+            let member = members[key.host]
             let otherAgentListed = disk.contains { $0.key.host == key.host && $0.key.agent != key.agent }
             switch HistoryModel.standing(of: key, member: member?.state, otherAgentListed: otherAgentListed) {
             case .member:
                 rows.append(builder.row(member: member, catalog: summary, conflict: nil, context: context))
-                attached = true
+                attached.insert(key.host)
             case .conflict(let conflict):
                 if !isNoise { rows.append(builder.row(member: nil, catalog: summary, conflict: conflict, context: context)) }
             case .outside:
                 if !isNoise { rows.append(builder.row(member: nil, catalog: summary, conflict: nil, context: context)) }
             }
         }
-        if let member, !attached {
-            rows.append(builder.row(member: member, catalog: nil, conflict: nil, peer: memberPeer, context: context))
+        for (host, member) in members where !attached.contains(host) {
+            rows.append(builder.row(member: member, catalog: nil, conflict: nil, peer: memberPeers[host], context: context))
         }
         return rows.sorted(by: newerFirst)
     }

@@ -22,7 +22,7 @@ final class SearchFilterTests: XCTestCase {
                              settings: settings,
                              overlay: overlay)
 
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, MemberResolution.confirmedAbsent) })))
+        model.receiveEngineSnapshot(SessionsSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, MemberResolution.confirmedAbsent) })))
         return (model, overlay)
     }
 
@@ -234,7 +234,7 @@ final class SearchFilterTests: XCTestCase {
     func testProjectOrderFrozenAtFirstCompleteSnapshotAndStableAcrossUpdates() async {
         let (model, overlay) = makeRowModel([Fixture.row("a1", project: "/p/a", updated: 20),
             Fixture.row("b1", project: "/p/b", updated: 10)])
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a1": .confirmedAbsent, "b1": .confirmedAbsent]))
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a1": .confirmedAbsent, "b1": .confirmedAbsent]).onThisMac)
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
         overlay.touch("b1", host: .local, at: Date(timeIntervalSince1970: 50))
         await withCheckedContinuation { continuation in
@@ -248,7 +248,7 @@ final class SearchFilterTests: XCTestCase {
     func testSessionOrderWithinProjectFrozenAndNewSessionsPrepend() async {
         let (model, overlay) = makeRowModel([Fixture.row("s1", project: "/p/a", updated: 20),
             Fixture.row("s2", project: "/p/a", updated: 10)])
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["s1": .confirmedAbsent, "s2": .confirmedAbsent]))
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["s1": .confirmedAbsent, "s2": .confirmedAbsent]).onThisMac)
         XCTAssertEqual(model.displayProjects.first?.sessions.map(\.id), ["s1", "s2"])
         overlay.touch("s2", host: .local, at: Date(timeIntervalSince1970: 50))
         await withCheckedContinuation { continuation in
@@ -265,7 +265,7 @@ final class SearchFilterTests: XCTestCase {
         let (model, overlay) = makeRowModel([Fixture.row("s1", project: "/p/a", updated: 20),
             Fixture.row("s2", project: "/p/a", updated: 10), Fixture.row("b1", project: "/p/b", updated: 15)])
         model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["s1": .confirmedAbsent,
-            "s2": .confirmedAbsent, "b1": .confirmedAbsent]))
+            "s2": .confirmedAbsent, "b1": .confirmedAbsent]).onThisMac)
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/b"])
         overlay.join("old", via: .imported, agent: .claude,
                      core: SessionCore(directory: "/p/a", title: "Old", lastActiveAt: Date(timeIntervalSince1970: 5)))
@@ -369,7 +369,7 @@ final class SearchFilterTests: XCTestCase {
         let (model, _) = makeRowModel([a, b])
         model.openSessions.openSession(b)
         model.openSessions.openSession(a)
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]))
+        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]).onThisMac)
         XCTAssertTrue(model.sidebarRanksFrozen)
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { continuation.resume() }
@@ -381,16 +381,16 @@ final class SearchFilterTests: XCTestCase {
         XCTAssertEqual(cursor.index(in: drawn), 0)
         // The user is on the other session's tab, so opening the highlighted
         // one is a visible change.
-        let other = highlighted.id == "a" ? "b" : "a"
+        let other = highlighted.sessionID == "a" ? "b" : "a"
         model.openSessions.activate(model.openSessions.openTab(forSessionID: other)!)
         XCTAssertEqual(model.openSessions.activeTab?.sessionID, other)
 
         // The other session works on: its touch reorders the list unseen.
         model.overlay.touch(other, host: .local, at: Date(timeIntervalSince1970: 9_000_000_000))
-        XCTAssertEqual(CommandPaletteView.results("", model: model).first?.id, other, "the list moved under the highlight")
+        XCTAssertEqual(CommandPaletteView.results("", model: model).first?.sessionID, other, "the list moved under the highlight")
 
         CommandPaletteView.submit(cursor, query: "", model: model)
-        XCTAssertEqual(model.openSessions.activeTab?.sessionID, highlighted.id)
+        XCTAssertEqual(model.openSessions.activeTab?.sessionKey, highlighted.id)
         // And the next draw lights the same session, wherever it now sits.
         let redrawn = CommandPaletteView.results("", model: model)
         XCTAssertEqual(cursor.selected(in: redrawn)?.id, highlighted.id)
@@ -405,7 +405,7 @@ final class SearchFilterTests: XCTestCase {
                         updated: TimeInterval(1_000 - n))
         }
         let (model, _) = makeRowModel(rows)
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions:
+        model.receiveEngineSnapshot(SessionsSnapshot(generation: 1, resolutions:
             Dictionary(uniqueKeysWithValues: rows.map { ($0.id, MemberResolution.confirmedAbsent) })))
         await withCheckedContinuation { continuation in
             DispatchQueue.main.async { continuation.resume() }
@@ -418,12 +418,12 @@ final class SearchFilterTests: XCTestCase {
         // The 41st session works on and moves ahead of the highlighted one,
         // which falls to row 41 — outside what the palette lists.
         let hidden = try! XCTUnwrap(model.paletteResults("session").last { !drawn.map(\.id).contains($0.id) })
-        model.overlay.touch(hidden.id, host: .local, at: Date(timeIntervalSince1970: 9_000_000_000))
+        model.overlay.touch(hidden.id, at: Date(timeIntervalSince1970: 9_000_000_000))
         XCTAssertFalse(CommandPaletteView.results("session", model: model).contains { $0.id == highlighted },
                        "the highlighted session left the capped list")
 
         CommandPaletteView.submit(cursor, query: "session", model: model)
-        XCTAssertEqual(model.openSessions.activeTab?.sessionID, highlighted)
+        XCTAssertEqual(model.openSessions.activeTab?.sessionKey, highlighted)
     }
 
     func testPaletteEmptyQueryBreaksRecencyTiesByID() async {

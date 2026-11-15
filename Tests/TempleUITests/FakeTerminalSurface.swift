@@ -265,7 +265,7 @@ enum Fixture {
 
     static func join(_ rows: [Session], to database: TempleDB) {
         for row in rows {
-            try! database.join(sessionID: row.id, via: .imported, agent: row.agent,
+            try! database.join(sessionID: row.sessionID, via: .imported, agent: row.agent,
                 core: SessionCore(host: row.host, directory: row.directory,
                     directorySource: row.state.directorySource, title: row.state.title, lastActiveAt: row.sortDate))
         }

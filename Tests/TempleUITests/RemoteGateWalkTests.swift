@@ -55,11 +55,11 @@ final class RemoteGateWalkTests: XCTestCase {
             app.openSessions.remoteTabs.identityInterval = 0.05
             app.openSessions.settleDelaySeconds = 60
             let original = app.openSessions.launchDirectoryHandler
-            app.openSessions.launchDirectoryHandler = { [weak self] id, host, directory in
+            app.openSessions.launchDirectoryHandler = { [weak self] key, directory in
                 self?.directories.append(directory)
-                original?(id, host, directory)
+                original?(key, directory)
             }
-            app.openSessions.remoteTabs.discardHandler = { [weak self] id, _, _, _ in self?.discards.append(id) }
+            app.openSessions.remoteTabs.discardHandler = { [weak self] key, _, _ in self?.discards.append(key.id) }
         }
 
         var gate: RemoteEffectGate { app.openSessions.remoteTabs.gate }
@@ -83,8 +83,8 @@ final class RemoteGateWalkTests: XCTestCase {
         if !creating { h.remote.runs.append(.init(handle: "old-\(id)", sessionID: id, resume: false)) }
         let row = Fixture.row(id, project: "/home/u/p", host: h.host)
         Fixture.join([row], to: h.db)
-        await settle { h.app.sessions.contains { $0.id == id } }
-        h.app.openSessions.openSession(h.app.sessions.first { $0.id == id } ?? row)
+        await settle { h.app.sessions.contains { $0.sessionID == id } }
+        h.app.openSessions.openSession(h.app.sessions.first { $0.sessionID == id } ?? row)
         let tab = h.app.openSessions.activeTab!
         await settle { tab.hasLiveProcess }
         h.tab = tab
@@ -435,12 +435,12 @@ final class RemoteGateWalkTests: XCTestCase {
             disrupt(h, disruption)
             await h.hold.open()
             if disruption == .none {
-                await settle { h.app.titleHints["c7"] != nil }
-                XCTAssertEqual(h.app.titleHints["c7"], "hi")
+                await settle { h.app.titleHints[SessionKey(id: "c7", host: hostID)] != nil }
+                XCTAssertEqual(h.app.titleHints[SessionKey(id: "c7", host: hostID)], "hi")
             } else {
                 await settle({ h.gate.suppressed[.identityResult, default: 0] > 0 }, timeout: 3)
                 try await Task.sleep(for: .milliseconds(50))
-                XCTAssertNil(h.app.titleHints["c7"], "after \(disruption): no hint")
+                XCTAssertNil(h.app.titleHints[SessionKey(id: "c7", host: hostID)], "after \(disruption): no hint")
             }
         }
     }
@@ -500,6 +500,8 @@ final class RemoteGateWalkTests: XCTestCase {
             await settle { gate.arrivals > 0 }
             XCTAssertGreaterThan(gate.arrivals, 0, "the engine reads the row's transcript")
             if retire {
+                XCTAssertNotNil(h.app.engineSet.latest?.resolutions[SessionKey(id: "s9", host: h.host)],
+                                "the host's verdict is in the merge before it retires")
                 h.app.openSessions.remoteTabs.retireHost(h.host)
                 h.app.hostBox.value = h.app.hostBox.value.removing(h.host)
                 h.app.engineSet.remove(host: h.host)
@@ -507,12 +509,12 @@ final class RemoteGateWalkTests: XCTestCase {
             gate.open()
             if retire {
                 try await Task.sleep(for: .milliseconds(300))
-                XCTAssertNil(try h.db.sessionState("s9")?.title, "retired: no fill")
-                XCTAssertNil(h.app.engineSet.latest?.resolutions["s9"], "retired: nothing left in the merge")
+                XCTAssertNil(try h.db.onlySessionState("s9")?.title, "retired: no fill")
+                XCTAssertNil(h.app.engineSet.latest?.resolutions[SessionKey(id: "s9", host: h.host)], "retired: nothing left in the merge")
             } else {
-                await settle { (try? h.db.sessionState("s9")?.title) != nil }
-                XCTAssertEqual(try h.db.sessionState("s9")?.title, "Remote prompt")
-                XCTAssertEqual(try h.db.sessionState("s9")?.directory, "/home/u/p")
+                await settle { (try? h.db.onlySessionState("s9")?.title) != nil }
+                XCTAssertEqual(try h.db.onlySessionState("s9")?.title, "Remote prompt")
+                XCTAssertEqual(try h.db.onlySessionState("s9")?.directory, "/home/u/p")
             }
         }
     }
@@ -544,12 +546,12 @@ final class RemoteGateWalkTests: XCTestCase {
     func testDiscardLeavesAReplacedRowAlone() async throws {
         let h = try Harness(host: hostID)
         var handled: [String] = []
-        h.app.openSessions.remoteTabs.discardHandler = { _, _, incarnation, _ in handled.append(incarnation) }
+        h.app.openSessions.remoteTabs.discardHandler = { _, incarnation, _ in handled.append(incarnation) }
         h.remote.decision = true
         let row = Fixture.row("s1", project: "/p", host: hostID)
         Fixture.join([row], to: h.db)
-        await settle { h.app.overlay.rows["s1"] != nil }
-        let before = h.app.overlay.rows["s1"]?.incarnation
+        await settle { h.app.overlay.rows[only: "s1"] != nil }
+        let before = h.app.overlay.rows[only: "s1"]?.incarnation
         h.app.openSessions.openSession(row)
         let tab = try XCTUnwrap(h.app.openSessions.activeTab)
         await settle { tab.remote?.phase == .needsDecision(checked: true) }

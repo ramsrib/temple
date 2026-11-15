@@ -90,8 +90,8 @@ extension AppModel {
     /// What Discard does to this session's row: archived (the user named,
     /// pinned or colored it, or it has a transcript or was imported), or
     /// removed. Said in Discard's help tag.
-    public func discardArchives(_ sessionID: String) -> Bool {
-        guard let row = overlay.rows[sessionID] else { return false }
+    public func discardArchives(_ session: SessionKey) -> Bool {
+        guard let row = overlay.rows[session] else { return false }
         return row.pinned || row.archived || row.customName != nil || row.color != nil
             || row.transcriptPath != nil || row.joinedVia != .created
     }
@@ -100,8 +100,8 @@ extension AppModel {
     /// is open, or (on a host) its agent still runs there. Nil: it can be
     /// archived.
     public func archiveBlocker(_ session: Session) -> String? {
-        if openSessions.openTab(forSessionID: session.id) != nil { return "Close tab to archive" }
-        if !session.host.isLocal, openSessions.remoteTabs.hasRun(sessionID: session.id, host: session.host) {
+        if openSessions.openTab(for: session.id) != nil { return "Close tab to archive" }
+        if !session.host.isLocal, openSessions.remoteTabs.hasRun(sessionID: session.sessionID, host: session.host) {
             return RemoteCopy.stopToArchive(session.host.rawValue)
         }
         return nil
@@ -147,7 +147,7 @@ extension AppModel {
             func merged(_ existing: RemoteNotice) -> RemoteNotice? {
                 guard existing.host == notice.host, case .gone(let had) = existing.kind else { return nil }
                 return RemoteNotice.gone(host: notice.host, sessions: had + sessions.filter { !had.contains($0) },
-                                         name: remoteSessionName)
+                                         name: { [self] in remoteSessionName($0, host: notice.host) })
             }
             if let shown = remoteNotice, let line = merged(shown) { remoteNotice = line; return }
             if let index = queuedRemoteNotices.firstIndex(where: { merged($0) != nil }), let line = merged(queuedRemoteNotices[index]) {
@@ -161,13 +161,14 @@ extension AppModel {
     /// A session found gone by Temple's own doing: its tab is closed
     /// already; the sidebar says so, by session.
     func remoteSessionGone(host: HostID, sessionID: String) {
-        guard let notice = RemoteNotice.gone(host: host, sessions: [sessionID], name: remoteSessionName) else { return }
+        guard let notice = RemoteNotice.gone(host: host, sessions: [sessionID],
+                                             name: { [self] in remoteSessionName($0, host: host) }) else { return }
         showRemoteNotice(notice)
     }
 
     /// A session's name as the remote bands say it.
-    private func remoteSessionName(_ sessionID: String) -> String {
-        let session = sessions.first { $0.id == sessionID }
+    private func remoteSessionName(_ sessionID: String, host: HostID) -> String {
+        let session = presentedByID[SessionKey(id: sessionID, host: host)]
         return RemoteCopy.sessionName(title: session?.displayTitle, agent: session?.agent ?? .claude,
                                       directory: session?.directory ?? "")
     }
@@ -187,8 +188,8 @@ extension AppModel {
     private func current(_ notice: RemoteNotice) -> RemoteNotice? {
         if case .gone(let sessions) = notice.kind {
             // A session opened again since is no news.
-            let left = sessions.filter { openSessions.openTab(forSessionID: $0) == nil }
-            return RemoteNotice.gone(host: notice.host, sessions: left, name: remoteSessionName)
+            let left = sessions.filter { openSessions.openTab(for: SessionKey(id: $0, host: notice.host)) == nil }
+            return RemoteNotice.gone(host: notice.host, sessions: left, name: { [self] in remoteSessionName($0, host: notice.host) })
         }
         guard case .count(let closed, let quit) = notice.kind else { return notice }
         let stopped = stoppedRemoteHandles[notice.host] ?? []
@@ -232,7 +233,8 @@ extension AppModel {
     /// it); the line then goes.
     public func actOnRemoteNotice(_ notice: RemoteNotice) {
         if case .gone(let sessions) = notice.kind {
-            guard sessions.count == 1, let id = sessions.first, let session = self.sessions.first(where: { $0.id == id }) else { return }
+            guard sessions.count == 1, let id = sessions.first,
+                  let session = presentedByID[SessionKey(id: id, host: notice.host)] else { return }
             openSessions.openSession(session)
             reconcileRemoteNotices(host: notice.host)
             return
@@ -244,7 +246,8 @@ extension AppModel {
     /// sessions found gone, or one whose row is gone: Dismiss alone).
     public func remoteNoticeAction(_ notice: RemoteNotice) -> String? {
         if case .gone(let sessions) = notice.kind {
-            guard sessions.count == 1, let id = sessions.first, self.sessions.contains(where: { $0.id == id }) else { return nil }
+            guard sessions.count == 1, let id = sessions.first,
+                  presentedByID[SessionKey(id: id, host: notice.host)] != nil else { return nil }
             return RemoteCopy.openSession
         }
         return RemoteCopy.sessionsOnMenuItem(notice.host.rawValue)
@@ -373,7 +376,7 @@ extension AppModel {
         var blocked = false
         let ticket = openSessions.remoteTabs.gate.ticket(host: host)
         for (index, session) in removal.live.enumerated() {
-            let title = trackedTitle(session)
+            let title = trackedTitle(session, host: host)
             openSessions.remoteTabs.stopTracked(handle: session.handle, host: host, agent: session.agent) { [weak self] result in
                 remaining -= 1
                 switch result {
@@ -401,17 +404,17 @@ extension AppModel {
     /// when its row's transcript is known, absent only when the host's
     /// enumeration proved no transcript carries its id, unknown otherwise
     /// (an unidentified run, or a transcript not looked up yet).
-    public func resumability(_ sessionID: String?) -> RemoteCopy.Resumability {
-        guard let sessionID, let row = overlay.rows[sessionID] else { return .unknown }
+    public func resumability(_ session: SessionKey?) -> RemoteCopy.Resumability {
+        guard let session, let row = overlay.rows[session] else { return .unknown }
         if row.transcriptPath != nil { return .kept }
-        return sessions.first(where: { $0.id == sessionID })?.transcriptConfirmedMissing == true ? .absent : .unknown
+        return presentedByID[session]?.transcriptConfirmedMissing == true ? .absent : .unknown
     }
 
     /// A tracked session's name as Running sessions shows it: its row's
     /// title, or the new-session title.
-    public func trackedTitle(_ session: RemoteTrackedSession) -> String {
+    public func trackedTitle(_ session: RemoteTrackedSession, host: HostID) -> String {
         guard let id = session.sessionID else { return session.agent.newSessionTitle }
-        return sessions.first(where: { $0.id == id })?.displayTitle ?? session.agent.newSessionTitle
+        return presentedByID[SessionKey(id: id, host: host)]?.displayTitle ?? session.agent.newSessionTitle
     }
 
     func sessionsSheetModel(_ request: RemoteSessionsRequest) -> RemoteSessionsSheetModel {
@@ -439,12 +442,15 @@ extension AppModel {
         openByIDSheet = OpenByIDRequest(host: host, sessionID: sessionID)
     }
 
-    /// ⌘K given a whole session id: a session Temple has opens; any other
-    /// opens the sheet with the id filled in, on This Mac.
+    /// ⌘K given a whole session id: a session Temple has on one host opens;
+    /// any other opens the sheet with the id filled in, on This Mac. An id
+    /// Temple has on several hosts is several sessions (ADR-041): the
+    /// sheet asks which host.
     public func openPastedSessionID(_ text: String) {
         commandPalettePresented = false
         let id = OpenByIDSheetModel.normalized(text)
-        if let member = sessions.first(where: { $0.id == id }) {
+        let members = sessions.filter { $0.sessionID == id }
+        if members.count == 1, let member = members.first {
             openPaletteResult(member)
             return
         }
@@ -475,10 +481,9 @@ extension AppModel {
                 case .transport(let line): return .transport(line)
                 }
             },
-            member: { [weak self] id in self?.sessions.first { $0.id == id } },
-            hasLiveTab: { [weak self] id, host in
-                guard let tab = self?.openSessions.openTab(forSessionID: id) else { return false }
-                return tab.host == host && tab.hasSurface
+            member: { [weak self] key in self?.presentedByID[key] },
+            hasLiveTab: { [weak self] key in
+                self?.openSessions.openTab(for: key)?.hasSurface ?? false
             },
             openMember: { [weak self] in self?.openSessions.openSession($0) },
             resume: { [weak self] in self?.openSessions.resume($0) ?? false },

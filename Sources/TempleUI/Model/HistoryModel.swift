@@ -145,16 +145,16 @@ public final class HistoryModel: ObservableObject {
     /// Open (or focus) a session in a tab. Opening an outside session joins it
     /// as `opened` on the way (ADR-023).
     var openSession: (TranscriptSummary) -> Void = { _ in }
-    var archiveMember: (String, UndoManager?) -> Void = { _, _ in }
+    var archiveMember: (SessionKey, UndoManager?) -> Void = { _, _ in }
     /// Archive several members as one undoable step. `changed` hears each
     /// undo (false) and redo (true), so the page can say what happened.
-    var archiveMembers: ([String], UndoManager?, _ changed: @escaping @MainActor (Bool) -> Void) -> Void = { _, _, _ in }
+    var archiveMembers: ([SessionKey], UndoManager?, _ changed: @escaping @MainActor (Bool) -> Void) -> Void = { _, _, _ in }
     /// Restore these memberships as one undoable step (ADR-031), reporting
     /// what the write did; `changed` hears each undo and redo.
     var restoreMembers: ([MembershipRef], UndoManager?, _ changed: @escaping @MainActor (AppModel.RestoreChange) -> Void)
         -> AppModel.RestoreReport = { _, _, _ in AppModel.RestoreReport(restored: 0, undoable: false) }
     var restoreProjectAction: (ProjectKey, UndoManager?) -> Void = { _, _ in }
-    var showInSidebar: (String) -> Void = { _ in }
+    var showInSidebar: (SessionKey) -> Void = { _ in }
     /// Whether a session runs in an open tab on the row's host, asked live
     /// when an action runs: undoing an import or archiving must not pull a
     /// session out from under its tab.
@@ -721,32 +721,36 @@ public final class HistoryModel: ObservableObject {
     public func isArchived(_ row: HistoryRow) -> Bool { row.isArchived }
 
     /// How a catalog entry stands against Temple's membership, which is
-    /// keyed by the session id alone.
+    /// keyed by the session: its id on a host (ADR-041).
     enum Standing: Equatable {
         case outside
         case member
         case conflict(JoinConflict)
     }
 
-    /// A member attaches to a catalog entry only when the host and the
-    /// member's known agent both match. An agentless (legacy) member on the
-    /// same host attaches when exactly one agent lists the id there; when
-    /// two do, which one it is cannot be told, so neither attaches.
+    /// `member` is the row for the entry's id on the entry's host, if any:
+    /// the same id on another host is another session and never stands in
+    /// the way. A member attaches when its known agent matches. An
+    /// agentless (legacy) member attaches when exactly one agent lists the
+    /// id there; when two do, which one it is cannot be told, so neither
+    /// attaches.
     nonisolated static func standing(of key: HistoryKey, member: SessionState?, otherAgentListed: Bool) -> Standing {
-        guard let member else { return .outside }
-        guard member.host == key.host else { return .conflict(.host(member.host)) }
+        // Only the entry's own host's member: another host's is another
+        // session, and stands in nothing's way.
+        guard let member, member.host == key.host else { return .outside }
         if let agent = member.agent {
             return key.agent == nil || key.agent == agent ? .member : .conflict(.agent(agent))
         }
-        return otherAgentListed ? .conflict(.host(member.host)) : .member
+        return otherAgentListed ? .conflict(.agentUnknown) : .member
     }
 
     /// The live answer for an import: against the rows as they are now,
-    /// not as the page last drew them. Only a session with no row at all is
-    /// outside: a member, on whatever host or agent, never is (`standing`).
+    /// not as the page last drew them. Only a session with no row on its
+    /// host is outside: a member there, as whatever agent, never is
+    /// (`standing`). The same id on another host is another session.
     private func isImportable(_ summary: TranscriptSummary) -> Bool {
         overlayLookups += 1
-        return overlay.rows[summary.id] == nil
+        return overlay.rows[SessionKey(id: summary.id, host: summary.locator.host)] == nil
     }
 
     /// Search, a filter or the chip is narrowing the page ("Showing 47 of 3,810").
@@ -1231,7 +1235,7 @@ public final class HistoryModel: ObservableObject {
 
     private func askToImport(_ sessions: [TranscriptSummary], peers: [PeerRow] = []) {
         let candidates = sessions.filter(isImportable)
-        let peerCandidates = peers.filter { overlay.rows[$0.id] == nil && peerIsCurrent($0) }
+        let peerCandidates = peers.filter { overlay.rows[$0.session] == nil && peerIsCurrent($0) }
         guard !candidates.isEmpty || !peerCandidates.isEmpty else { return }
         if peerCandidates.isEmpty {
             pendingImport = makeImportRequest(for: candidates)
@@ -1324,10 +1328,10 @@ public final class HistoryModel: ObservableObject {
 
     private func finishImport(_ sessions: [TranscriptSummary], peers: [PeerRow] = [], undoManager: UndoManager?) {
         // Redo replays rows captured earlier: skip any that joined since.
-        let attempted = sessions.filter { !overlay.isTempleSession($0.id) }
-        let attemptedPeers = peers.filter { !overlay.isTempleSession($0.id) }
+        let attempted = sessions.filter { !overlay.isTempleSession(SessionKey(id: $0.id, host: $0.locator.host)) }
+        let attemptedPeers = peers.filter { !overlay.isTempleSession($0.session) }
         guard !attempted.isEmpty || !attemptedPeers.isEmpty else { return }
-        // One outcome per row: two rows sharing an id (two hosts, two
+        // One outcome per row: two rows sharing an id on one host (two
         // agents) are not both imported — the second is refused, with why.
         let outcomes = overlay.import(attempted)
         var imported: [HistoryKey] = []
@@ -1436,7 +1440,7 @@ public final class HistoryModel: ObservableObject {
                                                    agent: $0.agent, incarnation: incarnations[$0],
                                                    marks: marks[$0] ?? CarriedMarks(name: nil, color: nil))
         }))
-        let leftKeys = candidates.filter { left.contains($0.sessionID) }
+        let leftKeys = candidates.filter { left.contains(SessionKey(id: $0.sessionID, host: $0.host)) }
         justImported.subtract(leftKeys)
         showNotice(Notice(text: Self.undoNotice(total: keys.count, left: leftKeys.count,
                                                 open: open.count, changed: candidates.count - leftKeys.count),
@@ -1575,7 +1579,7 @@ extension HistoryModel {
     /// folder, carrying its name and colour into a row the launch makes.
     private func openPeer(_ peer: PeerRow, title: String) -> Bool {
         guard peerIsCurrent(peer) else { return false }
-        if let live = overlay.rows[peer.id], live.host != peer.host || (live.agent != nil && live.agent != peer.agent) {
+        if let live = overlay.rows[peer.session], live.agent != nil && live.agent != peer.agent {
             return false
         }
         // A member resumes in its own folder through the same handoff, so
@@ -1583,7 +1587,7 @@ extension HistoryModel {
         let note = peer.tabThere ? "\(peer.host.displayName)'s Temple also has a tab for this session, so it may be running there too." : nil
         return resumeSession(ResumeRequest(host: peer.host, agent: peer.agent, id: peer.id, locator: peer.locator,
                                            title: title, launchDirectory: peer.directory,
-                                           carried: overlay.rows[peer.id] == nil ? peer.marks : nil,
+                                           carried: overlay.rows[peer.session] == nil ? peer.marks : nil,
                                            peerTabNote: note))
     }
 

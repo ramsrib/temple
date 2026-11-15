@@ -286,7 +286,7 @@ struct SidebarView: View {
             .onChange(of: model.sidebarReveal) { _, reveal in
                 guard let reveal else { return }
                 withAnimation(.easeOut(duration: 0.2)) {
-                    proxy.scrollTo(Self.rowScrollID(reveal.sessionID), anchor: .center)
+                    proxy.scrollTo(Self.rowScrollID(reveal.session), anchor: .center)
                 }
             }
         }
@@ -294,7 +294,8 @@ struct SidebarView: View {
 
     /// A project row's scroll target. Pinned copies of a row carry none, so a
     /// reveal lands on the row inside its project.
-    static func rowScrollID(_ sessionID: String) -> String { "sidebar-row:" + sessionID }
+    /// The session's id on its host: the same id on two hosts is two rows.
+    static func rowScrollID(_ session: SessionKey) -> String { "sidebar-row:\(session.host.rawValue)/\(session.id)" }
 
     /// A group heading without a disclosure, in the project headers' language.
     private func groupLabel(_ title: String) -> some View {
@@ -879,7 +880,7 @@ private struct ProjectDisclosure: View {
                     .background(Color.clear.id(SidebarView.rowScrollID(session.id)))
                     .opacity(inHand ? 0.4 : 1)
                     .transition(.opacity)
-                    .onDrop(of: [Self.dragType], delegate: dropDelegate(row: session.id, edge: .bottom))
+                    .onDrop(of: [Self.dragType], delegate: dropDelegate(row: session.sessionID, edge: .bottom))
                     .overlay(alignment: .bottom) {
                         if dropIndicator == .bottom, !hasFooterRow, offset == shownSessions.count - 1 {
                             dropLine

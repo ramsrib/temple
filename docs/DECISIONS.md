@@ -2711,3 +2711,63 @@ drag alike, and still passes the first frame of a zoom through); holding
 edge drags too (the terminal would stop following the pointer); bracketing
 only Temple's own double-click handler (Window ▸ Zoom, Fill and tiling
 animate the same way).
+
+## ADR-041 — A session is its id on a host
+**Date:** 2026-11-15 · **Status:** Accepted; supersedes ADR-036's "session ids stay globally unique"
+
+The owner copied a Claude Code transcript from one Mac to another with
+rsync, and `claude --resume <id>` worked on the second. Temple refused to
+open it there: `session_state` was keyed by the id alone (remote-ssh.md
+section 8), the id already had a row on the first Mac, and Open Session by
+ID said "Temple here already has this session, on this Mac". Archiving
+did not help (the row stays), and nothing moved a row to another host.
+The owner's rule: a session id is unique only on one machine. Design and
+its review: [docs/designs/session-host-key.md](./designs/session-host-key.md).
+
+**Decisions.**
+
+- **A session is `(id, host)`, everywhere.** `SessionKey` names it in the
+  database API (every read and write takes the host; none defaults it),
+  observers, the merged engine snapshot (`SessionsSnapshot`), the fact
+  committer, the app's rows (`Session.id`), tabs (`SessionTab.sessionKey`),
+  saved tabs, History's projection, the archive sweep, notifications and
+  the `temple` command. Engines stay one per host with their own ids.
+- **The same id on two hosts is two sessions.** Two rows, two members,
+  two tabs that can be open at once; marks (name, colour, pin, archive)
+  are per row. Only another agent on the same host is a conflict.
+  `hostConflict`, the merge's "owner of an id" and Open by ID's
+  "elsewhere" state are gone.
+- **`v14-session-host-key` rebuilds two tables.** `session_state` is keyed
+  by `(id, host)`, every column and incarnation kept and the trigger
+  recreated; `open_tabs` gains `host` (part of its keys, backfilled from
+  each tab's row, copied in restore order); `process_registry` gains
+  `host`. Not additive, approved by the owner: every build with the
+  newer-schema guard then says "Update Temple".
+- **The migration waits for every other Temple to quit.** An older Temple
+  still running on the file would keep writing by id alone into rows keyed
+  by host. Before a migration in `soleAccessMigrations` runs, Temple asks
+  the kernel which processes have the file open (by device and inode,
+  `FileHolders`); if another Temple process does, it opens nothing and
+  says which to quit. Non-Temple readers (a backup) don't count.
+- **The command line means this Mac unless told otherwise** (owner,
+  2026-11-15: "assume when --host is not passed, it always means local").
+  `temple sessions get|open|close` and `temple history get` act on this
+  Mac's session with the id; `--host NAME` names one on another machine, and
+  one Temple has no row of there is looked up on that host. A host Temple
+  doesn't have is said as that. Control protocol 2: requests may carry
+  `host`, sessions always say theirs.
+- **A notification from an older build** carries the id alone; its click
+  opens the session only when exactly one host has the id.
+
+**Accepted limits.** A host is its configured name: two aliases for one
+machine are two namespaces. Another Temple's saved tabs (ADR-039's "In a
+tab on <host>") are still matched by id alone, because the fixed
+projection has to read files from before v14 too; at worst that note
+shows for the other Temple's copy of an id that is open there on a third
+machine. Marks are not copied with a transcript.
+
+**Rejected.** A "Move to <host>" action on the old key (it keeps one
+session per id, so both copies can't be in Temple); encoding the host into
+the id (every transcript and CLI boundary would translate); keeping a
+unique id with a second table of copies (two places to keep in step for
+every write).

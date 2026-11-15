@@ -20,7 +20,7 @@ struct SessionRow: View {
     private var hovering: Bool { rawHovering && !overlayActive }
 
     private var isHighlighted: Bool { model.highlightedID == session.id }
-    private var openTab: SessionTab? { model.openSessions.openTab(forSessionID: session.id) }
+    private var openTab: SessionTab? { model.openSessions.openTab(for: session.id) }
     /// Only an *open* tab has activity worth a dot; a closed session shows none.
     private var activity: ActivityState? { openTab?.activity }
     private var isPinned: Bool { model.overlay.isPinned(session.id) }
@@ -117,7 +117,7 @@ struct SessionRow: View {
                isPresented: $confirmingStop) {
             // Cancel is the default; Stop ends the agent.
             Button("Stop", role: .destructive) {
-                model.openSessions.remoteTabs.stopSession(sessionID: session.id, host: session.host)
+                model.openSessions.remoteTabs.stopSession(sessionID: session.sessionID, host: session.host)
             }
             Button("Cancel", role: .cancel) {}
                 .keyboardShortcut(.defaultAction)
@@ -129,23 +129,23 @@ struct SessionRow: View {
     /// The Stop question for this row's working agent, naming it.
     private var stopQuestion: (title: String, message: String) {
         model.openSessions.remoteTabs.stopQuestion(host: session.host, agent: session.agent ?? .claude,
-                                                   title: model.displayTitle(session), sessionID: session.id,
+                                                   title: model.displayTitle(session), sessionID: session.sessionID,
                                                    resumable: model.resumability(session.id))
     }
 
     /// A session on a host whose agent still runs there: Stop on <host>,
     /// and its archive waits for that.
     private var runsOnHost: Bool {
-        !session.host.isLocal && model.openSessions.remoteTabs.hasRun(sessionID: session.id, host: session.host)
+        !session.host.isLocal && model.openSessions.remoteTabs.hasRun(sessionID: session.sessionID, host: session.host)
     }
 
     /// Stop on <host>: a working agent asks first; one waiting for input,
     /// or with no tab here, stops at once.
     private func stopOnHost() {
-        if model.openSessions.remoteTabs.workingTab(host: session.host, sessionID: session.id) != nil {
+        if model.openSessions.remoteTabs.workingTab(host: session.host, sessionID: session.sessionID) != nil {
             confirmingStop = true
         } else {
-            model.openSessions.remoteTabs.stopSession(sessionID: session.id, host: session.host)
+            model.openSessions.remoteTabs.stopSession(sessionID: session.sessionID, host: session.host)
         }
     }
 
@@ -180,13 +180,13 @@ struct SessionRow: View {
         Button("Copy resume command") {
             copyToPasteboard(model.resumeArgv(for: session).joined(separator: " "))
         }
-        Button("Copy session ID") { copyToPasteboard(session.id) }
+        Button("Copy session ID") { copyToPasteboard(session.sessionID) }
         if let url = session.transcript?.localURL {
             Button("Reveal session file in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([url])
             }
         }
-        Button("Show in History") { model.showInHistory(sessionID: session.id) }
+        Button("Show in History") { model.showInHistory(session.id) }
         // A session on a host with a live run there: the one-command stop.
         if runsOnHost {
             Divider()

@@ -3,9 +3,9 @@ import XCTest
 @testable import TempleUI
 import TempleTestSupport
 
-/// Per-host snapshots merged by current row ownership (C11): an id comes
-/// only from the engine of the host whose row holds it now, and the merge is
-/// recomputed on ownership changes as well as on snapshots.
+/// Per-host snapshots merged into one, keyed by session (ADR-041): each
+/// engine's ids are its own host's sessions, so the same id from two hosts
+/// is two entries and neither host's snapshot can stand for the other's.
 @MainActor
 final class EngineSetTests: XCTestCase {
     private let a = HostID(rawValue: "host-a")
@@ -21,97 +21,76 @@ final class EngineSetTests: XCTestCase {
         .loaded(TranscriptLocator(host: host, path: "/\(host.rawValue)/\(id).jsonl"))
     }
 
-    func testTheMergeKeepsEachIDFromItsOwnersEngineOnly() {
+    private func facts(_ host: HostID, locatedOn locatorHost: HostID? = nil) -> AuthorizedFacts {
+        AuthorizedFacts(authorization: .init(runEpoch: 1, opRevision: 1, incarnation: host.rawValue),
+                        locator: TranscriptLocator(host: locatorHost ?? host, path: "/x"), agent: .claude,
+                        signature: TranscriptSignature(modifiedAt: Date(timeIntervalSince1970: 1), size: 1, identity: 1),
+                        coverage: 1, sharedRevision: nil, summary: nil)
+    }
+
+    func testTheMergeKeysEachEnginesIDsByItsHost() {
         let perHost: [HostID: EngineSnapshot] = [
-            a: EngineSnapshot(generation: 5, resolutions: ["moved": loaded(a, "moved"), "a-only": loaded(a, "a-only")]),
-            b: EngineSnapshot(generation: 2, resolutions: ["moved": loaded(b, "moved")])
+            a: EngineSnapshot(generation: 5, resolutions: ["copied": loaded(a, "copied"), "a-only": loaded(a, "a-only")],
+                              facts: ["copied": facts(a), "stray": facts(a, locatedOn: b)],
+                              memberships: ["copied": MembershipRef(id: "copied", host: a, incarnation: "ia"),
+                                            "wrong": MembershipRef(id: "wrong", host: b, incarnation: "x")]),
+            b: EngineSnapshot(generation: 2, resolutions: ["copied": loaded(b, "copied")], facts: ["copied": facts(b)])
         ]
-        let owners: [String: HostID] = ["moved": b, "a-only": a]
-        let merged = EngineSnapshot.merged(perHost: perHost, owner: { owners[$0] }, generation: 9)
+        let merged = EngineSnapshot.merged(perHost: perHost, generation: 9)
         XCTAssertEqual(merged.generation, 9)
-        XCTAssertEqual(merged.resolutions, ["moved": loaded(b, "moved"), "a-only": loaded(a, "a-only")])
-        XCTAssertTrue(EngineSnapshot.merged(perHost: perHost, owner: { _ in nil }, generation: 1).resolutions.isEmpty)
+        XCTAssertEqual(merged.resolutions, [SessionKey(id: "copied", host: a): loaded(a, "copied"),
+                                            SessionKey(id: "a-only", host: a): loaded(a, "a-only"),
+                                            SessionKey(id: "copied", host: b): loaded(b, "copied")])
+        XCTAssertEqual(Set(merged.facts.keys), [SessionKey(id: "copied", host: a), SessionKey(id: "copied", host: b)],
+                       "facts whose transcript is on another host are not that engine's to give")
+        XCTAssertEqual(Array(merged.memberships.keys), [SessionKey(id: "copied", host: a)],
+                       "a membership naming another host is not that engine's")
     }
 
-    /// The new host's snapshot arrives before the row moves: it is held back
-    /// until the ownership change, which then brings it in — and the old
-    /// host's stale verdict never wins.
-    func testASnapshotThatArrivesBeforeTheOwnershipChangeIsNotLost() async throws {
+    /// The same id on two hosts: each host's snapshot lands as its own
+    /// session, and a later snapshot from one never moves the other.
+    func testTheSameIDOnTwoHostsIsTwoSessionsInTheMerge() async throws {
         let engineA = FakeEngine(host: a), engineB = FakeEngine(host: b)
         let set = EngineSet(engines: [engineA, engineB])
-        var owner: HostID? = a
-        set.owner = { _ in owner }
-        var updates: [EngineSnapshot] = []
-        set.start { updates.append($0) }
-        engineA.publish(EngineSnapshot(generation: 1, resolutions: ["id": loaded(a, "id")]))
-        try await waitFor { set.latest?.resolutions["id"] == self.loaded(self.a, "id") }
-        engineB.publish(EngineSnapshot(generation: 1, resolutions: ["id": loaded(b, "id")]))
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(set.latest?.resolutions["id"], loaded(a, "id"), "still A's row")
-        owner = b
-        set.ownershipChanged()
-        XCTAssertEqual(set.latest?.resolutions["id"], loaded(b, "id"))
-        // A late snapshot from A after the move cannot take it back.
-        engineA.publish(EngineSnapshot(generation: 2, resolutions: ["id": loaded(a, "id")]))
-        try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(set.latest?.resolutions["id"], loaded(b, "id"))
-        set.stop()
-    }
-
-    /// The ownership change first, then the new host's snapshot.
-    func testAnOwnershipChangeBeforeTheNewHostsSnapshotDropsTheOldVerdict() async throws {
-        let engineA = FakeEngine(host: a), engineB = FakeEngine(host: b)
-        let set = EngineSet(engines: [engineA, engineB])
-        var owner: HostID? = a
-        set.owner = { _ in owner }
         set.start { _ in }
-        engineA.publish(EngineSnapshot(generation: 1, resolutions: ["id": loaded(a, "id")]))
-        try await waitFor { set.latest?.resolutions["id"] != nil }
-        owner = b
-        set.ownershipChanged()
-        XCTAssertNil(set.latest?.resolutions["id"], "A's verdict is not B's row's")
-        engineB.publish(EngineSnapshot(generation: 1, resolutions: ["id": loaded(b, "id")]))
-        try await waitFor { set.latest?.resolutions["id"] == self.loaded(self.b, "id") }
-        set.stop()
-    }
-
-    /// Facts follow ownership exactly like resolutions.
-    func testFactsAreMergedByOwnershipToo() async throws {
-        let engineA = FakeEngine(host: a), engineB = FakeEngine(host: b)
-        let set = EngineSet(engines: [engineA, engineB])
-        var owner: HostID? = a
-        set.owner = { _ in owner }
-        set.start { _ in }
-        func facts(_ host: HostID) -> AuthorizedFacts {
-            AuthorizedFacts(authorization: .init(runEpoch: 1, opRevision: 1, incarnation: host.rawValue),
-                            locator: TranscriptLocator(host: host, path: "/x"), agent: .claude,
-                            signature: TranscriptSignature(modifiedAt: Date(timeIntervalSince1970: 1), size: 1, identity: 1),
-                            coverage: 1, sharedRevision: nil, summary: nil)
-        }
+        let onA = SessionKey(id: "id", host: a), onB = SessionKey(id: "id", host: b)
         engineA.publish(EngineSnapshot(generation: 1, resolutions: ["id": loaded(a, "id")], facts: ["id": facts(a)]))
-        engineB.publish(EngineSnapshot(generation: 1, resolutions: ["id": loaded(b, "id")], facts: ["id": facts(b)]))
-        try await waitFor { set.latest?.facts["id"]?.locator.host == self.a }
-        owner = b
-        set.ownershipChanged()
-        XCTAssertEqual(set.latest?.facts["id"]?.locator.host, b)
+        engineB.publish(EngineSnapshot(generation: 1, resolutions: ["id": .confirmedAbsent], facts: ["id": facts(b)]))
+        try await waitFor { set.latest?.resolutions.count == 2 }
+        XCTAssertEqual(set.latest?.resolutions[onA], loaded(a, "id"))
+        XCTAssertEqual(set.latest?.resolutions[onB], .confirmedAbsent)
+        XCTAssertEqual(set.latest?.facts[onA]?.locator.host, a)
+        XCTAssertEqual(set.latest?.facts[onB]?.locator.host, b)
+        engineA.publish(EngineSnapshot(generation: 2, resolutions: ["id": .unreadable]))
+        try await waitFor { set.latest?.resolutions[onA] == .unreadable }
+        XCTAssertEqual(set.latest?.resolutions[onB], .confirmedAbsent, "host B's session is untouched")
+        XCTAssertNil(set.latest?.facts[onA], "A's revoked facts are gone")
+        XCTAssertNotNil(set.latest?.facts[onB])
+        set.remove(host: b)
+        XCTAssertNil(set.latest?.resolutions[onB], "a removed host's sessions leave the merge")
+        XCTAssertEqual(set.latest?.resolutions[onA], .unreadable)
         set.stop()
     }
 
-    /// The app's own wiring: a row that moves host in the database moves the
-    /// merge with it (AppModel calls `ownershipChanged` on row changes).
-    func testAppModelRemergesWhenARowChangesOwner() async throws {
+    /// The app's own wiring: the same id on two hosts is two rows, each
+    /// presented with its own host's verdict, and a leave on one host
+    /// leaves the other row as it was.
+    func testAppModelPresentsEachHostsSessionWithItsOwnVerdict() async throws {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "id", via: .imported, core: SessionCore(host: a))
+        try db.join(sessionID: "id", via: .imported, core: SessionCore(host: b))
         let engineA = FakeEngine(host: a), engineB = FakeEngine(host: b)
         let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [engineA, engineB], database: db,
                            settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         app.start()
         engineA.publish(EngineSnapshot(generation: 1, resolutions: ["id": loaded(a, "id")]))
         engineB.publish(EngineSnapshot(generation: 1, resolutions: ["id": loaded(b, "id")]))
-        try await waitFor { app.sessions.first?.resolution == self.loaded(self.a, "id") }
+        func row(_ host: HostID) -> Session? { app.sessions.first { $0.id == SessionKey(id: "id", host: host) } }
+        try await waitFor { row(self.a)?.resolution == self.loaded(self.a, "id") && row(self.b)?.resolution == self.loaded(self.b, "id") }
+        XCTAssertEqual(app.sessions.count, 2)
         XCTAssertTrue(try db.leave(sessionID: "id", host: a))
-        try db.join(sessionID: "id", via: .imported, core: SessionCore(host: b))
-        try await waitFor { app.sessions.first?.resolution == self.loaded(self.b, "id") }
+        try await waitFor { row(self.a) == nil }
+        XCTAssertEqual(row(b)?.resolution, loaded(b, "id"))
     }
 
     /// One pass, one publication: two members whose reads are both in flight

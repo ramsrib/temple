@@ -93,16 +93,17 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     public var attentionHandler: ((SessionTab, _ title: String, _ body: String) -> Void)?
     /// The agent retitled itself (sessionID, title) — AppModel persists it so the
     /// sidebar/palette show it, live and after the session closes.
-    public var titleHandler: ((_ sessionID: String, _ host: HostID, _ title: String) -> Void)?
+    public var titleHandler: ((_ session: SessionKey, _ title: String) -> Void)?
     /// A tab now runs this session: `.created` for one started here (a minted
     /// Claude id, or the Codex id adopted for a session this model launched),
     /// `.opened` for one resumed or restored. AppModel makes it a Temple session.
-    /// A refusal (the id is Temple's on another host) stops the spawn, or
-    /// keeps an adopting tab provisional; a failed write does not.
+    /// A refusal (the id is Temple's on this host as the other agent's)
+    /// stops the spawn, or keeps an adopting tab provisional; a failed write
+    /// does not.
     public var openedHandler: ((SessionOpen) -> JoinResult)?
-    public var touchHandler: ((_ sessionID: String, _ host: HostID, _ at: Date?) -> Void)?
+    public var touchHandler: ((_ session: SessionKey, _ at: Date?) -> Void)?
     /// A new session's tab went away before anything was sent to it.
-    public var unstartedHandler: ((_ sessionID: String, _ host: HostID) -> Void)?
+    public var unstartedHandler: ((_ session: SessionKey) -> Void)?
     /// Whether a text field holds the window's keyboard right now (the
     /// sidebar's search, a rename). A surface that arrives late, after an
     /// activation that could not focus it (a session on a host connecting),
@@ -113,18 +114,19 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// whose last test proved tmux unusable). The launcher, ⌘N and the `+`
     /// menu apply it themselves; ⌘T asks here.
     public var canStartOnHost: (HostID) -> Bool = { _ in true }
-    public var launchDirectoryHandler: ((_ sessionID: String, _ host: HostID, _ directory: String) -> Void)?
+    public var launchDirectoryHandler: ((_ session: SessionKey, _ directory: String) -> Void)?
     /// A new Codex session on a host was identified by the user's yes: the
     /// candidate's first prompt stands in for its row's title until the
     /// transcript's own arrives (display only, never stored).
-    public var titleHintHandler: ((_ sessionID: String, _ title: String) -> Void)?
+    public var titleHintHandler: ((_ session: SessionKey, _ title: String) -> Void)?
     /// Tabs on hosts: their open, exit, close, the quit's plan for them and
     /// a host's retirement (docs/designs/remote-ssh.md sections 3 to 5).
     public private(set) lazy var remoteTabs = RemoteTabController(model: self)
     private var awaitingExitDiagnosis: Set<SessionTab.ID> = []
 
-    /// Transitional lookup: legacy callers, restore and reopen prefer the durable row.
-    public var sessionRow: (String) -> Session? = { _ in nil }
+    /// Transitional lookup: legacy callers, restore and reopen prefer the
+    /// durable row. A session is its id on a host (ADR-041).
+    public var sessionRow: (SessionKey) -> Session? = { _ in nil }
     /// The owning host's folder evidence, asked after an agent exits: a
     /// folder deleted while it ran gets its own line. (Before a spawn, the
     /// launcher's `prepare` is what proves a folder gone.)
@@ -134,8 +136,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Resolution updates retain the diagnosis interest after an early exit.
     public func refreshExitedResumeDiagnoses() {
         for tab in tabs where awaitingExitDiagnosis.contains(tab.id) {
-            guard case .exited = tab.activity, let sid = tab.sessionID else { continue }
-            if let known = sessionKnown(sid) {
+            guard case .exited = tab.activity, let key = tab.sessionKey else { continue }
+            if let known = sessionKnown(key) {
                 tab.resumeTargetMissing = !known
                 awaitingExitDiagnosis.remove(tab.id)
             }
@@ -153,8 +155,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                   tab.surface.map(ObjectIdentifier.init) == exited else { return }
             tab.missingWorkingDirectory = result == .missing ? path : nil
         }
-        guard tab.isResume, let sid = tab.sessionID else { return }
-        if let known = sessionKnown(sid) { tab.resumeTargetMissing = !known }
+        guard tab.isResume, let key = tab.sessionKey else { return }
+        if let known = sessionKnown(key) { tab.resumeTargetMissing = !known }
         else { awaitingExitDiagnosis.insert(tab.id) }
     }
 
@@ -162,7 +164,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// latest engine snapshot (AppModel wires it); nil means "can't say yet"
     /// because resolution is unfinished — and no verdict is recorded. Only a provable absence
     /// annotates a failure; this can prove a missing target, never a good one.
-    public var sessionKnown: (_ sessionID: String) -> Bool? = { _ in nil }
+    public var sessionKnown: (_ session: SessionKey) -> Bool? = { _ in nil }
 
     public init(surfaceFactory: TerminalSurfaceFactory,
                 appearanceProvider: @escaping () -> TerminalAppearance,
@@ -236,18 +238,20 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         return result
     }
 
-    func sessionTab(withSessionID id: String) -> SessionTab? {
-        tabs.first { $0.kind == .session && $0.sessionID == id }
+    /// The tab of a session: its id on its host. A tab of the same id on
+    /// another host is another session's (ADR-041).
+    func sessionTab(for key: SessionKey) -> SessionTab? {
+        tabs.first { $0.kind == .session && $0.sessionKey == key }
     }
 
-    /// The open tab for a session id, if any (used by the sidebar for open/activity state).
-    /// Open session ids across ALL projects, in tab order (⌘K switcher).
-    public var openSessionIDsInTabOrder: [String] {
-        tabs.filter { $0.kind == .session }.compactMap(\.sessionID)
+    /// Open sessions across ALL projects, in tab order (⌘K switcher).
+    public var openSessionKeysInTabOrder: [SessionKey] {
+        tabs.filter { $0.kind == .session }.compactMap(\.sessionKey)
     }
 
-    public func openTab(forSessionID id: String) -> SessionTab? {
-        sessionTab(withSessionID: id)
+    /// The open tab for a session, if any (used by the sidebar for open/activity state).
+    public func openTab(for key: SessionKey) -> SessionTab? {
+        sessionTab(for: key)
     }
 
     private func tab(for surface: TerminalSurface) -> SessionTab? {
@@ -285,7 +289,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// session").
     public func openSession(_ session: Session) {
         // Focusing a live process does not require resume facts or spawn again.
-        if let existing = sessionTab(withSessionID: session.id), existing.hasSurface {
+        if let existing = sessionTab(for: session.id), existing.hasSurface {
             focusOrReconnect(existing)
             return
         }
@@ -293,13 +297,13 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             logNonOpenable(session)
             return
         }
-        if let existing = sessionTab(withSessionID: session.id) {
+        if let existing = sessionTab(for: session.id) {
             existing.transcriptHint = session.transcript
             existing.prepareResume(session)
             activate(existing)
             return
         }
-        let tab = SessionTab(kind: .session, sessionID: session.id, agent: agent,
+        let tab = SessionTab(kind: .session, sessionID: session.sessionID, agent: agent,
             projectPath: directory, title: session.displayTitle,
             isResume: true, host: session.host)
         tab.transcriptHint = session.transcript
@@ -310,31 +314,33 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     private func logNonOpenable(_ session: Session) {
         let reason = session.agent == nil ? "agent is unknown" : "directory is unknown"
-        TempleUILog.launch.notice("session not opened: id=\(session.id, privacy: .public) reason=\(reason, privacy: .public)")
+        TempleUILog.launch.notice("session not opened: id=\(session.sessionID, privacy: .public) host=\(session.host.rawValue, privacy: .public) reason=\(reason, privacy: .public)")
     }
 
     /// A `ResumeRequest`: a live tab for the same host, agent and id is
     /// focused, a restored chip resumes in place, a member with a recorded
     /// folder resumes in its folder, and anything else launches in the
     /// request's folder. The join happens at launch, as for every resume,
-    /// and nothing runs unless it succeeds (`launchRefusal`). A row or tab
-    /// for this id on another host or as another agent is not this
-    /// session: refused, and the caller says why. Returns whether a tab now
-    /// shows the session.
+    /// and nothing runs unless it succeeds (`launchRefusal`). The session is
+    /// the id on the request's host (ADR-041): a row or tab for it there as
+    /// another agent is not this session, refused, and the caller says why.
+    /// The same id on another host is another session, and no obstacle.
+    /// Returns whether a tab now shows the session.
     @discardableResult
     public func resume(_ request: ResumeRequest) -> Bool {
         // The tab set is frozen once quitting starts (an answer that comes
         // back then opens nothing).
         guard !isQuitting else { return false }
-        if let row = sessionRow(request.id), row.host != request.host || (row.agent != nil && row.agent != request.agent) {
-            TempleUILog.launch.notice("resume refused for \(request.id, privacy: .public): the row is another host's or agent's")
+        let key = SessionKey(id: request.id, host: request.host)
+        if let row = sessionRow(key), row.agent != nil && row.agent != request.agent {
+            TempleUILog.launch.notice("resume refused for \(request.id, privacy: .public) on \(request.host.rawValue, privacy: .public): the row is another agent's")
             return false
         }
-        if let existing = sessionTab(withSessionID: request.id) {
-            guard existing.host == request.host, existing.agent == request.agent else { return false }
+        if let existing = sessionTab(for: key) {
+            guard existing.agent == request.agent else { return false }
             if existing.hasSurface { focusOrReconnect(existing); return true }
             existing.peerTabNote = request.peerTabNote ?? existing.peerTabNote
-            if let row = sessionRow(request.id), row.canResume {
+            if let row = sessionRow(key), row.canResume {
                 openSession(row)
                 return true
             }
@@ -345,9 +351,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             activate(existing)
             return true
         }
-        if let row = sessionRow(request.id), row.canResume {
+        if let row = sessionRow(key), row.canResume {
             openSession(row)
-            sessionTab(withSessionID: request.id)?.peerTabNote = request.peerTabNote
+            sessionTab(for: key)?.peerTabNote = request.peerTabNote
             return true
         }
         let tab = SessionTab(kind: .session, sessionID: request.id, agent: request.agent,
@@ -363,11 +369,12 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     }
 
     public func openSession(_ session: TranscriptSummary) {
-        if let row = sessionRow(session.id) {
+        let key = SessionKey(id: session.id, host: session.locator.host)
+        if let row = sessionRow(key) {
             openSession(row)
             return
         }
-        if let existing = sessionTab(withSessionID: session.id) {
+        if let existing = sessionTab(for: key) {
             existing.transcriptHint = session.locator
             activate(existing)
             return
@@ -433,8 +440,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Codex reconcile seam (ADR-008): rebind a provisional tab to its real id.
     public func adopt(sessionID: String, for tabID: SessionTab.ID, locator: TranscriptLocator? = nil) {
         guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
-        // Join before binding: an id Temple already has on another host is
-        // never bound to this tab, which stays provisional.
+        // Join before binding: an id Temple already has on this host as the
+        // other agent's is never bound to this tab, which stays provisional.
         let open = SessionOpen(id: sessionID, host: tab.host, via: .created, agent: .codex,
                                locator: locator?.host == tab.host ? locator : nil)
         if let conflict = openedHandler?(open).conflict {
@@ -443,12 +450,13 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         }
         tab.sessionID = sessionID
         tab.isProvisional = false
+        let key = SessionKey(id: sessionID, host: tab.host)
         if let launch = tab.launchObservation {
-            if let directory = launch.directory { launchDirectoryHandler?(sessionID, tab.host, directory) }
-            if !isQuitting { touchHandler?(sessionID, tab.host, launch.at) }
+            if let directory = launch.directory { launchDirectoryHandler?(key, directory) }
+            if !isQuitting { touchHandler?(key, launch.at) }
         }
         if case .running(let pid) = tab.surface?.processState ?? .notStarted {
-            registry.register(pid: pid, sessionID: sessionID)
+            registry.register(pid: pid, session: key)
         }
         persist()
     }
@@ -483,8 +491,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// spawn then records that folder on the row). A chip neither can place
     /// says so on screen instead of silently not opening.
     private func prepareInertResume(_ tab: SessionTab) -> Bool {
-        guard tab.kind == .session, tab.isResume, !tab.hasSurface, let sid = tab.sessionID,
-              let row = sessionRow(sid) else { return true }
+        guard tab.kind == .session, tab.isResume, !tab.hasSurface, let key = tab.sessionKey,
+              let row = sessionRow(key) else { return true }
         let agent = row.agent ?? tab.agent
         guard let directory = row.directory ?? (tab.projectPath.isEmpty ? nil : tab.projectPath) else {
             logNonOpenable(row)
@@ -510,7 +518,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             pendingRestoreActivation = nil
             return
         }
-        guard let sid = tab.sessionID, let row = sessionRow(sid), row.directory != nil else { return }
+        guard let key = tab.sessionKey, let row = sessionRow(key), row.directory != nil else { return }
         pendingRestoreActivation = nil
         activate(tab)
     }
@@ -565,7 +573,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         tab.missingWorkingDirectory = nil
         tab.resumeTargetMissing = false
         tab.resumeTargetAbsentAtLaunch = tab.isResume
-            && tab.sessionID.flatMap(sessionRow)?.transcriptConfirmedMissing == true
+            && tab.sessionKey.flatMap(sessionRow)?.transcriptConfirmedMissing == true
         // Every spawn needs a folder, row or no row: an empty cwd starts the
         // agent in Temple's own working directory. An orphan restored chip
         // or a catalog session that never recorded one stops here.
@@ -594,7 +602,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             tab.activity = .exited(status: -1)
             return
         }
-        // A session Temple already has on another host is not run here.
+        // A session Temple has on this host as the other agent's is not run.
         if let sid = tab.sessionID,
            let refusal = openedHandler?(SessionOpen(id: sid, host: tab.host, via: tab.isResume ? .opened : .created,
                                                     agent: tab.agent, locator: tab.transcriptHint,
@@ -636,9 +644,9 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 self.handleLaunchEvent(event, for: tab)
             }
         }
-        if let sid = tab.sessionID, !isQuitting { touchHandler?(sid, tab.host, spawnedAt) }
-        if case .running(let pid) = surface.processState, let sid = tab.sessionID {
-            registry.register(pid: pid, sessionID: sid)
+        if let key = tab.sessionKey, !isQuitting { touchHandler?(key, spawnedAt) }
+        if case .running(let pid) = surface.processState, let key = tab.sessionKey {
+            registry.register(pid: pid, session: key)
         }
         tab.activity = .running
         // Item E: a freshly spawned agent boots into .running; if it never rings
@@ -669,7 +677,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         case .directoryEstablished(let directory):
             guard tab.launchObservation != nil else { return }
             tab.launchObservation?.directory = directory
-            if let sid = tab.sessionID { launchDirectoryHandler?(sid, tab.host, directory) }
+            if let key = tab.sessionKey { launchDirectoryHandler?(key, directory) }
         case .failed(let category, let message):
             TempleUILog.launch.notice("launch failed before the agent ran: \(category.rawValue, privacy: .public)")
             tab.launchFailure = LaunchFailure(category: category, message: message)
@@ -959,7 +967,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     public func closeTab(_ tabID: SessionTab.ID) {
         guard !isQuitting, let tab = tabs.first(where: { $0.id == tabID }) else { return }
         if tab.kind == .session, let sessionID = tab.sessionID {
-            if !unusedThisRun(tab) { touchHandler?(sessionID, tab.host, nil) }
+            if !unusedThisRun(tab) { touchHandler?(SessionKey(id: sessionID, host: tab.host), nil) }
             closedTabs.append(ClosedTabRecord(
                 host: tab.host,
                 sessionID: sessionID,
@@ -1009,7 +1017,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// was opened by another route in the meantime, preventing duplicate tabs.
     public func reopenLastClosedTab() {
         while let closed = closedTabs.popLast() {
-            if let open = sessionTab(withSessionID: closed.sessionID) {
+            if let open = sessionTab(for: SessionKey(id: closed.sessionID, host: closed.host)) {
                 // ⌘⇧T can race the graceful close: the record is pushed the
                 // moment the user closes, but the tab stays in `tabs` until
                 // the process exits (up to the graceful timeout). That tab is
@@ -1024,7 +1032,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             }
             // A row that cannot place itself yet reopens from the closed
             // tab's own facts, as a restored chip does (activate re-reads it).
-            if let row = sessionRow(closed.sessionID), row.canResume {
+            if let row = sessionRow(SessionKey(id: closed.sessionID, host: closed.host)), row.canResume {
                 openSession(row)
                 return
             }
@@ -1046,8 +1054,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// The session's row was discarded (it never started): ⌘⇧T has nothing
     /// to resume for it. Records are dropped only then — a row that was kept
     /// (pinned, named, a transcript found) still reopens.
-    public func forgetClosedTabs(sessionID: String) {
-        closedTabs.removeAll { $0.sessionID == sessionID }
+    public func forgetClosedTabs(session: SessionKey) {
+        closedTabs.removeAll { $0.sessionID == session.id && $0.host == session.host }
     }
 
     func removeTab(_ tabID: SessionTab.ID) {
@@ -1062,7 +1070,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         // Nothing a closed tab's launch reports later can reach anyone.
         tab.launchResult?.cancel()
         tab.launchResult = nil
-        if let sid = tab.sessionID { registry.unregister(sessionID: sid) }
+        if let key = tab.sessionKey { registry.unregister(session: key) }
         let wasActive = activeTabID == tabID
         tabs.remove(at: index)
         // Free the native surface here, at a known point, not when ARC gets to
@@ -1081,7 +1089,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         if wasActive { selectNeighbor(removedIndex: index, removedProject: tab.projectKey, wasUtility: tab.isUtility) }
         persist()
         // After persist: the row must no longer be in a restorable tab.
-        if tab.startedNothing, let sid = tab.sessionID { unstartedHandler?(sid, tab.host) }
+        if tab.startedNothing, let key = tab.sessionKey { unstartedHandler?(key) }
         remoteTabs.tabRemoved(tab)
     }
 
@@ -1285,7 +1293,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     private func restorableTabs() -> [PersistedTab] {
         let activeTab = self.activeTab
-        var seen: [String: Set<String>] = [:]
+        var seen: [ProjectKey: Set<String>] = [:]
         var restorable = tabs
             .filter { $0.kind == .session && !$0.isProvisional }
             .compactMap { tab -> PersistedTab? in
@@ -1293,19 +1301,18 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                 // same saved key. Keep the first descriptor so the whole-set
                 // transaction can still save, including unrelated local tabs.
                 guard let sid = tab.sessionID,
-                      seen[tab.projectPath, default: []].insert(sid).inserted else { return nil }
-                return PersistedTab(sessionID: sid, agent: tab.agent, projectPath: tab.projectPath,
-                                    title: tab.title, isActive: activeTab?.sessionID == sid
-                                        && activeTab?.projectPath == tab.projectPath)
+                      seen[tab.projectKey, default: []].insert(sid).inserted else { return nil }
+                return PersistedTab(sessionID: sid, host: tab.host, agent: tab.agent, projectPath: tab.projectPath,
+                                    title: tab.title, isActive: activeTab?.sessionKey == tab.sessionKey
+                                        && activeTab?.projectKey == tab.projectKey)
             }
         // The ACTIVE project's tabs go first (within-project order preserved):
         // restore() derives the launch-time active project from the first
         // saved tab, so this is what makes a relaunch come back showing the
         // project you were last working in.
         if let active = activeProjectKey {
-            let keys = Dictionary(tabs.compactMap { tab in tab.sessionID.map { ($0, tab.projectKey) } }, uniquingKeysWith: { first, _ in first })
-            restorable = restorable.filter { keys[$0.sessionID] == active }
-                + restorable.filter { keys[$0.sessionID] != active }
+            restorable = restorable.filter { $0.projectKey == active }
+                + restorable.filter { $0.projectKey != active }
         }
         return restorable
     }
@@ -1321,13 +1328,13 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         // directory until a transcript or a spawn supplies one), the tab's
         // own persisted fact stands in; `activate` re-reads the row first.
         tabs = saved.map { p in
-            let row = sessionRow(p.sessionID)
+            let row = sessionRow(p.session)
             let agent = row?.agent ?? p.resolvedAgent
             let directory = row?.directory ?? p.projectPath
             return SessionTab(kind: .session, sessionID: p.sessionID, agent: agent,
                               projectPath: directory,
                               title: row.flatMap { $0.state.customName ?? $0.state.title } ?? p.title,
-                              isResume: true, host: row?.host ?? .local)
+                              isResume: true, host: p.host)
         }
         // The order ⌘P walked at quit, for the projects that came back. One
         // whose tabs did not is dropped, as closing its last tab would have.
@@ -1348,7 +1355,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         // active one included: activating it would open it, and an open is
         // what brings an archived row back. (A tab linked to an archived
         // Codex row keeps the archive, ADR-036; its chip waits for a click.)
-        if let sid = active.sessionID, sessionRow(sid)?.state.archived == true {
+        if let key = active.sessionKey, sessionRow(key)?.state.archived == true {
             activeTabID = nil
             return
         }
@@ -1372,13 +1379,13 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         switch state {
         case .running(let pid):
             tab.activity = .running
-            if let sid = tab.sessionID { registry.register(pid: pid, sessionID: sid) }
+            if let key = tab.sessionKey { registry.register(pid: pid, session: key) }
         case .exited(let status):
             if tab.remote != nil {
                 remoteTabs.handleExit(tab, surface: surface, status: status)
                 return
             }
-            if let sid = tab.sessionID, !unusedThisRun(tab) { touchHandler?(sid, tab.host, nil) }
+            if let key = tab.sessionKey, !unusedThisRun(tab) { touchHandler?(key, nil) }
             // Whatever the launch reported is read now, before deciding: a
             // launcher failure written just before the exit is not missed.
             tab.launchResult?.finish()
@@ -1438,13 +1445,13 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         // the empty title tmux sends while the agent has set none included.
         if tab.remote != nil { remoteTabs.titleArrived(tab) }
         guard !title.isEmpty else { return }
-        if (lastReportedTitle[tab.id] ?? tab.title) != title, let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
+        if (lastReportedTitle[tab.id] ?? tab.title) != title, let key = tab.sessionKey { touchHandler?(key, nil) }
         lastReportedTitle[tab.id] = title
         if shown {
             tab.title = title
             // Agents retitle themselves as the work moves on, and record that
             // title nowhere on disk — hand it up so the sidebar and ⌘K can keep it.
-            if let sid = tab.sessionID { titleHandler?(sid, tab.host, title) }
+            if let key = tab.sessionKey { titleHandler?(key, title) }
         }
         // Item E: a live-updating title means the agent is working — keep the
         // settle heuristic from prematurely idling it.
@@ -1492,7 +1499,7 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         guard !isQuitting, let tab = tab(for: surface), tab.kind == .session else { return }
         tab.inputSubmitted = true
         if tab.remote != nil { remoteTabs.inputSubmitted(tab) }
-        if let sid = tab.sessionID { touchHandler?(sid, tab.host, nil) }
+        if let key = tab.sessionKey { touchHandler?(key, nil) }
         tab.activity = .running
         // Restart the settle clock so it can decay again once work finishes.
         lastTitleChange[tab.id] = Date()
@@ -1553,7 +1560,7 @@ extension OpenSessionsModel {
     /// project, the active-project bookkeeping and recency, and the next
     /// save. Grouping keeps deriving from the row.
     public func applyLaunchDirectory(_ tab: SessionTab, canonical: String) {
-        if let sid = tab.sessionID { launchDirectoryHandler?(sid, tab.host, canonical) }
+        if let key = tab.sessionKey { launchDirectoryHandler?(key, canonical) }
         guard canonical != tab.projectPath else { return }
         let old = tab.projectKey
         tab.setProjectPath(canonical)
@@ -1621,7 +1628,7 @@ extension OpenSessionsModel {
     /// A tab the user closed, for ⌘⇧T.
     func recordClosed(_ tab: SessionTab) {
         guard tab.kind == .session, let sessionID = tab.sessionID else { return }
-        if !unusedThisRun(tab) { touchHandler?(sessionID, tab.host, nil) }
+        if !unusedThisRun(tab) { touchHandler?(SessionKey(id: sessionID, host: tab.host), nil) }
         closedTabs.append(ClosedTabRecord(host: tab.host, sessionID: sessionID, agent: tab.agent,
                                           projectPath: tab.projectPath, title: tab.title))
         if closedTabs.count > Self.closedTabLimit { closedTabs.removeFirst(closedTabs.count - Self.closedTabLimit) }

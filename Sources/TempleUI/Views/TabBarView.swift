@@ -526,7 +526,7 @@ private struct TabChip: View {
 
     private var isActive: Bool { model.openSessions.activeTabID == tab.id }
     private var colorMark: TabColorMark? {
-        tab.sessionID
+        tab.sessionKey
             .flatMap { model.overlay.color(for: $0) }
             .flatMap(TabColorMark.init(rawValue:))
     }
@@ -647,8 +647,8 @@ private struct TabChip: View {
     }
 
     private func commitRename() {
-        guard editing, let sid = tab.sessionID else { return }
-        model.overlay.rename(sid, to: draft)
+        guard editing, let key = tab.sessionKey else { return }
+        model.overlay.rename(key, to: draft)
         editing = false
         model.openSessions.focusActiveTerminal()
     }
@@ -695,8 +695,8 @@ private struct TabChip: View {
             // reveal → close → color row): one right-click grammar everywhere.
             Button("Rename tab") { beginRename() }
                 .disabled(tab.sessionID == nil)
-            Button(tab.sessionID.map { model.overlay.isPinned($0) } == true ? "Unpin" : "Pin") {
-                if let sid = tab.sessionID { model.overlay.togglePin(sid) }
+            Button(tab.sessionKey.map { model.overlay.isPinned($0) } == true ? "Unpin" : "Pin") {
+                if let key = tab.sessionKey { model.overlay.togglePin(key) }
             }
             .disabled(tab.sessionID == nil)
             Divider()
@@ -705,7 +705,7 @@ private struct TabChip: View {
                 copyToPasteboard(model.resumeArgv(for: tab).joined(separator: " "))
             }
             Button("Copy session ID") { if let sid = tab.sessionID { copyToPasteboard(sid) } }
-            if let sid = tab.sessionID, let url = model.transcriptURL(for: sid) {
+            if let key = tab.sessionKey, let url = model.transcriptURL(for: key) {
                 Button("Reveal session file in Finder") {
                     NSWorkspace.shared.activateFileViewerSelecting([url])
                 }
@@ -730,8 +730,8 @@ private struct TabChip: View {
             Picker("", selection: Binding(
                 get: { colorMark },
                 set: { mark in
-                    if let sid = tab.sessionID {
-                        model.overlay.setColor(mark?.rawValue, for: sid)
+                    if let key = tab.sessionKey {
+                        model.overlay.setColor(mark?.rawValue, for: key)
                     }
                 }
             )) {

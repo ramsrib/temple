@@ -84,17 +84,17 @@ final class DBTests: XCTestCase {
         let receipt = try db.join(sessionID: "p", via: .imported, agent: .claude, core: SessionCore(host: host), carrying: marks)
         XCTAssertTrue(receipt.inserted)
         XCTAssertEqual(receipt.marks, marks)
-        XCTAssertEqual(try db.sessionState("p")?.customName, "Fix login")
-        XCTAssertEqual(try db.sessionState("p")?.color, "blue")
+        XCTAssertEqual(try db.onlySessionState("p")?.customName, "Fix login")
+        XCTAssertEqual(try db.onlySessionState("p")?.color, "blue")
         XCTAssertFalse(try db.leave(sessionID: "p", host: host, agent: .claude, incarnation: receipt.incarnation),
                        "without the receipt's marks, they read as a rename")
         XCTAssertTrue(try db.leave(sessionID: "p", host: host, agent: .claude, incarnation: receipt.incarnation, marks: receipt.marks))
 
         // Renamed here after the import: kept.
         let again = try db.join(sessionID: "p", via: .imported, agent: .claude, core: SessionCore(host: host), carrying: marks)
-        try db.setCustomName("Mine", sessionID: "p")
+        try db.setCustomName("Mine", sessionID: "p", host: host)
         XCTAssertFalse(try db.leave(sessionID: "p", host: host, agent: .claude, incarnation: again.incarnation, marks: again.marks))
-        XCTAssertEqual(try db.sessionState("p")?.customName, "Mine")
+        XCTAssertEqual(try db.onlySessionState("p")?.customName, "Mine")
 
         // Already Temple's (joined first by anything): its own marks stay,
         // a deliberate empty one included, and the receipt says nothing was written.
@@ -102,18 +102,18 @@ final class DBTests: XCTestCase {
         let late = try db.join(sessionID: "q", via: .imported, agent: .claude, core: SessionCore(host: host), carrying: marks)
         XCTAssertFalse(late.inserted)
         XCTAssertEqual(late.marks, CarriedMarks(name: nil, color: nil))
-        XCTAssertNil(try db.sessionState("q")?.customName)
-        XCTAssertNil(try db.sessionState("q")?.color)
+        XCTAssertNil(try db.onlySessionState("q")?.customName)
+        XCTAssertNil(try db.onlySessionState("q")?.color)
 
         // A refused join writes no marks.
         XCTAssertThrowsError(try db.join(sessionID: "q", via: .imported, agent: .codex, core: SessionCore(host: host), carrying: marks))
-        XCTAssertNil(try db.sessionState("q")?.customName)
+        XCTAssertNil(try db.onlySessionState("q")?.customName)
 
         // An empty mark is carried as it is, and compared exactly.
         let empty = try db.join(sessionID: "e", via: .imported, agent: .claude, core: SessionCore(host: host),
                                 carrying: CarriedMarks(name: "", color: nil))
-        XCTAssertEqual(try db.sessionState("e")?.customName, "")
-        try db.setCustomName(nil, sessionID: "e")
+        XCTAssertEqual(try db.onlySessionState("e")?.customName, "")
+        try db.setCustomName(nil, sessionID: "e", host: host)
         XCTAssertFalse(try db.leave(sessionID: "e", host: host, agent: .claude, incarnation: empty.incarnation, marks: empty.marks),
                        "a name cleared here since is a change the undo keeps")
     }
@@ -236,7 +236,7 @@ final class DBTests: XCTestCase {
         // The engine filled one from a transcript last written long ago.
         try upgraded.fillCoreFields(sessionID: "refilled", host: .local, lastActiveAt: joinedLongAgo)
         let entries = try ["gone", "refilled"].map { AutoArchiveEntry(ref: try ref(upgraded, $0), reason: .folderMissing, directory: "/p") }
-        XCTAssertEqual(try upgraded.autoArchive(entries, idleBefore: idleBefore), ["refilled"],
+        XCTAssertEqual(try upgraded.autoArchive(entries, idleBefore: idleBefore).map(\.id), ["refilled"],
                        "the cleared date still protects; a refilled one is the row's own")
     }
 
@@ -251,7 +251,7 @@ final class DBTests: XCTestCase {
 
         let reopened = try TempleDB(path: path)
         let entry = AutoArchiveEntry(ref: try ref(reopened, "s"), reason: .folderMissing, directory: "/p")
-        XCTAssertEqual(try reopened.autoArchive([entry], idleBefore: Self.farFuture), ["s"])
+        XCTAssertEqual(try reopened.autoArchive([entry], idleBefore: Self.farFuture).map(\.id), ["s"])
     }
 
     /// What v0.5.0 leaves on disk: no repair recorded, and optionally rows
@@ -381,13 +381,13 @@ final class DBTests: XCTestCase {
         "v1", "v2-open-tab-metadata", "v3-generated-title",
         "v4-session-color", "v5-open-tab-active", "v6-ui-state",
         "v7-project-state", "v8-session-join", "v9-session-transcript",
-        "v10-session-core", "v11-session-incarnation",
+        "v10-session-core", "v11-session-incarnation", "v12-archive-provenance",
     ]
 
     /// The migrations older builds shipped, frozen as they spelled them:
-    /// v1–v9 (the builds with no newer-schema guard), v10 and v11. Never
+    /// v1–v9 (the builds with no newer-schema guard), v10 to v12. Never
     /// edited to follow production — that is the point of a frozen copy.
-    static func legacyMigrator(through last: String = "v11-session-incarnation") -> DatabaseMigrator {
+    static func legacyMigrator(through last: String = "v12-archive-provenance") -> DatabaseMigrator {
         var migrator = DatabaseMigrator()
         var stop = false
         func register(_ identifier: String, _ migrate: @escaping (Database) throws -> Void) {
@@ -488,6 +488,14 @@ final class DBTests: XCTestCase {
                     UPDATE session_state SET incarnation = lower(hex(randomblob(16))) WHERE rowid = NEW.rowid;
                 END
                 """)
+        }
+
+        register("v12-archive-provenance") { database in
+            try database.alter(table: "session_state") { table in
+                table.add(column: "archive_reason", .text)
+                table.add(column: "kept_at", .datetime)
+                table.add(column: "archived_at", .datetime)
+            }
         }
         return migrator
     }
@@ -695,38 +703,21 @@ extension DBTests {
         XCTAssertEqual(try Data(contentsOf: path), before)
     }
 
-    func testOldWriterSQLStillRunsOnV10() throws {
+    /// ADR-041 dropped the old writers' guarantee: `v14-session-host-key`
+    /// keys a session by `(id, host)`, so an older build's join, keyed by
+    /// the id alone, fails loudly rather than writing a row it can't name.
+    /// (Older builds with the newer-schema guard refuse the file outright,
+    /// and the migration waits for every other Temple to quit.)
+    func testAnOldWritersIDOnlyJoinFailsOnV14InsteadOfWritingTheWrongRow() throws {
         let (_, path) = try database()
         let old = try DatabaseQueue(path: path.path)
         defer { try? old.close() }
-        // Literal statements from v9, including the ensureState used by its
-        // setter. No production API calls here: those would test the new writer.
-        try old.write { db in
-            try db.execute(sql: "INSERT OR IGNORE INTO session_state (id) VALUES (?)", arguments: ["old-title"])
-            try db.execute(sql: "UPDATE session_state SET generated_title = ? WHERE id = ?", arguments: ["Old writer title", "old-title"])
+        XCTAssertThrowsError(try old.write { db in
             try db.execute(sql: "INSERT INTO session_state (id, joined_via, joined_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING",
                            arguments: ["old-import", "imported", Self.seededDate])
-            try db.execute(sql: "UPDATE session_state SET agent = COALESCE(?, agent), transcript_path = COALESCE(?, transcript_path) WHERE id = ?",
-                           arguments: ["codex", "/old/path", "old-import"])
-            try db.execute(sql: """
-                DELETE FROM session_state
-                WHERE id = ? AND joined_via = ?
-                  AND pinned = 0 AND archived = 0
-                  AND custom_name IS NULL AND color IS NULL
-                  AND generated_title IS NULL AND last_opened_at IS NULL
-                  AND NOT EXISTS (SELECT 1 FROM open_tabs WHERE session_id = ?)
-                """, arguments: ["old-import", "imported", "old-import"])
-            XCTAssertEqual(db.changesCount, 1)
-        }
+        })
         let reopened = try TempleDB(path: path)
-        XCTAssertEqual(try reopened.sessionState("old-title")?.title, "Old writer title")
-        XCTAssertEqual(try reopened.sessionState("old-title")?.generatedTitle, "Old writer title")
         XCTAssertNil(try reopened.sessionState("old-import"))
-        try old.write { db in
-            try db.execute(sql: "INSERT INTO session_state (id, joined_via, joined_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING",
-                           arguments: ["old-join", "opened", Self.seededDate])
-        }
-        XCTAssertEqual(try reopened.sessionState("old-join")?.host, .local)
     }
 
     func testTwoConnectionsOldThenNewReconcileTitle() throws {
@@ -877,7 +868,7 @@ extension DBTests {
         let remote = HostID(rawValue: "remote-alias")
         try db.join(sessionID: "remote", via: .imported, core: SessionCore(host: remote, directory: "/A", directorySource: .transcript, title: "A", lastActiveAt: Self.seededDate))
         try db.join(sessionID: "remote", via: .opened, core: SessionCore(host: remote, directory: "/B", directorySource: .tab, title: "B", lastActiveAt: Date()))
-        let state = try XCTUnwrap(db.sessionState("remote"))
+        let state = try XCTUnwrap(db.onlySessionState("remote"))
         XCTAssertEqual(try JSONDecoder().decode(SessionState.self, from: JSONEncoder().encode(state)), state)
         XCTAssertEqual(state.host, remote)
         XCTAssertEqual(state.directory, "/A")
@@ -887,7 +878,7 @@ extension DBTests {
         XCTAssertEqual(state.joinedVia, .imported)
         try db.join(sessionID: "local", via: .created)
         try db.join(sessionID: "local", via: .opened, core: SessionCore(directory: "/local", directorySource: .tab, title: "Local"))
-        XCTAssertEqual(try db.sessionState("local")?.directory, "/local")
+        XCTAssertEqual(try db.onlySessionState("local")?.directory, "/local")
         XCTAssertEqual(try db.sessionStates(host: .local).map(\.id), ["local"])
         XCTAssertEqual(try db.sessionStates(host: remote).map(\.id), ["remote"])
         XCTAssertEqual(try db.sessionStates().count, 2)
@@ -1093,7 +1084,7 @@ extension DBTests {
         let token = recorder.observe(db)
         defer { db.removeRowChangeObserver(token) }
         let joins = RowChangeRecorder()
-        let joinToken = db.observeJoins { id, _ in joins.append(id: id, state: try! db.sessionState(id)) }
+        let joinToken = db.observeJoins { key, _ in joins.append(id: key.id, state: try! db.sessionState(key.id, host: key.host)) }
         defer { db.removeJoinObserver(joinToken) }
         let failures: [(String, () throws -> Void)] = [
             ("pin insertion rolls back", { try db.setPinned(true, sessionID: "new-pin") }),
@@ -1147,14 +1138,14 @@ private final class RowChangeRecorder: @unchecked Sendable {
     }
 
     func observe(_ db: TempleDB) -> UUID {
-        db.observeRowChanges { id in
+        db.observeRowChanges { key in
             // Reading the ORIGINATING connection fails if this callback still
             // runs on its writer queue. Register/remove also re-enters the
             // observer mutex, proving that lock is not held during delivery.
-            let state = try! db.sessionState(id)
+            let state = try! db.sessionState(key.id, host: key.host)
             let temporary = db.observeRowChanges { _ in }
             db.removeRowChangeObserver(temporary)
-            self.append(id: id, state: state)
+            self.append(id: key.id, state: state)
         }
     }
 }
@@ -1164,27 +1155,42 @@ private final class RowChangeRecorder: @unchecked Sendable {
 extension DBTests {
     private func observed(_ db: TempleDB) -> () -> (joins: [String], rows: [String], leaves: [String]) {
         let box = ObservationBox()
-        _ = db.observeJoins { id, _ in box.append(.joins, id) }
-        _ = db.observeRowChanges { id in box.append(.rows, id) }
-        _ = db.observeLeaves { id in box.append(.leaves, id) }
+        _ = db.observeJoins { key, _ in box.append(.joins, key.host.isLocal ? key.id : "\(key.host.rawValue)/\(key.id)") }
+        _ = db.observeRowChanges { key in box.append(.rows, key.host.isLocal ? key.id : "\(key.host.rawValue)/\(key.id)") }
+        _ = db.observeLeaves { key in box.append(.leaves, key.host.isLocal ? key.id : "\(key.host.rawValue)/\(key.id)") }
         return { box.snapshot() }
     }
 
-    func testJoinRefusesAnotherHostsRowAndWritesNothing() throws {
+    /// ADR-041: a session is its id on a host. The same id joined on
+    /// another host (a transcript copied there) is a second session with its
+    /// own row, membership and facts; the first is not touched.
+    func testJoinOnAnotherHostIsASecondSessionAndLeavesTheFirstAlone() throws {
         let (db, _) = try database()
         let remote = HostID(rawValue: "box")
-        try db.join(sessionID: "s", via: .opened, core: SessionCore(title: "Local"))
+        try db.join(sessionID: "s", via: .opened, agent: .claude, core: SessionCore(title: "Local"))
+        try db.setPinned(true, sessionID: "s")
         let before = try XCTUnwrap(db.sessionState("s"))
         let events = observed(db)
-        XCTAssertThrowsError(try db.join(sessionID: "s", via: .imported, agent: .codex,
-                                         locator: TranscriptLocator(host: remote, path: "/r/x.jsonl"),
-                                         core: SessionCore(host: remote, directory: "/r", directorySource: .transcript,
-                                                           title: "Remote", lastActiveAt: Date()))) {
-            XCTAssertEqual($0 as? TempleDBError, .hostConflict(existing: .local))
-            XCTAssertEqual(($0 as? TempleDBError)?.errorDescription, "Already in Temple on this Mac.")
-        }
-        XCTAssertEqual(try db.sessionState("s"), before, "nothing of the refused join was written")
-        XCTAssertTrue(events().joins.isEmpty && events().rows.isEmpty)
+        try db.join(sessionID: "s", via: .imported, agent: .codex,
+                    locator: TranscriptLocator(host: remote, path: "/r/x.jsonl"),
+                    core: SessionCore(host: remote, directory: "/r", directorySource: .transcript,
+                                      title: "Remote", lastActiveAt: Date()))
+        XCTAssertEqual(try db.sessionState("s"), before, "this Mac's session is untouched")
+        let copy = try XCTUnwrap(db.sessionState("s", host: remote))
+        XCTAssertEqual(copy.agent, .codex, "each host's row names its own agent")
+        XCTAssertEqual(copy.title, "Remote")
+        XCTAssertEqual(copy.directory, "/r")
+        XCTAssertFalse(copy.pinned, "marks are per session, not per id")
+        XCTAssertNotEqual(copy.incarnation, before.incarnation)
+        XCTAssertEqual(events().joins, ["box/s"])
+        XCTAssertEqual(Set(try db.sessionStates(id: "s").map(\.host)), [.local, remote])
+        // Writes name one session: the other host's row never moves with it.
+        try db.setCustomName("Mine", sessionID: "s", host: remote)
+        try db.setArchived(true, sessionID: "s", host: remote)
+        try db.touch(sessionID: "s", host: remote, at: Date(timeIntervalSince1970: 9_999_999_999))
+        try db.setTitle("Retitled", sessionID: "s", host: remote)
+        XCTAssertEqual(try db.sessionState("s"), before)
+        XCTAssertEqual(try db.sessionState("s", host: remote)?.customName, "Mine")
         // A locator on another host than the core is a caller error, refused before any write.
         XCTAssertThrowsError(try db.join(sessionID: "t", via: .imported, locator: TranscriptLocator(host: remote, path: "/x"))) {
             XCTAssertEqual($0 as? TempleDBError, .locatorHostMismatch)
@@ -1209,9 +1215,9 @@ extension DBTests {
         XCTAssertThrowsError(try db.join(sessionID: "legacy", via: .opened, agent: .claude))
     }
 
-    /// Two processes importing one id from two hosts at once: exactly one row,
-    /// one join, one refusal.
-    func testConcurrentJoinsFromTwoConnectionsYieldOneRowAndOneRefusal() throws {
+    /// Two processes importing one id from two hosts at once: two sessions,
+    /// one row each, both joined (ADR-041).
+    func testConcurrentJoinsFromTwoHostsYieldOneRowPerHost() throws {
         let (first, path) = try database()
         let second = try TempleDB(path: path)
         for round in 0..<20 {
@@ -1223,13 +1229,13 @@ extension DBTests {
                 DispatchQueue.global().async {
                     defer { group.leave() }
                     do { try db.join(sessionID: id, via: .imported, core: SessionCore(host: host)); results.add("joined") }
-                    catch TempleDBError.hostConflict { results.add("refused") }
                     catch { results.add("error: \(error)") }
                 }
             }
             group.wait()
-            XCTAssertEqual(results.values.sorted(), ["joined", "refused"], id)
+            XCTAssertEqual(results.values.sorted(), ["joined", "joined"], id)
             XCTAssertNotNil(try first.sessionState(id))
+            XCTAssertNotNil(try first.sessionState(id, host: HostID(rawValue: "box")))
         }
     }
 
@@ -1268,11 +1274,11 @@ extension DBTests {
         // no longer has: a row that left and joined again is another session.
         let refs = try ids.map { try ref($0, incarnation: $0 == "replaced" ? "stale" : nil) }
         let events = observed(db)
-        XCTAssertEqual(try db.discardNeverStarted(refs, idleBefore: idle), ["plain"])
+        XCTAssertEqual(try db.discardNeverStarted(refs, idleBefore: idle).map(\.id), ["plain"])
         XCTAssertNil(try db.sessionState("plain"))
         for id in ids.dropFirst() { XCTAssertNotNil(try db.sessionState(id), id) }
         XCTAssertEqual(events().leaves, ["plain"], "the drop is a leave")
-        XCTAssertEqual(try db.discardNeverStarted([], idleBefore: idle), [])
+        XCTAssertEqual(try db.discardNeverStarted([], idleBefore: idle).map(\.id), [])
         // The tab's close: the same boundary without the idle cutoff.
         XCTAssertTrue(try db.discardUnstartedCreation(ref("recent")))
         XCTAssertFalse(try db.discardUnstartedCreation(ref("opened")), "opened from History: a person's")
@@ -1283,18 +1289,17 @@ extension DBTests {
         let (db, _) = try database()
         let remote = HostID(rawValue: "box")
         try db.join(sessionID: "r", via: .imported, core: SessionCore(host: remote))
-        let untouched = try XCTUnwrap(db.sessionState("r"))
+        let untouched = try XCTUnwrap(db.onlySessionState("r"))
         let events = observed(db)
         let date = Date(timeIntervalSince1970: 1_800_000_000)
+        // Writes for this Mac's session "r" (none exists) never reach the box's.
         try db.touch(sessionID: "r", host: .local, at: date)
-        try db.setTitle("Wrong host", sessionID: "r", host: .local)
-        try db.recordOpened(sessionID: "r", host: .local, at: date)
         try db.observeLaunchDirectory(sessionID: "r", host: .local, "/local")
         XCTAssertEqual(try db.fillCoreFields(sessionID: "r", host: .local, agent: .claude, directory: "/d", title: "T", lastActiveAt: date), .ownershipMismatch)
         XCTAssertEqual(try db.updateTranscriptHint(sessionID: "r", agent: .claude, locator: TranscriptLocator(host: .local, path: "/x.jsonl")), .ownershipMismatch)
         XCTAssertFalse(try db.discardUnstartedCreation(MembershipRef(id: "r", host: .local, incarnation: try XCTUnwrap(untouched.incarnation))))
         XCTAssertFalse(try db.leave(sessionID: "r", host: .local))
-        XCTAssertEqual(try db.sessionState("r"), untouched)
+        XCTAssertEqual(try db.onlySessionState("r"), untouched)
         XCTAssertTrue(events().rows.isEmpty && events().leaves.isEmpty, "rejected writes notify nobody")
 
         try db.touch(sessionID: "r", host: remote, at: date)
@@ -1302,7 +1307,7 @@ extension DBTests {
         try db.observeLaunchDirectory(sessionID: "r", host: remote, "/remote")
         XCTAssertEqual(try db.fillCoreFields(sessionID: "r", host: remote, agent: .codex, title: "ignored"), .changed([.agent]))
         XCTAssertEqual(try db.updateTranscriptHint(sessionID: "r", agent: .codex, locator: TranscriptLocator(host: remote, path: "/r.jsonl")), .changed([]))
-        let state = try XCTUnwrap(db.sessionState("r"))
+        let state = try XCTUnwrap(db.onlySessionState("r"))
         XCTAssertEqual(state.lastActiveAt, date)
         XCTAssertEqual(state.title, "Right host")
         XCTAssertEqual(state.directory, "/remote")
@@ -1322,29 +1327,29 @@ extension DBTests {
         let core = SessionCore(host: remote)
         try db.join(sessionID: "plain", via: .created, core: core)
         try db.join(sessionID: "named", via: .created, core: core)
-        try db.setCustomName("Mine", sessionID: "named")
+        try db.setCustomName("Mine", sessionID: "named", host: remote)
         try db.join(sessionID: "replaced", via: .created, core: core)
-        let plain = try XCTUnwrap(db.sessionState("plain")?.incarnation)
-        let named = try XCTUnwrap(db.sessionState("named")?.incarnation)
-        let stale = try XCTUnwrap(db.sessionState("replaced")?.incarnation)
+        let plain = try XCTUnwrap(db.onlySessionState("plain")?.incarnation)
+        let named = try XCTUnwrap(db.onlySessionState("named")?.incarnation)
+        let stale = try XCTUnwrap(db.onlySessionState("replaced")?.incarnation)
 
         // Another connection replaces one membership: it leaves and joins again.
         let raw = try DatabaseQueue(path: path.path)
         try raw.write { try $0.execute(sql: "DELETE FROM session_state WHERE id = 'replaced'") }
         let other = try TempleDB(path: path)
         try other.join(sessionID: "replaced", via: .created, core: core)
-        let fresh = try XCTUnwrap(other.sessionState("replaced")?.incarnation)
+        let fresh = try XCTUnwrap(other.sessionState("replaced", host: remote)?.incarnation)
         XCTAssertNotEqual(fresh, stale)
 
         XCTAssertEqual(try db.discardRemoteSession(sessionID: "replaced", host: remote, incarnation: stale, lastOpenedAt: nil), .unchanged)
-        XCTAssertEqual(try db.sessionState("replaced")?.incarnation, fresh, "the replacement is untouched")
-        XCTAssertEqual(try db.sessionState("replaced")?.archived, false)
+        XCTAssertEqual(try db.onlySessionState("replaced")?.incarnation, fresh, "the replacement is untouched")
+        XCTAssertEqual(try db.onlySessionState("replaced")?.archived, false)
         XCTAssertEqual(try db.discardRemoteSession(sessionID: "plain", host: .local, incarnation: plain, lastOpenedAt: nil), .unchanged,
                        "another host's id names nothing here")
         XCTAssertEqual(try db.discardRemoteSession(sessionID: "plain", host: remote, incarnation: plain, lastOpenedAt: nil), .deleted)
-        XCTAssertNil(try db.sessionState("plain"))
+        XCTAssertNil(try db.onlySessionState("plain"))
         XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named, lastOpenedAt: nil), .archived)
-        let archived = try XCTUnwrap(db.sessionState("named"))
+        let archived = try XCTUnwrap(db.onlySessionState("named"))
         XCTAssertTrue(archived.archived)
         XCTAssertEqual(archived.customName, "Mine")
         XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named, lastOpenedAt: nil), .unchanged)
@@ -1358,18 +1363,18 @@ extension DBTests {
         let core = SessionCore(host: remote)
         try db.join(sessionID: "plain", via: .created, core: core)
         try db.join(sessionID: "named", via: .created, core: core)
-        try db.setCustomName("Mine", sessionID: "named")
-        let plain = try XCTUnwrap(db.sessionState("plain")?.incarnation)
-        let named = try XCTUnwrap(db.sessionState("named")?.incarnation)
-        let seen = try db.sessionState("plain")?.lastOpenedAt
+        try db.setCustomName("Mine", sessionID: "named", host: remote)
+        let plain = try XCTUnwrap(db.onlySessionState("plain")?.incarnation)
+        let named = try XCTUnwrap(db.onlySessionState("named")?.incarnation)
+        let seen = try db.onlySessionState("plain")?.lastOpenedAt
         XCTAssertNil(seen)
         try db.recordOpened(sessionID: "plain", host: remote)
         try db.recordOpened(sessionID: "named", host: remote)
         XCTAssertEqual(try db.discardRemoteSession(sessionID: "plain", host: remote, incarnation: plain, lastOpenedAt: seen), .unchanged)
         XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named, lastOpenedAt: nil), .unchanged)
-        XCTAssertNotNil(try db.sessionState("plain"))
-        XCTAssertEqual(try db.sessionState("named")?.archived, false)
-        let opened = try db.sessionState("named")?.lastOpenedAt
+        XCTAssertNotNil(try db.onlySessionState("plain"))
+        XCTAssertEqual(try db.onlySessionState("named")?.archived, false)
+        let opened = try db.onlySessionState("named")?.lastOpenedAt
         XCTAssertEqual(try db.discardRemoteSession(sessionID: "named", host: remote, incarnation: named, lastOpenedAt: opened), .archived,
                        "the open state Discard saw: it acts")
     }
@@ -1408,11 +1413,11 @@ extension DBTests {
         let old = try DatabaseQueue(path: path.path)
         try old.write { raw in
             try raw.execute(sql: "INSERT OR IGNORE INTO session_state (id) VALUES (?)", arguments: ["v9-setter"])
-            try raw.execute(sql: "INSERT INTO session_state (id, joined_via, joined_at) VALUES (?, ?, ?) ON CONFLICT(id) DO NOTHING",
-                            arguments: ["v9-join", "imported", Self.seededDate])
+            try raw.execute(sql: "INSERT INTO session_state (id, joined_via, joined_at) VALUES (?, ?, ?) ON CONFLICT(id, host) DO NOTHING",
+                            arguments: ["raw-join", "imported", Self.seededDate])
         }
         try old.close()
-        let values = try ["joined", "setter", "v9-setter", "v9-join"].map { try XCTUnwrap(db.sessionState($0)?.incarnation, $0) }
+        let values = try ["joined", "setter", "v9-setter", "raw-join"].map { try XCTUnwrap(db.sessionState($0)?.incarnation, $0) }
         XCTAssertEqual(Set(values).count, values.count)
         for value in values {
             XCTAssertEqual(value.count, 32)
@@ -1574,7 +1579,7 @@ extension DBTests {
     func testArchiveMissingTranscriptsArchivesOnlyWhatEveryGuardAllows() throws {
         let (db, queue) = try rawDatabase()
         let observed = ObservationBox()
-        _ = db.observeRowChanges { observed.append(.rows, $0) }
+        _ = db.observeRowChanges { observed.append(.rows, $0.id) }
         for id in ["eligible", "pinned", "archived", "kept", "stale", "tab", "wrong-inc"] {
             try db.join(sessionID: id, via: .imported, agent: .claude)
         }
@@ -1585,27 +1590,27 @@ extension DBTests {
         try db.setOpenTabs(projectPath: "/p", sessionIDs: ["tab"])
         // Temple archived it, then an older build restored it: the reason
         // is left behind, and reads as kept.
-        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "stale")]), idleBefore: Self.idleCutoff), ["stale"])
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "stale")]), idleBefore: Self.idleCutoff).map(\.id), ["stale"])
         try olderBuildSetArchived(queue, false, "stale")
         let refs = try ["eligible", "pinned", "archived", "kept", "stale", "tab"].map { try ref(db, $0) }
         let wrongIncarnation = MembershipRef(id: "wrong-inc", host: .local, incarnation: "not-it")
-        let wrongHost = MembershipRef(id: "remote", host: .local, incarnation: try XCTUnwrap(db.sessionState("remote")?.incarnation))
+        let wrongHost = MembershipRef(id: "remote", host: .local, incarnation: try XCTUnwrap(db.onlySessionState("remote")?.incarnation))
         let before = observed.snapshot().rows.count
 
-        XCTAssertEqual(try db.autoArchive(missing(refs + [wrongIncarnation, wrongHost]), idleBefore: Self.idleCutoff), ["eligible"])
+        XCTAssertEqual(try db.autoArchive(missing(refs + [wrongIncarnation, wrongHost]), idleBefore: Self.idleCutoff).map(\.id), ["eligible"])
         XCTAssertEqual(Array(observed.snapshot().rows.dropFirst(before)), ["eligible"], "one row change, after commit")
-        let eligible = try XCTUnwrap(db.sessionState("eligible"))
+        let eligible = try XCTUnwrap(db.onlySessionState("eligible"))
         XCTAssertTrue(eligible.archived)
         XCTAssertEqual(eligible.archiveReason, .transcriptMissing)
         XCTAssertTrue(Session(state: eligible).archivedByTemple)
-        let pinned = try XCTUnwrap(db.sessionState("pinned"))
+        let pinned = try XCTUnwrap(db.onlySessionState("pinned"))
         XCTAssertTrue(pinned.pinned, "a pin is a refusal, never cleared")
         XCTAssertFalse(pinned.archived)
-        XCTAssertNil(try db.sessionState("archived")?.archiveReason, "the user's archive stays the user's")
+        XCTAssertNil(try db.onlySessionState("archived")?.archiveReason, "the user's archive stays the user's")
         for id in ["kept", "stale", "tab", "wrong-inc", "remote"] {
-            XCTAssertFalse(try XCTUnwrap(db.sessionState(id)).archived, id)
+            XCTAssertFalse(try XCTUnwrap(db.onlySessionState(id)).archived, id)
         }
-        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "eligible")]), idleBefore: Self.idleCutoff), [], "already archived: nothing")
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "eligible")]), idleBefore: Self.idleCutoff).map(\.id), [], "already archived: nothing")
     }
 
     func testABatchArchiveIsOneTransaction() throws {
@@ -1626,9 +1631,9 @@ extension DBTests {
     func testAPersonsUnarchiveStampsAKeepOnceAndTheirArchiveClearsTemples() throws {
         let db = try TempleDB.inMemory()
         let observed = ObservationBox()
-        _ = db.observeRowChanges { observed.append(.rows, $0) }
+        _ = db.observeRowChanges { observed.append(.rows, $0.id) }
         try db.join(sessionID: "s", via: .imported)
-        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "s")]), idleBefore: Self.idleCutoff), ["s"])
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "s")]), idleBefore: Self.idleCutoff).map(\.id), ["s"])
         let when = Date(timeIntervalSince1970: 1_800_000_000)
         try db.setArchived(false, sessionID: "s", at: when)
         var state = try XCTUnwrap(db.sessionState("s"))
@@ -1654,7 +1659,7 @@ extension DBTests {
     func testActivitySpendsAKeepAndARestoredRowsLeftoverReason() throws {
         let (db, queue) = try rawDatabase()
         for id in ["restored", "old-build", "archived"] { try db.join(sessionID: id, via: .imported) }
-        XCTAssertEqual(try db.autoArchive(missing(try ["restored", "old-build", "archived"].map { try ref(db, $0) }), idleBefore: Self.idleCutoff),
+        XCTAssertEqual(try db.autoArchive(missing(try ["restored", "old-build", "archived"].map { try ref(db, $0) }), idleBefore: Self.idleCutoff).map(\.id),
                        ["restored", "old-build", "archived"])
         try db.setArchived(false, sessionID: "restored")
         try olderBuildSetArchived(queue, false, "old-build")
@@ -1669,7 +1674,7 @@ extension DBTests {
         XCTAssertEqual(try db.sessionState("archived")?.archiveReason, .transcriptMissing, "still Temple's archive")
         // Eligible again (the policy's idle week is what holds it off now).
         try db.observeLaunchDirectory(sessionID: "restored", host: .local, "/p")
-        XCTAssertEqual(try db.autoArchive([AutoArchiveEntry(ref: try ref(db, "restored"), reason: .folderMissing, directory: "/p")], idleBefore: Self.farFuture), ["restored"])
+        XCTAssertEqual(try db.autoArchive([AutoArchiveEntry(ref: try ref(db, "restored"), reason: .folderMissing, directory: "/p")], idleBefore: Self.farFuture).map(\.id), ["restored"])
         XCTAssertEqual(try db.sessionState("restored")?.archiveReason, .folderMissing)
     }
 
@@ -1731,14 +1736,14 @@ extension DBTests {
         ]
         try other.touch(sessionID: "touched", host: .local, at: Date(timeIntervalSince1970: 1_600_000_000))
         try other.observeLaunchDirectory(sessionID: "moved", host: .local, "/found")
-        XCTAssertEqual(try planner.autoArchive(Array(entries.prefix(4)), idleBefore: cutoff), ["idle", "gone"])
+        XCTAssertEqual(try planner.autoArchive(Array(entries.prefix(4)), idleBefore: cutoff).map(\.id), ["idle", "gone"])
         XCTAssertEqual(try planner.sessionState("gone")?.archiveReason, .folderMissing)
 
         // Recent by its join date alone (no activity, no open): not idle.
         try planner.join(sessionID: "joined-now", via: .imported)
-        XCTAssertEqual(try planner.autoArchive(missing([try ref(planner, "joined-now")]), idleBefore: cutoff), [])
-        XCTAssertEqual(try planner.autoArchive([entries[4]], idleBefore: Self.idleCutoff), [])
-        XCTAssertEqual(try planner.autoArchive(missing([try ref(planner, "undated")]), idleBefore: cutoff), ["undated"])
+        XCTAssertEqual(try planner.autoArchive(missing([try ref(planner, "joined-now")]), idleBefore: cutoff).map(\.id), [])
+        XCTAssertEqual(try planner.autoArchive([entries[4]], idleBefore: Self.idleCutoff).map(\.id), [])
+        XCTAssertEqual(try planner.autoArchive(missing([try ref(planner, "undated")]), idleBefore: cutoff).map(\.id), ["undated"])
     }
 
     /// Undo Import may remove a row only Temple archived; a person's restore
@@ -1749,7 +1754,7 @@ extension DBTests {
         XCTAssertEqual(try db.autoArchive(missing(try ["untouched", "restored", "undone"].map { try ref(db, $0) }),
                                           idleBefore: Self.idleCutoff).count, 3)
         try db.setArchived(false, sessionID: "restored")                                   // Restore
-        XCTAssertEqual(try db.restoreTempleArchives([try ref(db, "undone")]), ["undone"])  // the notice's Undo
+        XCTAssertEqual(try db.restoreTempleArchives([try ref(db, "undone")]).map(\.id), ["undone"])  // the notice's Undo
         XCTAssertTrue(try db.leave(sessionID: "untouched", host: .local))
         XCTAssertFalse(try db.leave(sessionID: "restored", host: .local))
         XCTAssertFalse(try db.leave(sessionID: "undone", host: .local))
@@ -1758,7 +1763,7 @@ extension DBTests {
         // An older build's Restore: unarchived, the reason left behind, no stamp.
         let (raw, queue) = try rawDatabase()
         try raw.join(sessionID: "old-build", via: .imported, agent: .claude)
-        XCTAssertEqual(try raw.autoArchive(missing([try ref(raw, "old-build")]), idleBefore: Self.idleCutoff), ["old-build"])
+        XCTAssertEqual(try raw.autoArchive(missing([try ref(raw, "old-build")]), idleBefore: Self.idleCutoff).map(\.id), ["old-build"])
         try olderBuildSetArchived(queue, false, "old-build")
         XCTAssertNil(try raw.sessionState("old-build")?.keptAt)
         XCTAssertFalse(try raw.leave(sessionID: "old-build", host: .local))
@@ -1768,12 +1773,12 @@ extension DBTests {
         let db = try TempleDB.inMemory()
         for id in ["a", "b", "c"] { try db.join(sessionID: id, via: .imported) }
         let refs = try ["a", "b", "c"].map { try ref(db, $0) }
-        XCTAssertEqual(try db.autoArchive(missing(refs), idleBefore: Self.idleCutoff), ["a", "b", "c"])
+        XCTAssertEqual(try db.autoArchive(missing(refs), idleBefore: Self.idleCutoff).map(\.id), ["a", "b", "c"])
         try db.setArchived(false, sessionID: "b")               // restored by hand since
         try db.setArchived(true, sessionID: "c")                // now the user's archive
         try db.join(sessionID: "d", via: .imported)
         let when = Date(timeIntervalSince1970: 1_800_000_000)
-        XCTAssertEqual(try db.restoreTempleArchives(refs + [MembershipRef(id: "d", host: .local, incarnation: "x")], at: when), ["a"])
+        XCTAssertEqual(try db.restoreTempleArchives(refs + [MembershipRef(id: "d", host: .local, incarnation: "x")], at: when).map(\.id), ["a"])
         let a = try XCTUnwrap(db.sessionState("a"))
         XCTAssertFalse(a.archived); XCTAssertEqual(a.keptAt, when); XCTAssertEqual(a.archiveReason, .transcriptMissing)
         XCTAssertTrue(try db.sessionState("c")!.archived, "the user's archive is not Temple's to undo")
@@ -1789,7 +1794,7 @@ extension DBTests {
         XCTAssertEqual(try db.sessionState("user")?.archivedAt, first)
         try db.setArchived(true, sessionID: "user", at: later)
         XCTAssertEqual(try db.sessionState("user")?.archivedAt, first, "nothing changed, nothing written")
-        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "temple")]), idleBefore: Self.idleCutoff, at: first), ["temple"])
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "temple")]), idleBefore: Self.idleCutoff, at: first).map(\.id), ["temple"])
         XCTAssertEqual(try db.sessionState("temple")?.archivedAt, first)
         // The user archives what Temple had: it becomes theirs, dated now.
         try db.setArchived(true, sessionID: "temple", at: later)
@@ -1811,7 +1816,7 @@ extension DBTests {
         try db.setPinned(true, sessionID: "pinned")
         try db.setArchived(true, sessionID: "away", at: Date(timeIntervalSince1970: 1_000))
         XCTAssertEqual(try db.autoArchive(missing([try ref(db, "temple")]), idleBefore: Self.idleCutoff,
-                                          at: Date(timeIntervalSince1970: 2_000)), ["temple"])
+                                          at: Date(timeIntervalSince1970: 2_000)).map(\.id), ["temple"])
         try db.setProjectArchived(true, path: "/p/raven")
         let before = try ["target", "pinned", "away", "temple", "elsewhere"].map { try XCTUnwrap(db.sessionState($0)) }
         let at = Date(timeIntervalSince1970: 3_000)
@@ -1882,7 +1887,7 @@ extension DBTests {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "temple", via: .imported, agent: .claude)
         try db.join(sessionID: "user", via: .imported, agent: .claude)
-        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "temple")]), idleBefore: Self.idleCutoff), ["temple"])
+        XCTAssertEqual(try db.autoArchive(missing([try ref(db, "temple")]), idleBefore: Self.idleCutoff).map(\.id), ["temple"])
         try db.setArchived(true, sessionID: "user")
         XCTAssertTrue(try db.leave(sessionID: "temple", host: .local))
         XCTAssertFalse(try db.leave(sessionID: "user", host: .local))

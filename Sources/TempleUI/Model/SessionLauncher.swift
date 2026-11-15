@@ -32,7 +32,7 @@ public enum SessionLauncher {
 
     public static func resumeArgv(_ session: Session) -> [String] {
         guard session.canResume, let agent = session.agent else { return [] }
-        return agent.resumeArgv(sessionID: session.id)
+        return agent.resumeArgv(sessionID: session.sessionID)
     }
 
 }

@@ -81,7 +81,7 @@ final class RemoteSessionsSheetModel: ObservableObject {
     /// a tab is opening (the sheet closes only then).
     @discardableResult
     func open(_ session: RemoteTrackedSession, rows: [Session]) -> Bool {
-        if let id = session.sessionID, let row = rows.first(where: { $0.id == id && $0.host == request.host }) {
+        if let id = session.sessionID, let row = rows.first(where: { $0.id == SessionKey(id: id, host: request.host) }) {
             openSessions.openSession(row)
             return true
         }

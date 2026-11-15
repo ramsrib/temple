@@ -2,11 +2,9 @@ import Foundation
 import TempleCore
 
 /// One engine per host (`HostRegistry`), merged into the one snapshot the
-/// app consumes. An id comes only from the engine of the host that owns its
-/// row now; the merge is recomputed on every engine snapshot *and* on every
-/// ownership change, so a snapshot from a host the id has just left cannot
-/// win, and one from the host it has just joined is not lost for arriving
-/// before the row did.
+/// app consumes, keyed by session: each engine's ids are its own host's
+/// sessions (ADR-041), so the same id from two hosts is two entries and
+/// nothing is decided about who owns an id.
 @MainActor
 public final class EngineSet {
     /// The local engine and one per enabled remote host. Remote hosts come
@@ -16,10 +14,8 @@ public final class EngineSet {
     private var tasks: [HostID: [Task<Void, Never>]] = [:]
     private var started = false
     private var generation: UInt64 = 0
-    private var onUpdate: ((EngineSnapshot) -> Void)?
-    /// The host whose row holds the id now (nil: not a member anywhere).
-    var owner: (String) -> HostID? = { _ in nil }
-    public private(set) var latest: EngineSnapshot?
+    private var onUpdate: ((SessionsSnapshot) -> Void)?
+    public private(set) var latest: SessionsSnapshot?
 
     public init(engines: [any HostEngine]) {
         precondition(Set(engines.map(\.host)).count == engines.count)
@@ -28,7 +24,7 @@ public final class EngineSet {
 
     public func engine(for host: HostID) -> (any HostEngine)? { engines.first { $0.host == host } }
 
-    public func start(onUpdate: @escaping (EngineSnapshot) -> Void) {
+    public func start(onUpdate: @escaping (SessionsSnapshot) -> Void) {
         self.onUpdate = onUpdate
         if let latest { onUpdate(latest) }
         guard !started else { return }
@@ -112,9 +108,6 @@ public final class EngineSet {
         }
     }
 
-    /// A row joined, left or changed host: the merge is decided again.
-    public func ownershipChanged() { remerge() }
-
     /// Asks the owning engine to re-read a row (a write found it gone).
     public func reconcileMembership(_ id: String, host: HostID) {
         guard let engine = engine(for: host) else { return }
@@ -123,7 +116,7 @@ public final class EngineSet {
 
     private func remerge(force: Bool = false) {
         guard !perHost.isEmpty || force else { return }
-        let merged = EngineSnapshot.merged(perHost: perHost, owner: owner, generation: generation &+ 1)
+        let merged = EngineSnapshot.merged(perHost: perHost, generation: generation &+ 1)
         if let latest, latest.resolutions == merged.resolutions, latest.facts == merged.facts,
            latest.memberships == merged.memberships { return }
         generation &+= 1
@@ -133,19 +126,22 @@ public final class EngineSet {
 }
 
 public extension EngineSnapshot {
-    /// Per-host snapshots as one: each id from the engine of the host that
-    /// owns it now, and from no other.
-    static func merged(perHost: [HostID: EngineSnapshot], owner: (String) -> HostID?,
-                       generation: UInt64) -> EngineSnapshot {
-        var resolutions: [String: MemberResolution] = [:]
-        var facts: [String: AuthorizedFacts] = [:]
-        var memberships: [String: MembershipRef] = [:]
+    /// Per-host snapshots as one, keyed by session: each engine's ids are
+    /// its host's sessions. Facts whose transcript is on another host, and
+    /// memberships naming another host, are not that engine's to give and
+    /// are left out.
+    static func merged(perHost: [HostID: EngineSnapshot], generation: UInt64) -> SessionsSnapshot {
+        var resolutions: [SessionKey: MemberResolution] = [:]
+        var facts: [SessionKey: AuthorizedFacts] = [:]
+        var memberships: [SessionKey: MembershipRef] = [:]
         for (host, snapshot) in perHost {
-            for (id, resolution) in snapshot.resolutions where owner(id) == host { resolutions[id] = resolution }
-            for (id, entry) in snapshot.facts where owner(id) == host { facts[id] = entry }
-            for (id, ref) in snapshot.memberships where owner(id) == host && ref.host == host { memberships[id] = ref }
+            for (id, resolution) in snapshot.resolutions { resolutions[SessionKey(id: id, host: host)] = resolution }
+            for (id, entry) in snapshot.facts where entry.locator.host == host { facts[SessionKey(id: id, host: host)] = entry }
+            for (id, ref) in snapshot.memberships where ref.host == host && ref.id == id {
+                memberships[SessionKey(id: id, host: host)] = ref
+            }
         }
-        return EngineSnapshot(generation: generation, resolutions: resolutions, facts: facts, memberships: memberships)
+        return SessionsSnapshot(generation: generation, resolutions: resolutions, facts: facts, memberships: memberships)
     }
 }
 

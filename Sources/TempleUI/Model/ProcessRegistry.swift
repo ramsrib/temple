@@ -8,8 +8,8 @@ import TempleCore
 /// useful for deterministic lifecycle tests.
 @MainActor
 public protocol ProcessRegistry: AnyObject {
-    func register(pid: pid_t, sessionID: String)
-    func unregister(sessionID: String)
+    func register(pid: pid_t, session: SessionKey)
+    func unregister(session: SessionKey)
 }
 
 @MainActor
@@ -20,26 +20,26 @@ public final class DBProcessRegistry: ProcessRegistry {
         self.db = db
     }
 
-    public func register(pid: pid_t, sessionID: String) {
-        try? db.registerProcess(pid: Int32(pid), sessionID: sessionID)
+    public func register(pid: pid_t, session: SessionKey) {
+        try? db.registerProcess(pid: Int32(pid), sessionID: session.id, host: session.host)
     }
 
-    public func unregister(sessionID: String) {
-        try? db.unregisterProcess(sessionID: sessionID)
+    public func unregister(session: SessionKey) {
+        try? db.unregisterProcess(sessionID: session.id, host: session.host)
     }
 }
 
 @MainActor
 public final class InMemoryProcessRegistry: ProcessRegistry {
-    public private(set) var pids: [String: pid_t] = [:]
+    public private(set) var pids: [SessionKey: pid_t] = [:]
 
     public init() {}
 
-    public func register(pid: pid_t, sessionID: String) {
-        pids[sessionID] = pid
+    public func register(pid: pid_t, session: SessionKey) {
+        pids[session] = pid
     }
 
-    public func unregister(sessionID: String) {
-        pids.removeValue(forKey: sessionID)
+    public func unregister(session: SessionKey) {
+        pids.removeValue(forKey: session)
     }
 }

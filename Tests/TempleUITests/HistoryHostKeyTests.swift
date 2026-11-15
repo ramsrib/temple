@@ -85,7 +85,10 @@ final class HistoryHostKeyTests: XCTestCase {
 
     // MARK: Two hosts, one id
 
-    func testTwoHostsListingOneIDAreTwoRowsAndOnlyTheMembersHostAttaches() async throws {
+    /// ADR-041: the same id on two hosts is two sessions. Importing one
+    /// makes it a member on its host only; the other stays outside, and is
+    /// imported on its own host as any other session is.
+    func testTwoHostsListingOneIDAreTwoSessionsEachImportedOnItsOwnHost() async throws {
         let db = try TempleDB.inMemory()
         let local = summary("same", host: .local), box = summary("same", host: remote, secondsAgo: 30)
         let (history, overlay) = history(db, catalog: events([(.local, [local]), (remote, [box])]))
@@ -106,19 +109,20 @@ final class HistoryHostKeyTests: XCTestCase {
         let other = try row(history, boxKey)
         XCTAssertNil(other.member, "a member never attaches to another host's row")
         XCTAssertFalse(history.isInTemple(other))
-        XCTAssertEqual(other.conflict, .host(.local))
-        XCTAssertEqual(other.conflict?.message, "Already in Temple on this Mac.")
-        XCTAssertFalse(other.canImport)
-        XCTAssertFalse(other.canResume, "opening it would join it: not from here")
+        XCTAssertNil(other.conflict, "another host's session with the same id is no conflict")
+        XCTAssertTrue(other.canImport)
+        XCTAssertTrue(other.canResume)
         XCTAssertEqual(history.inTempleCount, 1)
 
         history.requestImport([other])
-        XCTAssertNil(history.pendingImport, "a conflicting row is never offered for import")
-        history.selectAll()
-        XCTAssertTrue(history.selectedOutsideRows.isEmpty)
-        history.requestImport([box])
-        XCTAssertNil(history.pendingImport, "nor by its summary")
-        XCTAssertEqual(overlay.rows["same"]?.host, .local)
+        XCTAssertNotNil(history.pendingImport)
+        await history.confirmImport(undoManager: nil)
+        XCTAssertEqual(try db.sessionState("same", host: remote)?.host, remote)
+        XCTAssertEqual(history.inTempleCount, 2)
+        XCTAssertNotNil(try row(history, boxKey).member)
+        XCTAssertEqual(try row(history, localKey).member?.host, .local, "each row keeps its own host's member")
+        XCTAssertEqual(overlay.rows[.local("same")]?.host, .local)
+        XCTAssertEqual(overlay.rows[SessionKey(id: "same", host: remote)]?.host, remote)
     }
 
     // MARK: Agent conflicts
@@ -135,7 +139,7 @@ final class HistoryHostKeyTests: XCTestCase {
 
             XCTAssertEqual(history.allRows.count, 2, "\(order.map(\.agent))")
             let attached = try row(history, HistoryKey(claude))
-            XCTAssertEqual(attached.member?.id, "dual")
+            XCTAssertEqual(attached.member?.sessionID, "dual")
             let conflict = try row(history, HistoryKey(codex))
             XCTAssertNil(conflict.member)
             XCTAssertEqual(conflict.conflict, .agent(.claude))
@@ -159,7 +163,7 @@ final class HistoryHostKeyTests: XCTestCase {
         await history.confirmImport(undoManager: nil)
 
         XCTAssertEqual(try db.sessionState("dual")?.agent, .codex)
-        XCTAssertEqual(try row(history, HistoryKey(codex)).member?.id, "dual")
+        XCTAssertEqual(try row(history, HistoryKey(codex)).member?.sessionID, "dual")
         XCTAssertEqual(try row(history, HistoryKey(claude)).conflict, .agent(.codex))
     }
 
@@ -175,7 +179,7 @@ final class HistoryHostKeyTests: XCTestCase {
         let (one, _) = history(single, catalog: events([(.local, [claude])]))
         await load(one)
         XCTAssertEqual(one.allRows.map(\.id), [HistoryKey(claude)])
-        XCTAssertEqual(one.allRows.first?.member?.id, "legacy")
+        XCTAssertEqual(one.allRows.first?.member?.sessionID, "legacy")
 
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "legacy", via: .opened)
@@ -184,26 +188,24 @@ final class HistoryHostKeyTests: XCTestCase {
         let memberKey = HistoryKey(host: .local, agent: nil, sessionID: "legacy")
         XCTAssertEqual(Set(both.allRows.map(\.id)), [memberKey, HistoryKey(claude), HistoryKey(codex)])
         XCTAssertNotNil(try row(both, memberKey).member)
-        XCTAssertEqual(try row(both, HistoryKey(claude)).conflict, .host(.local))
-        XCTAssertEqual(try row(both, HistoryKey(codex)).conflict, .host(.local))
+        XCTAssertEqual(try row(both, HistoryKey(claude)).conflict, .agentUnknown)
+        XCTAssertEqual(try row(both, HistoryKey(codex)).conflict, .agentUnknown)
         XCTAssertEqual(both.inTempleCount, 1)
 
         XCTAssertTrue(overlay.join("legacy", via: .opened, agent: .claude).isJoined, "an agentless row takes the incoming agent")
         await both.rebuild()
         XCTAssertEqual(Set(both.allRows.map(\.id)), [HistoryKey(claude), HistoryKey(codex)])
-        XCTAssertEqual(try row(both, HistoryKey(claude)).member?.id, "legacy")
+        XCTAssertEqual(try row(both, HistoryKey(claude)).member?.sessionID, "legacy")
         XCTAssertEqual(try row(both, HistoryKey(codex)).conflict, .agent(.claude))
     }
 
     // MARK: Bulk import of rows sharing an id
 
-    /// Two outside rows share an id — two hosts, or two agents on one host.
-    /// A bulk import joins the first and refuses the second with its reason:
-    /// one imported, one failure, one key marked and one key undoable.
+    /// Two outside rows share an id on one host — two agents. A bulk import
+    /// joins the first and refuses the second with its reason: one
+    /// imported, one failure, one key marked and one key undoable.
     func testABulkImportOfRowsSharingAnIDImportsOneAndRefusesTheOther() async throws {
         let cases: [(first: TranscriptSummary, second: TranscriptSummary, reason: String)] = [
-            (summary("pair", host: .local, secondsAgo: 30), summary("pair", host: remote, secondsAgo: 60),
-             "Already in Temple on this Mac."),
             (summary("pair", agent: .codex, secondsAgo: 30), summary("pair", agent: .claude, secondsAgo: 60),
              "Already in Temple as a Codex session."),
         ]
@@ -240,6 +242,32 @@ final class HistoryHostKeyTests: XCTestCase {
         }
     }
 
+    /// The same id on two hosts in one bulk import: two sessions, both
+    /// imported, each undone with the one undo step (ADR-041).
+    func testABulkImportOfOneIDOnTwoHostsImportsBoth() async throws {
+        let db = try TempleDB.inMemory()
+        let first = summary("pair", host: .local, secondsAgo: 30), second = summary("pair", host: remote, secondsAgo: 60)
+        let (history, overlay) = history(db, catalog: events([(.local, [first]), (remote, [second])]))
+        await load(history)
+        history.selectAll()
+        history.requestImport()
+        let request = try XCTUnwrap(history.pendingImport)
+        let manager = undoManager()
+        manager.beginUndoGrouping()
+        await history.confirmImport(request, undoManager: manager)
+        manager.endUndoGrouping()
+        XCTAssertEqual(history.notice?.text, "2 sessions imported")
+        XCTAssertNil(history.importFailure)
+        XCTAssertEqual(history.justImported, [HistoryKey(first), HistoryKey(second)])
+        XCTAssertEqual(history.inTempleCount, 2)
+        manager.undo()
+        XCTAssertNil(try db.sessionState("pair"))
+        XCTAssertNil(try db.sessionState("pair", host: remote))
+        manager.redo()
+        XCTAssertTrue(overlay.isTempleSession("pair"))
+        XCTAssertTrue(overlay.isTempleSession(SessionKey(id: "pair", host: remote)))
+    }
+
     // MARK: Undo carries the host
 
     /// An import from this Mac is undone after the same id joined from
@@ -258,20 +286,20 @@ final class HistoryHostKeyTests: XCTestCase {
         XCTAssertEqual(try db.sessionState("moved")?.host, .local)
 
         // This Mac's row goes another way; the id then joins from the box.
-        XCTAssertEqual(overlay.leave([SessionKey(id: "moved", host: .local)]), ["moved"])
+        XCTAssertEqual(overlay.leave([SessionKey(id: "moved", host: .local)]).map(\.id), ["moved"])
         await history.rebuild()
         XCTAssertTrue(try row(history, HistoryKey(box)).canImport)
         let second = undoManager()
         second.beginUndoGrouping()
         await history.confirmImport(HistoryModel.importRequest(for: [box]), undoManager: second)
         second.endUndoGrouping()
-        XCTAssertEqual(try db.sessionState("moved")?.host, remote)
+        XCTAssertEqual(try db.sessionState("moved", host: remote)?.host, remote)
         XCTAssertTrue(history.justImported.contains(HistoryKey(box)))
 
         first.undo()
 
-        XCTAssertEqual(try db.sessionState("moved")?.host, remote, "the box's row is not this Mac's to undo")
-        XCTAssertTrue(overlay.isTempleSession("moved"))
+        XCTAssertEqual(try db.sessionState("moved", host: remote)?.host, remote, "the box's row is not this Mac's to undo")
+        XCTAssertTrue(overlay.isTempleSession(SessionKey(id: "moved", host: remote)))
         XCTAssertTrue(history.justImported.contains(HistoryKey(box)))
         XCTAssertEqual(history.notice?.text, "Import not undone · changed since")
         XCTAssertNotNil(try row(history, HistoryKey(box)).member)
@@ -294,7 +322,7 @@ final class HistoryHostKeyTests: XCTestCase {
             original.endUndoGrouping()
             let first = try XCTUnwrap(db.sessionState("replaced")?.incarnation)
 
-            XCTAssertEqual(overlay.leave([SessionKey(id: "replaced", host: .local)]), ["replaced"])
+            XCTAssertEqual(overlay.leave([SessionKey(id: "replaced", host: .local)]).map(\.id), ["replaced"])
             await history.rebuild()
             let again = undoManager()
             again.beginUndoGrouping()

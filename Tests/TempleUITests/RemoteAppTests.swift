@@ -34,7 +34,7 @@ final class RemoteAppTests: XCTestCase {
         let a = Fixture.row("a", project: "/home/u/p", host: hostID), b = Fixture.row("b", project: "/home/u/q", host: hostID)
         Fixture.join([a, b], to: db)
         let app = try app(remote, db: db)
-        await settle { app.sessions.contains { $0.id == "b" } }
+        await settle { app.sessions.contains { $0.sessionID == "b" } }
         app.remoteSessionGone(host: hostID, sessionID: "a")
         XCTAssertEqual(app.remoteNotice?.message, "Temple closed the tab for “Title” because it is no longer running on box.")
         XCTAssertEqual(app.remoteNoticeAction(app.remoteNotice!), "Open session")
@@ -43,12 +43,12 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertTrue(app.queuedRemoteNotices.isEmpty, "one line per host")
         XCTAssertNil(app.remoteNoticeAction(app.remoteNotice!), "Dismiss alone")
         // A person's open of one of them: the line counts it no more.
-        app.openSessions.openSession(app.sessions.first { $0.id == "b" }!)
+        app.openSessions.openSession(app.sessions.first { $0.sessionID == "b" }!)
         await settle { app.remoteNotice?.kind == .gone(sessions: ["a"]) }
         XCTAssertEqual(app.remoteNoticeAction(app.remoteNotice!), "Open session")
         app.actOnRemoteNotice(app.remoteNotice!)
         await settle { app.remoteNotice == nil }
-        XCTAssertNotNil(app.openSessions.openTab(forSessionID: "a"))
+        XCTAssertNotNil(app.openSessions.openTab(for: SessionKey(id: "a", host: hostID)))
     }
 
     func testTheCommandLineRefusesAWorkingRemoteAgentDetachesWithForceAndStopsAnIdleOne() async throws {
@@ -59,21 +59,21 @@ final class RemoteAppTests: XCTestCase {
         let id = try XCTUnwrap(tab.sessionID)
         tab.activity = .running
 
-        let refused = await app.handleControl(ControlRequest(.sessionsClose, id: id))
+        let refused = await app.handleControl(ControlRequest(.sessionsClose, id: id, host: "box"))
         XCTAssertEqual(refused.error?.code, .refused)
         XCTAssertEqual(refused.error?.message, "Its agent is working on box. Pass --force to detach it (it keeps running), or stop it in Temple.")
-        XCTAssertNotNil(app.openSessions.openTab(forSessionID: id))
+        XCTAssertNotNil(app.openSessions.openTab(for: SessionKey(id: id, host: hostID)))
 
-        let detached = await app.handleControl(ControlRequest(.sessionsClose, id: id, force: true))
+        let detached = await app.handleControl(ControlRequest(.sessionsClose, id: id, host: "box", force: true))
         XCTAssertEqual(detached.session?.id, id)
-        XCTAssertNil(app.openSessions.openTab(forSessionID: id))
+        XCTAssertNil(app.openSessions.openTab(for: SessionKey(id: id, host: hostID)))
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(remote.stops.isEmpty, "--force detaches, never stops")
 
         let idle = app.openSessions.newSession(agent: .claude, project: ProjectKey(host: hostID, path: "/home/u/p"))
         await settle { idle.hasLiveProcess }
         idle.activity = .idle
-        let closed = await app.handleControl(ControlRequest(.sessionsClose, id: try XCTUnwrap(idle.sessionID)))
+        let closed = await app.handleControl(ControlRequest(.sessionsClose, id: try XCTUnwrap(idle.sessionID), host: "box"))
         XCTAssertNil(closed.error)
         await settle { remote.stops.count == 1 }
         XCTAssertEqual(remote.stops.first?.fromAttachedTab, true, "an idle agent is stopped now, as ⌘W stops it")
@@ -228,15 +228,15 @@ final class RemoteAppTests: XCTestCase {
         let chip = app.openSessions.appendSessionChip(host: hostID, sessionID: "s1", agent: .claude, directory: "/home/u/p")
         XCTAssertTrue(app.openSessions.chipMayBeRunning(chip))
 
-        let refused = await app.handleControl(ControlRequest(.sessionsClose, id: "s1"))
+        let refused = await app.handleControl(ControlRequest(.sessionsClose, id: "s1", host: "box"))
         XCTAssertEqual(refused.error?.code, .refused)
         XCTAssertEqual(refused.error?.message,
                        "Its agent may still be working on box. Pass --force to close the tab (it keeps running), or stop it in Temple.")
-        XCTAssertNotNil(app.openSessions.openTab(forSessionID: "s1"))
+        XCTAssertNotNil(app.openSessions.openTab(for: SessionKey(id: "s1", host: hostID)))
 
-        let closed = await app.handleControl(ControlRequest(.sessionsClose, id: "s1", force: true))
+        let closed = await app.handleControl(ControlRequest(.sessionsClose, id: "s1", host: "box", force: true))
         XCTAssertEqual(closed.session?.id, "s1")
-        XCTAssertNil(app.openSessions.openTab(forSessionID: "s1"))
+        XCTAssertNil(app.openSessions.openTab(for: SessionKey(id: "s1", host: hostID)))
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertTrue(remote.stops.isEmpty, "--force closes the tab, never stops")
     }
@@ -252,11 +252,11 @@ final class RemoteAppTests: XCTestCase {
         run.claimed = true
         remote.pending = [run]
         let app = try app(remote, db: db)
-        app.overlay.setArchived(true, sessionID: "c5")
+        app.overlay.setArchived(true, session: SessionKey(id: "c5", host: hostID))
         app.openSessions.remoteTabs.restorePending(hosts: [hostID])
         await settle { remote.joinedMarks == ["p5"] }
         try await Task.sleep(for: .milliseconds(100))
-        XCTAssertEqual(app.overlay.rows["c5"]?.archived, true, "a join never unarchives")
+        XCTAssertEqual(app.overlay.rows[only: "c5"]?.archived, true, "a join never unarchives")
         XCTAssertTrue(remote.opens.isEmpty)
     }
 
@@ -274,7 +274,7 @@ final class RemoteAppTests: XCTestCase {
         app.openSessions.remoteTabs.identitySchedule = [0.01]
         app.openSessions.remoteTabs.identityInterval = 0.05
         _ = app.overlay.join("c7", via: .created, agent: .codex, locator: nil, core: SessionCore(host: hostID))
-        app.overlay.setArchived(true, sessionID: "c7")
+        app.overlay.setArchived(true, session: SessionKey(id: "c7", host: hostID))
         // Another tab in another folder: c7 is its lone candidate, never
         // declined for its run.
         let second = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/q"))
@@ -282,11 +282,11 @@ final class RemoteAppTests: XCTestCase {
         app.openSessions.surfaceDidSubmitInput(try XCTUnwrap(second.surface))
         await settle { second.sessionID == "c7" }
         try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(app.overlay.rows["c7"]?.archived, true, "Temple's own yes un-hides nothing")
+        XCTAssertEqual(app.overlay.rows[only: "c7"]?.archived, true, "Temple's own yes un-hides nothing")
         app.openSessions.showHome()
         app.openSessions.activate(second)
-        await settle { app.overlay.rows["c7"]?.archived == false }
-        XCTAssertEqual(app.overlay.rows["c7"]?.archived, false, "the person's open brings it back")
+        await settle { app.overlay.rows[only: "c7"]?.archived == false }
+        XCTAssertEqual(app.overlay.rows[only: "c7"]?.archived, false, "the person's open brings it back")
         app.openSessions.persist()
         await settle { DBTabPersistence(db: db).load().contains { $0.sessionID == "c7" } }
 
@@ -315,7 +315,7 @@ final class RemoteAppTests: XCTestCase {
         XCTAssertEqual(store.order.map(\.position), [0])
         // A Restore lifts a remote mask in the remote store; its Undo puts it back.
         try db.join(sessionID: "r1", via: .imported, agent: .claude, core: SessionCore(host: hostID, directory: remoteKey.path))
-        let record = try XCTUnwrap(overlay.restoreSessions([], unmasking: [remoteKey]))
+        let record = try XCTUnwrap(overlay.restoreSessions([SessionKey](), unmasking: [remoteKey]))
         XCTAssertEqual(store.archived[remoteKey], false)
         overlay.revert(record)
         XCTAssertEqual(store.archived[remoteKey], true)
@@ -426,7 +426,7 @@ final class RemoteAppTests: XCTestCase {
         app.openSessions.remoteTabs.identitySchedule = [60]
         app.openSessions.openSession(try XCTUnwrap(app.sessions.first))
         await settle { app.highlightedID == "a" }
-        XCTAssertEqual(app.highlightedID, "a")
+        XCTAssertEqual(app.highlightedID?.id, "a")
 
         let codex = app.openSessions.newSession(agent: .codex, project: ProjectKey(host: hostID, path: "/home/u/p"))
         await settle { codex.hasLiveProcess && app.highlightedID == nil }
@@ -436,13 +436,13 @@ final class RemoteAppTests: XCTestCase {
         app.openSessions.remoteTabs.retryIdentity(codex)
         await settle { codex.sessionID == "c9" }
         await settle { app.highlightedID == "c9" }
-        XCTAssertEqual(app.highlightedID, "c9", "identified while active: its row is selected")
+        XCTAssertEqual(app.highlightedID?.id, "c9", "identified while active: its row is selected")
 
-        app.openSessions.activate(try XCTUnwrap(app.openSessions.openTab(forSessionID: "a")))
+        app.openSessions.activate(try XCTUnwrap(app.openSessions.openTab(for: SessionKey(id: "a", host: hostID))))
         await settle { app.highlightedID == "a" }
         app.openSessions.openSettings()
         try await Task.sleep(for: .milliseconds(50))
-        XCTAssertEqual(app.highlightedID, "a", "a utility tab leaves the selection as it was")
+        XCTAssertEqual(app.highlightedID?.id, "a", "a utility tab leaves the selection as it was")
     }
 
     /// A yes for a Codex session that ended unidentified closes its tab;
@@ -469,24 +469,24 @@ final class RemoteAppTests: XCTestCase {
         chip.title = "Reply ok | temple-ux3"
         app.openSessions.remoteTabs.confirm(try XCTUnwrap(chip.remote?.suggestions.first), in: chip)
         await settle { !app.openSessions.tabs.contains { $0 === chip } }
-        await settle { app.sessions.contains { $0.id == "c7" } }
+        await settle { app.sessions.contains { $0.sessionID == "c7" } }
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertEqual(app.openSessions.activeTab?.sessionID, "a", "the close activated the other tab")
-        XCTAssertEqual(app.highlightedID, "a", "the selection follows it")
-        let row = try XCTUnwrap(app.sessions.first { $0.id == "c7" })
+        XCTAssertEqual(app.highlightedID?.id, "a", "the selection follows it")
+        let row = try XCTUnwrap(app.sessions.first { $0.sessionID == "c7" })
         XCTAssertEqual(app.displayTitle(row), "hi", "the candidate's prompt, never the launcher placeholder")
         XCTAssertNil(row.state.title, "nothing written for it")
         app.overlay.flushPendingTitles()
-        XCTAssertNil(try db.sessionState("c7")?.generatedTitle, "the terminal's title is not the session's")
+        XCTAssertNil(try db.onlySessionState("c7")?.generatedTitle, "the terminal's title is not the session's")
 
         // The transcript's title fact arrives: it wins, and the hint goes.
         let summary = TranscriptSummary(id: "c7", agent: .codex,
                                         locator: TranscriptLocator(host: hostID, path: "/r/c7.jsonl"),
                                         modifiedAt: Date(), cwd: "/home/u/p", firstPrompt: "hi there")
-        app.overlay.applyFacts(["c7": try XCTUnwrap(AuthorizedFacts.current(summary, in: db))])
-        await settle { app.titleHints["c7"] == nil }
-        XCTAssertNil(app.titleHints["c7"])
-        XCTAssertEqual(app.displayTitle(try XCTUnwrap(app.sessions.first { $0.id == "c7" })), "hi there")
+        app.overlay.applyFacts([SessionKey(id: "c7", host: hostID): try XCTUnwrap(AuthorizedFacts.current(summary, in: db))])
+        await settle { app.titleHints[SessionKey(id: "c7", host: hostID)] == nil }
+        XCTAssertNil(app.titleHints[SessionKey(id: "c7", host: hostID)])
+        XCTAssertEqual(app.displayTitle(try XCTUnwrap(app.sessions.first { $0.sessionID == "c7" })), "hi there")
     }
 
     /// A session started on a host shows its project heading at once, from
@@ -502,10 +502,10 @@ final class RemoteAppTests: XCTestCase {
         let claude = app.openSessions.newSession(agent: .claude, project: typed)
         await settle { claude.hasLiveProcess }
         let id = try XCTUnwrap(claude.sessionID)
-        await settle { app.overlay.rows[id] != nil }
+        await settle { app.overlay.rows[SessionKey(id: id, host: hostID)] != nil }
         let hinted = try XCTUnwrap(app.displayProjects.first { $0.key == typed }, "the heading is there at once")
-        XCTAssertEqual(hinted.sessions.map(\.id), [id], "the row with no folder yet sits under it")
-        XCTAssertNil(app.overlay.rows[id]?.directory, "nothing written to the row")
+        XCTAssertEqual(hinted.sessions.map(\.sessionID), [id], "the row with no folder yet sits under it")
+        XCTAssertNil(app.overlay.rows[SessionKey(id: id, host: hostID)]?.directory, "nothing written to the row")
         XCTAssertFalse(app.overlay.projectKeyOrder.contains(typed), "nor to the project order")
         XCTAssertFalse(app.orderedVisibleProjectKeys.contains(typed), "and no Move or drag can persist it")
 
@@ -516,10 +516,10 @@ final class RemoteAppTests: XCTestCase {
 
         // The pane reports where it went: that folder wins and is recorded.
         app.openSessions.applyLaunchDirectory(claude, canonical: "/home/u/new")
-        await settle { app.overlay.rows[id]?.directory == "/home/u/new" }
+        await settle { app.overlay.rows[SessionKey(id: id, host: hostID)]?.directory == "/home/u/new" }
         await settle { app.displayProjects.contains { $0.key == ProjectKey(host: self.hostID, path: "/home/u/new") } }
         XCTAssertFalse(app.displayProjects.contains { $0.key == typed }, "the hint went")
-        XCTAssertEqual(app.displayProjects.first { $0.key.path == "/home/u/new" }?.sessions.map(\.id), [id])
+        XCTAssertEqual(app.displayProjects.first { $0.key.path == "/home/u/new" }?.sessions.map(\.sessionID), [id])
     }
 
     /// The --no-daemon hint reads as the copy says, the flag set as code.
@@ -547,13 +547,13 @@ final class RemoteAppTests: XCTestCase {
         let db = try TempleDB.inMemory()
         Fixture.join([Fixture.row("d1", project: "/p", host: hostID)], to: db)
         let app = try app(FakeRemoteHost("box"), db: db)
-        await settle { app.overlay.rows["d1"] != nil }
-        let incarnation = try XCTUnwrap(app.overlay.rows["d1"]?.incarnation)
-        try app.openSessions.remoteTabs.discardHandler?("d1", hostID, "another-membership", nil)
-        XCTAssertEqual(app.overlay.rows["d1"]?.archived, false, "a replaced row is left alone")
-        try app.openSessions.remoteTabs.discardHandler?("d1", hostID, incarnation, nil)
-        await settle { app.overlay.rows["d1"]?.archived == true || app.overlay.rows["d1"] == nil }
-        XCTAssertTrue(app.overlay.rows["d1"] == nil || app.overlay.rows["d1"]?.archived == true)
+        await settle { app.overlay.rows[only: "d1"] != nil }
+        let incarnation = try XCTUnwrap(app.overlay.rows[only: "d1"]?.incarnation)
+        try app.openSessions.remoteTabs.discardHandler?(SessionKey(id: "d1", host: hostID), "another-membership", nil)
+        XCTAssertEqual(app.overlay.rows[only: "d1"]?.archived, false, "a replaced row is left alone")
+        try app.openSessions.remoteTabs.discardHandler?(SessionKey(id: "d1", host: hostID), incarnation, nil)
+        await settle { app.overlay.rows[only: "d1"]?.archived == true || app.overlay.rows[only: "d1"] == nil }
+        XCTAssertTrue(app.overlay.rows[only: "d1"] == nil || app.overlay.rows[only: "d1"]?.archived == true)
     }
 
     /// Retiring a host takes its notice and any sheet asked for it with it,

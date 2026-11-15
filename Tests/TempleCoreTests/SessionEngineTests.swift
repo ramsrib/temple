@@ -909,7 +909,7 @@ final class SessionEngineTests: XCTestCase {
         // The consumer persists what the engine authorizes: here, the hint.
         let committer = FactCommitter(database: db)
         let stream = watcher.snapshots()
-        let consumer = Task { for await snapshot in stream { committer.receive(snapshot.facts) } }
+        let consumer = Task { for await snapshot in stream { committer.receive(snapshot.keyedFacts) } }
         defer { consumer.cancel() }
         let recorder = try await start(watcher)
         defer { recorder.stop() }

@@ -5,6 +5,10 @@ import TempleCore
 /// (no id yet) are never persisted.
 public struct PersistedTab: Codable, Equatable {
     public var sessionID: String
+    /// The host the session is on (ADR-041): the same id on another host is
+    /// another session, so a saved tab says which. A descriptor written
+    /// before this was recorded is this Mac's.
+    public var host: HostID = .local
     public var agent: String
     public var projectPath: String
     public var title: String
@@ -12,9 +16,10 @@ public struct PersistedTab: Codable, Equatable {
     /// put the user back where they were instead of on the launcher.
     public var isActive: Bool = false
 
-    public init(sessionID: String, agent: Agent, projectPath: String, title: String,
+    public init(sessionID: String, host: HostID = .local, agent: Agent, projectPath: String, title: String,
                 isActive: Bool = false) {
         self.sessionID = sessionID
+        self.host = host
         self.agent = agent.rawValue
         self.projectPath = projectPath
         self.title = title
@@ -29,6 +34,7 @@ public struct PersistedTab: Codable, Equatable {
     public init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         sessionID = try container.decode(String.self, forKey: .sessionID)
+        host = try container.decodeIfPresent(HostID.self, forKey: .host) ?? .local
         agent = try container.decode(String.self, forKey: .agent)
         projectPath = try container.decode(String.self, forKey: .projectPath)
         title = try container.decode(String.self, forKey: .title)
@@ -36,6 +42,8 @@ public struct PersistedTab: Codable, Equatable {
     }
 
     public var resolvedAgent: Agent { Agent(rawValue: agent) ?? .claude }
+    public var session: SessionKey { SessionKey(id: sessionID, host: host) }
+    public var projectKey: ProjectKey { ProjectKey(host: host, path: projectPath) }
 }
 
 /// Persists per-project open-tab set + order (ADR-009 `open_tabs`, U2).
@@ -82,6 +90,7 @@ public final class DBTabPersistence: TabPersistence {
         (try? db.openTabRecords().map {
             PersistedTab(
                 sessionID: $0.sessionID,
+                host: $0.host,
                 agent: Agent(rawValue: $0.agent) ?? .claude,
                 projectPath: $0.projectPath,
                 title: $0.title,
@@ -95,13 +104,14 @@ public final class DBTabPersistence: TabPersistence {
     }
 
     public func saveAcknowledged(_ tabs: [PersistedTab]) -> Bool {
-        var positions: [String: Int] = [:]
+        var positions: [ProjectKey: Int] = [:]
         let records = tabs.map { tab in
-            let position = positions[tab.projectPath, default: 0]
-            positions[tab.projectPath] = position + 1
+            let position = positions[tab.projectKey, default: 0]
+            positions[tab.projectKey] = position + 1
             return OpenTabRecord(
                 projectPath: tab.projectPath,
                 sessionID: tab.sessionID,
+                host: tab.host,
                 position: position,
                 agent: tab.agent,
                 title: tab.title,

@@ -31,12 +31,12 @@ public final class AppModel: ObservableObject {
     private var builtSessions: [Session] = []
     private var builtRowProjects: [SessionRowProject] = []
     private var applyingEngineSnapshot = false
-    private var ownershipChangedWhileApplying = false
     private var rowPresentationDirty = false
     /// Diagnostic work count, including builds whose values compare equal.
     private(set) var sessionPresentationBuildCount = 0
     private var rowPresentationScheduled = false
-    private(set) var presentedByID: [String: Session] = [:]
+    /// Keyed by session: the same id on two hosts is two rows (ADR-041).
+    private(set) var presentedByID: [SessionKey: Session] = [:]
     private(set) var rowPresentationSortCount = 0
     private(set) var rowProjectBuildCount = 0
 
@@ -52,9 +52,9 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    private var latestEngineSnapshot: EngineSnapshot?
+    private var latestEngineSnapshot: SessionsSnapshot?
 
-    func receiveEngineSnapshot(_ snapshot: EngineSnapshot) {
+    func receiveEngineSnapshot(_ snapshot: SessionsSnapshot) {
         if let latestEngineSnapshot, snapshot.generation < latestEngineSnapshot.generation { return }
         let resolutionsChanged = latestEngineSnapshot?.resolutions != snapshot.resolutions
         let previousMemberships = latestEngineSnapshot?.memberships
@@ -62,12 +62,6 @@ public final class AppModel: ObservableObject {
         applyingEngineSnapshot = true
         overlay.applyFacts(snapshot.facts)
         applyingEngineSnapshot = false
-        // An ownership change seen while facts were being written is merged
-        // now, never from inside the write (it may deliver a new snapshot).
-        if ownershipChangedWhileApplying {
-            ownershipChangedWhileApplying = false
-            engineSet.ownershipChanged()
-        }
         if rowPresentationDirty || resolutionsChanged { rebuildSessions() }
         // A verdict, or the membership a verdict is about, changed.
         if resolutionsChanged || previousMemberships != snapshot.memberships { armArchiveSweep() }
@@ -89,7 +83,7 @@ public final class AppModel: ObservableObject {
     private func rebuildSessions() {
         rowPresentationDirty = false
         sessionPresentationBuildCount += 1
-        let rows = overlay.rows.values.map { Session(state: $0, resolution: latestEngineSnapshot?.resolutions[$0.id]) }
+        let rows = overlay.rows.values.map { Session(state: $0, resolution: latestEngineSnapshot?.resolutions[$0.key]) }
         rowPresentationSortCount += 1
         let next = rows.sorted(by: Self.moreRecentRow)
         let grouped = Dictionary(grouping: next.filter { $0.project != nil }) { $0.project! }
@@ -118,7 +112,7 @@ public final class AppModel: ObservableObject {
     /// shows it: the row's current value is kept for whoever reads it, and
     /// nothing is rebuilt or published. A row not yet presented waits for
     /// the build its own change already asked for.
-    private func applyRecency(_ id: String) {
+    private func applyRecency(_ id: SessionKey) {
         guard presentedByID[id] != nil, let state = overlay.rows[id] else { return }
         presentedByID[id] = Session(state: state, resolution: latestEngineSnapshot?.resolutions[id])
     }
@@ -153,9 +147,9 @@ public final class AppModel: ObservableObject {
     /// takes its place by recency among the frozen ones: a new session lands
     /// on top, but an old row that only now learned its folder does not.
     private var frozenProjectOrder: [ProjectKey] = []
-    private var frozenSessionOrder: [ProjectKey: [String]] = [:]
+    private var frozenSessionOrder: [ProjectKey: [SessionKey]] = [:]
     private var knownProjectKeys = Set<ProjectKey>()
-    private var knownSessionIDs: [ProjectKey: Set<String>] = [:]
+    private var knownSessionIDs: [ProjectKey: Set<SessionKey>] = [:]
 
     private func extendRowRanks() {
         guard sidebarRanksFrozen else { return }
@@ -325,7 +319,7 @@ public final class AppModel: ObservableObject {
         guard !openSessions.isQuitting else { return }
         let folders = AutoArchivePolicy.foldersToCheck(
             rows: overlay.rows.values, snapshot: latestEngineSnapshot,
-            openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: now())
+            openSessions: Set(openSessions.openSessionKeysInTabOrder), now: now())
         var evidence: [ProjectKey: DirectoryEvidence] = [:]
         for folder in folders { evidence[folder] = await folderEvidence(folder) }
         guard !openSessions.isQuitting else { return }
@@ -336,9 +330,9 @@ public final class AppModel: ObservableObject {
         // window after another host's proof.
         let requests = AutoArchivePolicy.proofRequests(
             rows: overlay.rows.values, snapshot: latestEngineSnapshot,
-            openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: now())
+            openSessions: Set(openSessions.openSessionKeysInTabOrder), now: now())
         let hosts = Set(AutoArchivePolicy.candidates(rows: overlay.rows.values,
-                                                     openSessionIDs: Set(openSessions.openSessionIDsInTabOrder),
+                                                     openSessions: Set(openSessions.openSessionKeysInTabOrder),
                                                      now: now()).map(\.ref.host))
         let prove = proveAbsence
         var allProofs: [AutoArchivePolicy.ProofKey: AbsenceProof] = [:]
@@ -373,7 +367,7 @@ public final class AppModel: ObservableObject {
         let at = now()
         let entries = AutoArchivePolicy.plan(
             rows: overlay.rows.values, snapshot: latestEngineSnapshot, proofs: proofs, requested: requested,
-            folders: folders, openSessionIDs: Set(openSessions.openSessionIDsInTabOrder), now: at, host: host)
+            folders: folders, openSessions: Set(openSessions.openSessionKeysInTabOrder), now: at, host: host)
         guard !entries.isEmpty else { return }
         let idleBefore = at.addingTimeInterval(-AutoArchivePolicy.idleAfter)
         // A row that was never a session (Temple created it, nothing was ever
@@ -384,11 +378,11 @@ public final class AppModel: ObservableObject {
         let discarded = overlay.discardNeverStarted(dropped.map(\.ref), idleBefore: idleBefore)
         if !discarded.isEmpty {
             TempleUILog.db.notice("dropped \(discarded.count, privacy: .public) sessions that never started")
-            discarded.forEach { openSessions.forgetClosedTabs(sessionID: $0) }
+            discarded.forEach { openSessions.forgetClosedTabs(session: $0) }
         }
         let archived = Set(overlay.autoArchive(archivable, idleBefore: idleBefore))
         guard !archived.isEmpty else { return }
-        let done = archivable.filter { archived.contains($0.ref.id) }
+        let done = archivable.filter { archived.contains($0.ref.key) }
         let folderCount = done.filter { $0.reason == .folderMissing }.count
         TempleUILog.db.notice("auto-archived \(done.count, privacy: .public) sessions: \(done.count - folderCount, privacy: .public) without a transcript, \(folderCount, privacy: .public) without a folder")
         // A straggling batch joins the line already showing: one notice, one Undo.
@@ -439,12 +433,12 @@ public final class AppModel: ObservableObject {
 
     // Sidebar UI state (U1)
     @Published public var searchText = ""
-    @Published public var highlightedID: String?
+    @Published public var highlightedID: SessionKey?
     /// A row's title until its transcript's own arrives, by session id: the
     /// first prompt of the candidate the user said yes to for a new Codex
     /// session on a host. Display only: never written to the row or any
     /// store, and dropped once the row has a title fact.
-    @Published private(set) var titleHints: [String: String] = [:]
+    @Published private(set) var titleHints: [SessionKey: String] = [:]
 
     /// Restored from `UIStateStore` in `init` (property observers don't fire
     /// there, so the restore doesn't write itself straight back). Every later
@@ -667,8 +661,7 @@ public final class AppModel: ObservableObject {
         resolveAppearance = { [weak self] in
             self?.currentAppearance() ?? .default
         }
-        engineSet.owner = { [weak overlay] id in overlay?.rows[id]?.host }
-        overlay.onOwnershipMismatch = { [weak engineSet] id, host in engineSet?.reconcileMembership(id, host: host) }
+        overlay.onOwnershipMismatch = { [weak engineSet] key in engineSet?.reconcileMembership(key.id, host: key.host) }
         rebuildSessions()
         overlay.rowChanges
             .sink { [weak self] change in
@@ -682,10 +675,6 @@ public final class AppModel: ObservableObject {
                     // Off the once-a-second activity path: only a change
                     // the plan could read (a flag, a keep, membership).
                     self.armArchiveSweep()
-                    // A row joined, left or moved host: the merge follows it
-                    // (after the facts being applied, if any).
-                    if self.applyingEngineSnapshot { self.ownershipChangedWhileApplying = true }
-                    else { self.engineSet.ownershipChanged() }
                 }
                 guard !self.applyingEngineSnapshot else { return }
                 if change.recencyOnly {
@@ -716,29 +705,30 @@ public final class AppModel: ObservableObject {
             let message = body.isEmpty ? title : body
             self.notifications.post(projectName: tab.projectKey.displayName,
                                     sessionTitle: overlayTitle(tab: tab),
-                                    sessionID: tab.sessionID,
+                                    session: tab.sessionKey,
                                     body: message)
         }
         // U7: notification click → focus that session's tab.
-        notifications.onActivateSession = { [weak self] sessionID in
-            self?.openSession(id: sessionID)
+        notifications.onActivateSession = { [weak self] sessionID, host in
+            self?.activateNotified(sessionID, host: host)
         }
         // The agent renamed itself → remember it, so the sidebar and ⌘K track a
         // long session instead of showing the prompt it opened with an hour ago.
-        openSessions.titleHandler = { [weak self] sessionID, host, title in
-            self?.overlay.recordGeneratedTitle(title, for: sessionID, host: host)
+        openSessions.titleHandler = { [weak self] key, title in
+            self?.overlay.recordGeneratedTitle(title, for: key)
         }
         // Whatever a tab runs is a Temple session from then on — including one
         // resumed from elsewhere, which is how it joins the sidebar.
         openSessions.openedHandler = { [weak self] open in
             guard let self else { return .joined }
-            let result = self.overlay.join(open.id, via: open.via, agent: open.agent, locator: open.locator,
-                                           core: SessionCore(host: open.host), carrying: open.carried)
+            let key = SessionKey(id: open.id, host: open.host)
+            let result = self.overlay.join(key, via: open.via, agent: open.agent, locator: open.locator,
+                                           carrying: open.carried)
             guard result.conflict == nil else { return result }
             // Durably: History's Undo Import must keep a session that was
             // opened since, even once its tab is closed (TempleDB.leave
             // keeps a row with last_opened_at set).
-            if open.via == .opened { self.overlay.recordOpened(open.id, host: open.host) }
+            if open.via == .opened { self.overlay.recordOpened(key) }
             // A session found gone and opened again: its line is no news.
             if !open.host.isLocal { self.reconcileRemoteNotices(host: open.host) }
             if let engine = self.engineSet.engine(for: open.host) {
@@ -747,7 +737,7 @@ public final class AppModel: ObservableObject {
             }
             return result
         }
-        openSessions.touchHandler = { [weak self] id, host, at in self?.overlay.touch(id, host: host, at: at) }
+        openSessions.touchHandler = { [weak self] key, at in self?.overlay.touch(key, at: at) }
         openSessions.remoteTabs.noticeHandler = { [weak self] host, message in
             self?.showRemoteNotice(RemoteNotice(host: host, message: message, kind: .closed))
         }
@@ -763,7 +753,7 @@ public final class AppModel: ObservableObject {
         }
         openSessions.remoteTabs.rowIncarnation = { [weak self] id in self?.overlay.rows[id]?.incarnation }
         openSessions.remoteTabs.rowLastOpened = { [weak self] id in self?.overlay.rows[id]?.lastOpenedAt }
-        openSessions.remoteTabs.discardHandler = { [weak self] id, host, incarnation, lastOpenedAt in
+        openSessions.remoteTabs.discardHandler = { [weak self] key, incarnation, lastOpenedAt in
             // One transaction under (id, host, incarnation): the row goes,
             // or (the user made it theirs: named, pinned, colored) is
             // archived, reversibly. A membership replaced since, through
@@ -772,8 +762,8 @@ public final class AppModel: ObservableObject {
             guard let self else { return }
             // An Open since Discard was chosen (`lastOpenedAt` moved)
             // leaves the row as it is.
-            _ = try self.overlay.discardRemoteSession(id, host: host, incarnation: incarnation, lastOpenedAt: lastOpenedAt)
-            self.openSessions.forgetClosedTabs(sessionID: id)
+            _ = try self.overlay.discardRemoteSession(key, incarnation: incarnation, lastOpenedAt: lastOpenedAt)
+            self.openSessions.forgetClosedTabs(session: key)
         }
         // ⌘T then close without typing: the minted id never got a transcript,
         // and its row would read "New Claude session" forever. The tab's
@@ -785,9 +775,9 @@ public final class AppModel: ObservableObject {
         // no transcript was ever seen for it), so a chip restored across a
         // relaunch goes the same way, and a session with a transcript on
         // record is never even asked about.
-        openSessions.unstartedHandler = { [weak self] id, host in
-            guard let self, self.overlay.rows[id]?.host == host,
-                  let engine = self.engineSet.engine(for: host) else { return }
+        openSessions.unstartedHandler = { [weak self] key in
+            guard let self, self.overlay.rows[key] != nil,
+                  let engine = self.engineSet.engine(for: key.host) else { return }
             // Decided on durable state: this process's own activity on the
             // row is written first (a touch still pending from the spawn),
             // then the row is read from the database rather than this
@@ -798,25 +788,25 @@ public final class AppModel: ObservableObject {
             // the statement; the close itself touches nothing for an unused
             // tab, so no write of this close's own can spend a keep after
             // this read.
-            self.overlay.flushPendingTouch(id)
-            guard let row = self.overlay.storedRow(id), row.host == host,
+            self.overlay.flushPendingTouch(key)
+            guard let row = self.overlay.storedRow(key),
                   AutoArchivePolicy.neverStarted(row),
                   let incarnation = row.incarnation else { return }
             // The proof is for this membership (the engine re-reads the row
             // and answers for it or for none), and so is the drop: a row
             // that left and joined again is another session, not this one.
-            let ref = MembershipRef(id: id, host: host, incarnation: incarnation)
+            let ref = MembershipRef(id: key.id, host: key.host, incarnation: incarnation)
             Task { @MainActor [weak self] in
                 guard await engine.confirmAbsence(ref) else {
-                    TempleUILog.db.notice("unstarted session \(id, privacy: .public) kept: absence not confirmed")
+                    TempleUILog.db.notice("unstarted session \(key.id, privacy: .public) on \(key.host.rawValue, privacy: .public) kept: absence not confirmed")
                     return
                 }
                 // A tab of it opened meanwhile (⌘⇧T while the check was out)
                 // keeps it, whatever the saved tab set says: another process
                 // saving its own tabs replaces this one's saved set.
-                guard let self, self.openSessions.openTab(forSessionID: id) == nil,
+                guard let self, self.openSessions.openTab(for: key) == nil,
                       self.overlay.discardUnstartedCreation(ref) else { return }
-                self.openSessions.forgetClosedTabs(sessionID: id)
+                self.openSessions.forgetClosedTabs(session: key)
             }
         }
         openSessions.keyboardHeldByField = { NSApp.keyWindow?.firstResponder is NSText }
@@ -825,18 +815,19 @@ public final class AppModel: ObservableObject {
         openSessions.canStartOnHost = { [weak self] host in
             host.isLocal || self?.remoteTmuxProblem(host) == nil
         }
-        openSessions.launchDirectoryHandler = { [weak self] id, host, cwd in
-            self?.overlay.observeLaunchDirectory(id, host: host, cwd)
+        openSessions.launchDirectoryHandler = { [weak self] key, cwd in
+            self?.overlay.observeLaunchDirectory(key, cwd)
         }
         openSessions.titleHintHandler = { [weak self] id, title in
+            // `id` is the session (its id on its host).
             guard let self, self.overlay.rows[id]?.title == nil else { return }
             self.titleHints[id] = title
         }
         // A resume failure uses this member's completed resolution. A newly
         // launched or unreadable transcript never acquires a missing verdict.
-        openSessions.sessionKnown = { [weak self] sessionID in
+        openSessions.sessionKnown = { [weak self] key in
             guard let self else { return nil }
-            switch self.latestEngineSnapshot?.resolutions[sessionID] {
+            switch self.latestEngineSnapshot?.resolutions[key] {
             case .loaded: return true
             case .confirmedAbsent: return false
             default: return nil
@@ -854,10 +845,12 @@ public final class AppModel: ObservableObject {
         // The tab is resolved when the id is EMITTED, not a run-loop turn
         // later (see below).
         openSessions.$activeTabID
-            .map { [weak self] tabID -> AnyPublisher<String??, Never> in
+            .map { [weak self] tabID -> AnyPublisher<SessionKey??, Never> in
                 guard let tabID, let tab = self?.openSessions.tabs.first(where: { $0.id == tabID }),
-                      tab.kind == .session else { return Just(String??.none).eraseToAnyPublisher() }
-                return tab.$sessionID.map { String??.some($0) }.eraseToAnyPublisher()
+                      tab.kind == .session else { return Just(SessionKey??.none).eraseToAnyPublisher() }
+                // A tab's host never changes: its id, on that host.
+                let host = tab.host
+                return tab.$sessionID.map { SessionKey??.some($0.map { SessionKey(id: $0, host: host) }) }.eraseToAnyPublisher()
             }
             .switchToLatest()
             .receive(on: RunLoop.main)
@@ -883,10 +876,10 @@ public final class AppModel: ObservableObject {
                 // apart into its other sessions' own flags, as Restore does.
                 // Not on the undo stack: undo would re-archive a row whose
                 // tab is open.
-                let sid = tab.sessionID
+                let key = tab.sessionKey
                 let masked = self.overlay.isProjectArchived(tab.projectKey)
-                if let sid, self.overlay.isArchived(sid) || masked {
-                    _ = self.overlay.restoreSessions([sid], unmasking: masked ? [tab.projectKey] : [])
+                if let key, self.overlay.isArchived(key) || masked {
+                    _ = self.overlay.restoreSessions([key], unmasking: masked ? [tab.projectKey] : [])
                 } else if masked {
                     // A new session in an archived project: the project's
                     // other sessions stay away.
@@ -940,7 +933,7 @@ public final class AppModel: ObservableObject {
             self?.openSessions.openSession(session)
         }
         history.hasOpenTab = { [weak self] key in
-            self?.openSessions.openTab(forSessionID: key.sessionID)?.host == key.host
+            self?.openSessions.openTab(for: SessionKey(id: key.sessionID, host: key.host)) != nil
         }
         history.memberRows = { [weak self] in self?.sessions ?? [] }
         history.archiveMember = { [weak self] in self?.archiveSession($0, undoManager: $1) }
@@ -1020,7 +1013,7 @@ public final class AppModel: ObservableObject {
     /// Asks the sidebar to scroll a row into view. A serial, so asking for
     /// the same row twice scrolls twice (the user may have scrolled away).
     public struct SidebarReveal: Equatable {
-        public let sessionID: String
+        public let session: SessionKey
         let serial: Int
     }
     @Published public private(set) var sidebarReveal: SidebarReveal?
@@ -1028,9 +1021,9 @@ public final class AppModel: ObservableObject {
     /// History's "Show in Sidebar": light the row in the rail and scroll it
     /// into view, opening the rail if it is hidden. The user stays where they
     /// are.
-    public func showInSidebar(_ id: String) {
+    public func showInSidebar(_ id: SessionKey) {
         highlightedID = id
-        let request = SidebarReveal(sessionID: id, serial: (sidebarReveal?.serial ?? 0) + 1)
+        let request = SidebarReveal(session: id, serial: (sidebarReveal?.serial ?? 0) + 1)
         guard sidebarVisibility.isSidebarHidden else {
             sidebarReveal = request
             return
@@ -1050,7 +1043,7 @@ public final class AppModel: ObservableObject {
     /// the title it was saved with, and for a new tab says what it is. The
     /// row's placeholder ("New Claude session") never beats a real title.
     func sessionTabTitle(_ tab: SessionTab) -> String {
-        if let sid = tab.sessionID, let row = presentedByID[sid],
+        if let key = tab.sessionKey, let row = presentedByID[key],
            let title = row.state.customName ?? row.state.title { return title }
         return tab.title
     }
@@ -1256,36 +1249,49 @@ public final class AppModel: ObservableObject {
         }
     }
 
-    public func transcriptURL(for id: String) -> URL? {
+    public func transcriptURL(for id: SessionKey) -> URL? {
         presentedByID[id]?.transcript?.localURL
     }
 
     public func resumeArgv(for tab: SessionTab) -> [String] {
-        guard let id = tab.sessionID else { return [] }
-        if let row = presentedByID[id] { return SessionLauncher.resumeArgv(row) }
-        return tab.agent.resumeArgv(sessionID: id)
+        guard let key = tab.sessionKey else { return [] }
+        if let row = presentedByID[key] { return SessionLauncher.resumeArgv(row) }
+        return tab.agent.resumeArgv(sessionID: key.id)
     }
 
     // MARK: Opening by id (palette / notifications)
 
-    public func openSession(id: String) {
-        if let row = presentedByID[id] {
+    public func openSession(_ key: SessionKey) {
+        if let row = presentedByID[key] {
             openSessions.openSession(row)
             return
         }
-        let host = overlay.rows[id]?.host ?? openSessions.sessionTab(withSessionID: id)?.host ?? .local
-        let engine = engineSet.engine(for: host)
-        if let tab = openSessions.sessionTab(withSessionID: id) {
-            if let engine { Task { await engine.requestResolution(id) } }
+        let engine = engineSet.engine(for: key.host)
+        if let tab = openSessions.sessionTab(for: key) {
+            if let engine { Task { await engine.requestResolution(key.id) } }
             openSessions.activate(tab)
             return
         }
-        if overlay.isTempleSession(id), let engine { Task { await engine.requestResolution(id) } }
+        if overlay.isTempleSession(key), let engine { Task { await engine.requestResolution(key.id) } }
+    }
+
+    /// A notification's click. One posted by an older build names only the
+    /// id: it opens the session only when exactly one host has that id, in
+    /// a row or a tab, and otherwise does nothing rather than guess.
+    func activateNotified(_ sessionID: String, host: HostID?) {
+        if let host { openSession(SessionKey(id: sessionID, host: host)); return }
+        let hosts = Set(overlay.rows.keys.filter { $0.id == sessionID }.map(\.host))
+            .union(openSessions.tabs.compactMap(\.sessionKey).filter { $0.id == sessionID }.map(\.host))
+        guard hosts.count == 1, let only = hosts.first else {
+            TempleUILog.notifications.notice("notification for \(sessionID, privacy: .public) not opened: \(hosts.count, privacy: .public) hosts have it")
+            return
+        }
+        openSession(SessionKey(id: sessionID, host: only))
     }
 
     /// Catalog actions prefer durable row facts when the session is a member.
     public func resumeArgv(for session: TranscriptSummary) -> [String] {
-        if let row = presentedByID[session.id] {
+        if let row = presentedByID[SessionKey(id: session.id, host: session.locator.host)] {
             return SessionLauncher.resumeArgv(row)
         }
         return session.agent.resumeArgv(sessionID: session.id)
@@ -1349,7 +1355,7 @@ public final class AppModel: ObservableObject {
         var placed = projects
         var hints: [SessionRowProject] = []
         for tab in openSessions.tabs where tab.kind == .session && tab.remote != nil && !tab.projectPath.isEmpty {
-            let row = tab.sessionID.flatMap { presentedByID[$0] }
+            let row = tab.sessionKey.flatMap { presentedByID[$0] }
             if let row, row.project != nil || row.state.archived { continue }
             let key = tab.projectKey
             if let index = placed.firstIndex(where: { $0.key == key }) {
@@ -1529,7 +1535,7 @@ public final class AppModel: ObservableObject {
     /// searches every Temple session.
     public func paletteResults(_ query: String) -> [Session] {
         let rows = visibleRows
-        let open = Set(openSessions.openSessionIDsInTabOrder)
+        let open = Set(openSessions.openSessionKeysInTabOrder)
         guard !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             return rows.filter { open.contains($0.id) }.sorted(by: Self.moreRecentRow)
         }
@@ -1540,7 +1546,7 @@ public final class AppModel: ObservableObject {
     /// A palette row can open when its tab is already there or its row knows
     /// the agent and folder to resume in.
     public func canOpenFromPalette(_ session: Session) -> Bool {
-        openSessions.openTab(forSessionID: session.id) != nil || session.canResume
+        openSessions.openTab(for: session.id) != nil || session.canResume
     }
 
     /// Return on a palette row. A row with no folder cannot be resumed — it
@@ -1548,12 +1554,12 @@ public final class AppModel: ObservableObject {
     /// narrowed to that one session, where it can be seen and archived.
     public func openPaletteResult(_ session: Session) {
         commandPalettePresented = false
-        if let tab = openSessions.openTab(forSessionID: session.id) {
+        if let tab = openSessions.openTab(for: session.id) {
             openSessions.activate(tab)
         } else if session.canResume {
             openSessions.openSession(session)
         } else {
-            showInHistory(sessionID: session.id)
+            showInHistory(session.id)
         }
     }
 
@@ -1561,14 +1567,16 @@ public final class AppModel: ObservableObject {
     /// seen and archived (⌘K's Return on such a row, a folderless chip's
     /// "Show in History"). Filters left from an earlier visit give way —
     /// "Not in Temple", another agent or project would hide the session.
-    public func showInHistory(sessionID: String) {
+    /// The session's own host's page (ADR-041): the same id on another
+    /// host is another session, and is not shown for it.
+    public func showInHistory(_ session: SessionKey) {
         history.cancelPendingCommands()
-        history.page = .thisMac
+        history.page = session.host.isLocal ? .thisMac : .host(session.host)
         history.justArchivedChip = nil
         history.scope = .all
         history.agentFilter = nil
         history.projectKeyFilter = nil
-        history.query = sessionID
+        history.query = session.id
         openSessions.openHistory()
     }
 
@@ -1581,24 +1589,24 @@ public final class AppModel: ObservableObject {
     /// one keystroke to take back: ⌘Z through the window's undo manager (Edit ▸
     /// Undo Archive Session), with redo registered as the undo runs. The pin the
     /// archive dropped comes back with the session.
-    public func archiveSession(_ id: String, undoManager: UndoManager?) {
+    public func archiveSession(_ id: SessionKey, undoManager: UndoManager?) {
         archiveSessions([id], undoManager: undoManager)
     }
 
     /// Several at once (History's selection bar) as one undo step, by the
     /// same path. `changed` hears each undo (false) and redo (true).
-    public func archiveSessions(_ ids: [String], undoManager: UndoManager?,
+    public func archiveSessions(_ ids: [SessionKey], undoManager: UndoManager?,
                                 changed: @escaping @MainActor (Bool) -> Void = { _ in }) {
         let pinned = Set(ids.filter { overlay.isPinned($0) })
-        for id in ids { overlay.setArchived(true, sessionID: id) }
+        for id in ids { overlay.setArchived(true, session: id) }
         registerUndo(undoManager, name: ids.count == 1 ? "Archive Session" : "Archive Sessions") { [overlay] in
             for id in ids {
-                overlay.setArchived(false, sessionID: id)
+                overlay.setArchived(false, session: id)
                 if pinned.contains(id), !overlay.isPinned(id) { overlay.togglePin(id) }
             }
             changed(false)
         } redo: { [overlay] in
-            for id in ids { overlay.setArchived(true, sessionID: id) }
+            for id in ids { overlay.setArchived(true, session: id) }
             changed(true)
         }
     }
@@ -1613,14 +1621,14 @@ public final class AppModel: ObservableObject {
     /// first (`closeAndArchive`).
     public func offersArchiveForUnknownDirectory(_ tab: SessionTab) -> Bool {
         guard tab.launchPreparationError == OpenSessionsModel.unknownDirectoryMessage,
-              let id = tab.sessionID else { return false }
-        return overlay.isTempleSession(id)
+              let key = tab.sessionKey else { return false }
+        return overlay.isTempleSession(key)
     }
 
     public func closeAndArchive(_ tab: SessionTab, undoManager: UndoManager?) {
-        guard let id = tab.sessionID else { return }
+        guard let key = tab.sessionKey else { return }
         openSessions.closeTab(tab.id)
-        archiveSession(id, undoManager: undoManager)
+        archiveSession(key, undoManager: undoManager)
     }
 
     public func archiveProject(_ key: ProjectKey, undoManager: UndoManager?) {
@@ -1667,9 +1675,9 @@ public final class AppModel: ObservableObject {
     }
 
     /// A session's current membership, restored (tools and tests).
-    public func restoreSession(_ id: String, undoManager: UndoManager?) {
+    public func restoreSession(_ id: SessionKey, undoManager: UndoManager?) {
         guard let row = overlay.rows[id], let incarnation = row.incarnation else { return }
-        restoreSessions([MembershipRef(id: id, host: row.host, incarnation: incarnation)], undoManager: undoManager)
+        restoreSessions([MembershipRef(id: id.id, host: id.host, incarnation: incarnation)], undoManager: undoManager)
     }
 
     private func registerRestoreUndo(_ undoManager: UndoManager?, name: String, memberships: [MembershipRef],

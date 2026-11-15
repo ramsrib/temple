@@ -82,15 +82,9 @@ struct OpenByIDSheetView: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                if case .elsewhere = sheet.check {
-                    // The one session this id is: its own host's, opened as it is.
-                    Button("Open it") { sheet.openElsewhere() }
-                        .keyboardShortcut(.defaultAction)
-                } else {
-                    Button("Open") { sheet.confirm() }
-                        .keyboardShortcut(.defaultAction)
-                        .disabled(!sheet.canOpen)
-                }
+                Button("Open") { sheet.confirm() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!sheet.canOpen)
             }
             .padding(.top, 8)
         }
@@ -114,8 +108,6 @@ struct OpenByIDSheetView: View {
             }
             .font(.system(size: 11))
             .foregroundStyle(.secondary)
-        case .elsewhere(let other):
-            RemoteProblem("Temple here already has this session, on \(other.isLocal ? "this Mac" : other.displayName). Open it to continue it there.", color: .orange)
         case .problem(let line), .unreachable(let line):
             RemoteProblem(line)
         }

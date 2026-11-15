@@ -96,7 +96,7 @@ final class HistoryPeerTests: XCTestCase {
     func testHostPageListsTheOtherTemplesSessionsBesideThisMacsMembers() async throws {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "m1", via: .opened, agent: .claude, core: SessionCore(host: box, directory: "/work/app"))
-        try db.setCustomName("Mine here", sessionID: "m1")
+        try db.setCustomName("Mine here", sessionID: "m1", host: box)
         try db.join(sessionID: "elsewhere", via: .opened, agent: .claude, core: SessionCore(host: .local, directory: "/x"))
         let peer = Peer(.listed(PeerListing(sessions: [
             peerRow("m1", name: "Theirs"), peerRow("p1", name: "Fix login", color: "blue", tab: true),
@@ -116,12 +116,16 @@ final class HistoryPeerTests: XCTestCase {
         XCTAssertEqual(rows["p1"]?.standing, .outside)
         XCTAssertTrue(rows["p1"]?.canImport == true)
         XCTAssertTrue(rows["p1"]?.canResume == true)
-        XCTAssertEqual(rows["elsewhere"]?.conflict, .host(.local), "Temple's on another host: a conflict, no actions")
+        // ADR-041: Temple's on this Mac, and the peer's copy on the box is
+        // another session: outside, and importable there.
+        XCTAssertNil(rows["elsewhere"]?.conflict, "the same id on another host is no conflict")
+        XCTAssertFalse(rows["elsewhere"]?.isMember == true)
+        XCTAssertTrue(rows["elsewhere"]?.canImport == true)
         XCTAssertEqual(history.peerPages[box]?.listing?.skipped, 2)
 
         history.scope = .notInTemple
         await settle(history)
-        XCTAssertEqual(Set(history.visibleRows.map(\.sessionID)), ["p1", "elsewhere"], "a conflict is not this Mac's member here either, as in Not in Temple")
+        XCTAssertEqual(Set(history.visibleRows.map(\.sessionID)), ["p1", "elsewhere"], "the box's copy is not in Temple there")
         XCTAssertEqual(HistoryScope.notInTemple.label(on: .host(box)), "Only there")
         XCTAssertEqual(HistoryScope.inTemple.label(on: .host(box)), "In Temple here")
         XCTAssertEqual(HistoryScope.inTemple.label(on: .thisMac), "In Temple")
@@ -184,7 +188,7 @@ final class HistoryPeerTests: XCTestCase {
         undo.beginUndoGrouping()
         await history.confirmImport(undoManager: undo)
         undo.endUndoGrouping()
-        let state = try XCTUnwrap(try db.sessionState("p1"))
+        let state = try XCTUnwrap(try db.sessionState("p1", host: box))
         XCTAssertEqual(state.host, box)
         XCTAssertEqual(state.customName, "Fix login")
         XCTAssertEqual(state.color, "blue")
@@ -194,10 +198,10 @@ final class HistoryPeerTests: XCTestCase {
         peer.configuration = nil
         history.hostConfigurationChanged(box)
         undo.undo()
-        XCTAssertNil(try db.sessionState("p1"), "the import is undone")
+        XCTAssertNil(try db.sessionState("p1", host: box), "the import is undone")
         // Its Redo would import from a host that isn't the one it read.
         undo.redo()
-        XCTAssertNil(try db.sessionState("p1"), "Redo is refused once the host changed")
+        XCTAssertNil(try db.sessionState("p1", host: box), "Redo is refused once the host changed")
     }
 
     func testUndoKeepsASessionRenamedHereAfterTheImport() async throws {
@@ -212,9 +216,9 @@ final class HistoryPeerTests: XCTestCase {
         undo.beginUndoGrouping()
         await history.confirmImport(undoManager: undo)
         undo.endUndoGrouping()
-        try db.setCustomName("Renamed here", sessionID: "p1")
+        try db.setCustomName("Renamed here", sessionID: "p1", host: box)
         undo.undo()
-        XCTAssertEqual(try db.sessionState("p1")?.customName, "Renamed here", "a rename here is a decision the undo keeps")
+        XCTAssertEqual(try db.sessionState("p1", host: box)?.customName, "Renamed here", "a rename here is a decision the undo keeps")
     }
 
     // MARK: Open
@@ -273,7 +277,7 @@ final class HistoryPeerTests: XCTestCase {
         XCTAssertEqual(history.allRows.map(\.sessionID), ["p1"], "the replacement lists it again")
 
         await history.confirmImport(captured, undoManager: nil)
-        XCTAssertNil(try db.sessionState("p1"), "the captured rows were the old host's")
+        XCTAssertNil(try db.sessionState("p1", host: box), "the captured rows were the old host's")
     }
 
     /// Reading another Temple changes nothing about This Mac's page: a

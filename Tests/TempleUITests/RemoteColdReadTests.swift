@@ -48,8 +48,8 @@ final class RemoteColdReadTests: XCTestCase {
     private func connectedTab(_ app: AppModel, id: String = "s1") async throws -> SessionTab {
         let row = Fixture.row(id, project: "/home/u/p", host: hostID)
         Fixture.join([row], to: db)
-        await settle { app.sessions.contains { $0.id == id } }
-        app.openSessions.openSession(try XCTUnwrap(app.sessions.first { $0.id == id }))
+        await settle { app.sessions.contains { $0.sessionID == id } }
+        app.openSessions.openSession(try XCTUnwrap(app.sessions.first { $0.sessionID == id }))
         let tab = try XCTUnwrap(app.openSessions.activeTab)
         await settle { tab.hasLiveProcess }
         return tab
@@ -305,7 +305,7 @@ final class RemoteColdReadTests: XCTestCase {
         XCTAssertFalse(app.openSessions.tabs.contains { $0 === tab })
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertTrue(remote.stops.isEmpty, "a waiting agent keeps running too")
-        XCTAssertNotNil(app.overlay.rows["s1"], "its row stays")
+        XCTAssertNotNil(app.overlay.rows[only: "s1"], "its row stays")
         XCTAssertTrue(app.openSessions.remoteTabs.hasRun(sessionID: "s1", host: hostID))
     }
 
@@ -335,15 +335,15 @@ final class RemoteColdReadTests: XCTestCase {
         let app = try app(remote)
         let row = Fixture.row("s9", project: "/home/u/p", host: hostID)
         Fixture.join([row], to: db)
-        await settle { app.sessions.contains { $0.id == "s9" } }
-        let session = try XCTUnwrap(app.sessions.first { $0.id == "s9" })
+        await settle { app.sessions.contains { $0.sessionID == "s9" } }
+        let session = try XCTUnwrap(app.sessions.first { $0.sessionID == "s9" })
         XCTAssertEqual(app.archiveBlocker(session), RemoteCopy.stopToArchive("box"))
         remote.runs[0].ended = true
         XCTAssertNil(app.archiveBlocker(session), "stopped: it can be archived")
         let local = Fixture.row("l1", project: "/Users/me/p")
         Fixture.join([local], to: db)
-        await settle { app.sessions.contains { $0.id == "l1" } }
-        XCTAssertNil(app.archiveBlocker(try XCTUnwrap(app.sessions.first { $0.id == "l1" })))
+        await settle { app.sessions.contains { $0.sessionID == "l1" } }
+        XCTAssertNil(app.archiveBlocker(try XCTUnwrap(app.sessions.first { $0.sessionID == "l1" })))
     }
 
     // MARK: Running sessions
@@ -357,13 +357,13 @@ final class RemoteColdReadTests: XCTestCase {
         let app = try app(remote)
         let row = Fixture.row("s9", project: "/home/u/p", host: hostID)
         Fixture.join([row], to: db)
-        await settle { app.sessions.contains { $0.id == "s9" } }
+        await settle { app.sessions.contains { $0.sessionID == "s9" } }
         app.showRemoteSessions(hostID)
         let sheet = app.sessionsSheetModel(try XCTUnwrap(app.remoteSessionsSheet))
         let session = running("h9", "s9")
         XCTAssertFalse(app.openSessions.remoteTabs.hasLiveTab(handle: "h9", host: hostID), "Open, not Show tab")
         sheet.open(session, rows: app.sessions)
-        let tab = try XCTUnwrap(app.openSessions.openTab(forSessionID: "s9"))
+        let tab = try XCTUnwrap(app.openSessions.openTab(for: SessionKey(id: "s9", host: hostID)))
         await settle { tab.hasLiveProcess }
         XCTAssertEqual(remote.opens.last?.sessionID, "s9")
         XCTAssertEqual(tab.remote?.handle, "h9", "attached to the running session")
@@ -394,22 +394,22 @@ final class RemoteColdReadTests: XCTestCase {
         let app = try app(remote)
         app.showRemoteSessions(hostID)
         let sheet = app.sessionsSheetModel(try XCTUnwrap(app.remoteSessionsSheet))
-        XCTAssertNil(app.overlay.rows["s9"])
+        XCTAssertNil(app.overlay.rows[only: "s9"])
         let claude = RemoteTrackedSession(handle: "h9", sessionID: "s9", agent: .claude, state: .present(attached: false),
                                           leftRunning: nil, directory: "/home/u/p")
         XCTAssertTrue(sheet.open(claude, rows: app.sessions))
-        let tab = try XCTUnwrap(app.openSessions.openTab(forSessionID: "s9"))
+        let tab = try XCTUnwrap(app.openSessions.openTab(for: SessionKey(id: "s9", host: hostID)))
         await settle { tab.hasLiveProcess }
         XCTAssertEqual(tab.remote?.handle, "h9", "attached to its run")
-        await settle { app.overlay.rows["s9"] != nil }
-        XCTAssertNotNil(app.overlay.rows["s9"], "joined as opening a session joins it")
+        await settle { app.overlay.rows[only: "s9"] != nil }
+        XCTAssertNotNil(app.overlay.rows[only: "s9"], "joined as opening a session joins it")
 
         // A Codex run identified but never joined: through the pending path.
         let codex = RemoteTrackedSession(handle: "p3", sessionID: "c3", agent: .codex, state: .present(attached: false),
                                          leftRunning: nil, directory: "/home/u/p")
         XCTAssertTrue(sheet.open(codex, rows: app.sessions))
-        await settle { app.openSessions.openTab(forSessionID: "c3") != nil }
-        XCTAssertNotNil(app.overlay.rows["c3"], "rejoined before it opens")
+        await settle { app.openSessions.openTab(for: SessionKey(id: "c3", host: hostID)) != nil }
+        XCTAssertNotNil(app.overlay.rows[only: "c3"], "rejoined before it opens")
 
         let nowhere = RemoteTrackedSession(handle: "h8", sessionID: "s8", agent: .claude, state: .present(attached: false),
                                            leftRunning: nil)
@@ -421,7 +421,7 @@ final class RemoteColdReadTests: XCTestCase {
                        + "are off in Temple's sessions. While you are attached, Temple can't stop it: neither Stop here nor "
                        + "removing the host will end it. To stop it from Temple, close that window first, then choose Stop.")
         XCTAssertEqual(sheet.commands["h8"], "tmux -L temple attach -t temple-h8", "the command on its own line")
-        XCTAssertNil(app.openSessions.openTab(forSessionID: "s8"))
+        XCTAssertNil(app.openSessions.openTab(for: SessionKey(id: "s8", host: hostID)))
     }
 
     /// A Stop from the sheet that fails is said under its row, still

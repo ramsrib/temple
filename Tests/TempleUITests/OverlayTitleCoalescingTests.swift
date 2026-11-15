@@ -22,7 +22,7 @@ final class OverlayTitleCoalescingTests: XCTestCase {
         try db.fillCoreFields(sessionID: "s", host: .local, title: "First prompt")
         let overlay = SessionOverlayStore(db: db)
         XCTAssertNil(overlay.generatedTitle(for: "s"))
-        XCTAssertEqual(overlay.rows["s"]?.title, "First prompt")
+        XCTAssertEqual(overlay.rows[.local("s")]?.title, "First prompt")
         XCTAssertNil(try db.sessionState("s")?.generatedTitle)
         overlay.recordGeneratedTitle("Agent retitle", for: "s")
         overlay.flushPendingTitles()

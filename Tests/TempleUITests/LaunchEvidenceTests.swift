@@ -25,7 +25,7 @@ final class LaunchEvidenceTests: XCTestCase {
         let launcher = ScriptedLauncher(reports: false)
         let (model, factory) = model(launcher)
         var recorded: [String] = []
-        model.launchDirectoryHandler = { _, _, path in recorded.append(path) }
+        model.launchDirectoryHandler = { _, path in recorded.append(path) }
         model.openSession(Fixture.session("s", project: "/p"))
         model.drainLaunchResults()
         XCTAssertEqual(factory.created.count, 1)
@@ -38,7 +38,7 @@ final class LaunchEvidenceTests: XCTestCase {
         let launcher = ScriptedLauncher()
         let (model, _) = model(launcher)
         var recorded: [String] = []
-        model.launchDirectoryHandler = { _, _, path in recorded.append(path) }
+        model.launchDirectoryHandler = { _, path in recorded.append(path) }
         // A report that is available before the spawn starts is held, not lost and not early.
         launcher.queuedBeforeStart = [.directoryEstablished("/p")]
         model.openSession(Fixture.session("s", project: "/p"))
@@ -54,7 +54,7 @@ final class LaunchEvidenceTests: XCTestCase {
         factory.configure = { $0.startError = CocoaError(.executableNotLoadable) }
         let (model, _) = model(launcher, factory: factory)
         var recorded: [String] = []
-        model.launchDirectoryHandler = { _, _, path in recorded.append(path) }
+        model.launchDirectoryHandler = { _, path in recorded.append(path) }
         launcher.queuedBeforeStart = [.directoryEstablished("/p")]
         model.openSession(Fixture.session("s", project: "/p"))
         XCTAssertTrue(recorded.isEmpty)
@@ -105,7 +105,7 @@ final class LaunchEvidenceTests: XCTestCase {
         let launcher = ScriptedLauncher()
         let (model, _) = model(launcher)
         var recorded: [String] = []
-        model.launchDirectoryHandler = { _, _, path in recorded.append(path) }
+        model.launchDirectoryHandler = { _, path in recorded.append(path) }
         model.openSession(Fixture.session("s", project: "/p"))
         let tab = try XCTUnwrap(model.activeTab)
         let source = try XCTUnwrap(launcher.sources.last)
@@ -125,7 +125,7 @@ final class LaunchEvidenceTests: XCTestCase {
             let launcher = ScriptedLauncher()
             let (model, _) = model(launcher)
             var recorded: [String: String] = [:]
-            model.launchDirectoryHandler = { id, _, path in recorded[id] = path }
+            model.launchDirectoryHandler = { key, path in recorded[key.id] = path }
             let tab = model.newSession(agent: .codex, project: Fixture.key("/p"))
             let source = try XCTUnwrap(launcher.sources.last)
             if reportFirst { source.push(.directoryEstablished("/p")); source.notifyNow() }

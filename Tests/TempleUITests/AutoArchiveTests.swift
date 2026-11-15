@@ -116,11 +116,17 @@ final class AutoArchiveTests: XCTestCase {
 
         /// A snapshot as the engine publishes it: each verdict names the
         /// membership it is about (the row's current one unless given).
+        /// Each verdict is the engine's of the row's own host (ids here are
+        /// unique across hosts).
         mutating func publish(_ resolutions: [String: MemberResolution], memberships: [String: MembershipRef] = [:]) {
             generation += 1
-            var refs = memberships
-            for id in resolutions.keys where refs[id] == nil { refs[id] = ref(id) }
-            model.receiveEngineSnapshot(EngineSnapshot(generation: generation, resolutions: resolutions, memberships: refs))
+            var keyed: [SessionKey: MemberResolution] = [:], refs: [SessionKey: MembershipRef] = [:]
+            for (id, resolution) in resolutions {
+                let key = SessionKey(id: id, host: state(id)?.host ?? .local)
+                keyed[key] = resolution
+                if let ref = memberships[id] ?? ref(id) { refs[key] = ref }
+            }
+            model.receiveEngineSnapshot(SessionsSnapshot(generation: generation, resolutions: keyed, memberships: refs))
         }
 
         func ref(_ id: String) -> MembershipRef? {
@@ -138,7 +144,7 @@ final class AutoArchiveTests: XCTestCase {
             XCTAssertFalse(scheduler.isArmed, "the sweep keeps re-arming")
         }
 
-        func state(_ id: String) -> SessionState? { try! database.sessionState(id) }
+        func state(_ id: String) -> SessionState? { try! database.onlySessionState(id) }
         func archived(_ ids: [String]) -> [String] { ids.filter { state($0)?.archived == true } }
         func reason(_ id: String) -> ArchiveReason? { state(id)?.archiveReason }
     }
@@ -198,7 +204,7 @@ final class AutoArchiveTests: XCTestCase {
         await h.settle()
 
         XCTAssertNil(h.state("never"), "nothing to restore, nothing to tell")
-        XCTAssertFalse(h.model.sessions.contains { $0.id == "never" })
+        XCTAssertFalse(h.model.sessions.contains { $0.sessionID == "never" })
         XCTAssertEqual(h.archived(ids), ["gone", "named", "opened", "seen"])
         XCTAssertEqual(h.model.autoArchiveNotice?.count, 4)
         XCTAssertEqual(h.model.autoArchiveNotice?.message, "4 sessions archived: no transcript on disk")
@@ -216,7 +222,7 @@ final class AutoArchiveTests: XCTestCase {
         var h = harness(rows, saved: [PersistedTab(sessionID: "chip", agent: .claude, projectPath: "/p", title: "chip")])
         h.model.openSessions.restore()
         XCTAssertNotNil(h.model.openSessions.openTab(forSessionID: "chip"), "a restored inert chip")
-        h.model.openSessions.openSession(try XCTUnwrap(h.model.sessions.first { $0.id == "open" }))
+        h.model.openSessions.openSession(try XCTUnwrap(h.model.sessions.first { $0.sessionID == "open" }))
         h.overlay.togglePin("pinned")
         h.overlay.setArchived(true, sessionID: "kept"); h.overlay.setArchived(false, sessionID: "kept")
         let undo = UndoManager()
@@ -236,8 +242,8 @@ final class AutoArchiveTests: XCTestCase {
         XCTAssertEqual(h.model.autoArchiveNotice?.message, "2 sessions archived: no transcript on disk")
         XCTAssertEqual(Set(h.model.autoArchiveNotice?.memberships.map(\.id) ?? []), ["gone", "week"])
         XCTAssertFalse(undo.canUndo, "the sweep is not the user's action")
-        XCTAssertFalse(h.model.visibleRows.contains { $0.id == "gone" }, "it leaves the rail and ⌘K")
-        XCTAssertTrue(h.model.sessions.contains { $0.id == "gone" && $0.archivedByTemple })
+        XCTAssertFalse(h.model.visibleRows.contains { $0.sessionID == "gone" }, "it leaves the rail and ⌘K")
+        XCTAssertTrue(h.model.sessions.contains { $0.sessionID == "gone" && $0.archivedByTemple })
         XCTAssertEqual(Set(h.folders.asked), ["/p"], "the candidates' folder")
         XCTAssertEqual(h.proofs.calls.count, 1, "one proof per host and agent, for every hinted row")
         XCTAssertEqual(h.proofs.calls.first?.2, ["gone", "week"])
@@ -361,7 +367,7 @@ final class AutoArchiveTests: XCTestCase {
                          lastOpenedAt: nil, joinedVia: .imported, joinedAt: nil, directory: directory,
                          incarnation: "i-\(id)", archiveReason: reason, keptAt: kept)
         }
-        let rows: [String: SessionState] = [
+        let rows: [SessionKey: SessionState] = [
             "b": state("b", "/gone", nil, nil), "a": state("a", nil, nil, nil),
             "both": state("both", "/gone", nil, nil), "here": state("here", "/here", nil, nil),
             "unknown": state("unknown", "/unknown", nil, nil), "no-folder": state("no-folder", nil, nil, nil),
@@ -371,16 +377,16 @@ final class AutoArchiveTests: XCTestCase {
                                            generatedTitle: nil, lastOpenedAt: nil, joinedVia: nil, joinedAt: nil),
         ]
         let ref = { (id: String) in MembershipRef(id: id, host: .local, incarnation: "i-\(id)") }
-        let snapshot = EngineSnapshot(
+        let snapshot = SessionsSnapshot(
             generation: 1,
             resolutions: ["a": .confirmedAbsent, "both": .confirmedAbsent, "rejoined": .confirmedAbsent,
                           "no-incarnation": .confirmedAbsent],
             memberships: ["a": ref("a"), "both": ref("both"),
                           // The verdict is about an earlier membership of the id.
                           "rejoined": MembershipRef(id: "rejoined", host: .local, incarnation: "earlier")])
-        XCTAssertEqual(AutoArchivePolicy.foldersToCheck(rows: rows.values, snapshot: snapshot, openSessionIDs: [], now: clock),
+        XCTAssertEqual(AutoArchivePolicy.foldersToCheck(rows: rows.values, snapshot: snapshot, openSessions: [], now: clock),
                        [Fixture.key("/gone"), Fixture.key("/here"), Fixture.key("/unknown")])
-        let requests = AutoArchivePolicy.proofRequests(rows: rows.values, snapshot: snapshot, openSessionIDs: [], now: clock)
+        let requests = AutoArchivePolicy.proofRequests(rows: rows.values, snapshot: snapshot, openSessions: [], now: clock)
         XCTAssertEqual(requests.mapValues { Set($0.keys) },
                        [.init(host: .local, agent: .claude): ["a", "both"], .init(host: .local, agent: .codex): ["a", "both"]],
                        "no agent recorded: every agent's proof")
@@ -391,7 +397,7 @@ final class AutoArchiveTests: XCTestCase {
             proofs: [.init(host: .local, agent: .claude): proven, .init(host: .local, agent: .codex): proven],
             requested: requests,
             folders: [Fixture.key("/gone"): .missing, Fixture.key("/here"): .exists, Fixture.key("/unknown"): .unknown],
-            openSessionIDs: [], now: clock)
+            openSessions: [], now: clock)
         XCTAssertEqual(plan.map(\.ref.id), ["a", "b", "both"], "not the rejoined row: the absence was another membership's")
         XCTAssertEqual(plan.map(\.reason), [.transcriptMissing, .folderMissing, .transcriptMissing], "the transcript wins")
         XCTAssertEqual(plan.map(\.directory), [nil, "/gone", nil], "a folder archive names the folder")
@@ -437,10 +443,10 @@ final class AutoArchiveTests: XCTestCase {
         h.scheduler.fire()
         try await waitFor { h.folders.waiting }
 
-        h.model.openSessions.openSession(try XCTUnwrap(h.model.sessions.first { $0.id == "opened" }))
+        h.model.openSessions.openSession(try XCTUnwrap(h.model.sessions.first { $0.sessionID == "opened" }))
         h.overlay.togglePin("pinned")
         h.model.restoreSession("restored", undoManager: nil)
-        XCTAssertEqual(h.model.overlay.leave([SessionKey(id: "left", host: .local)]), ["left"])
+        XCTAssertEqual(h.model.overlay.leave([SessionKey(id: "left", host: .local)]).map(\.id), ["left"])
         h.folders.release()
         await h.model.archiveSweep?.value
         await h.settle()
@@ -460,7 +466,7 @@ final class AutoArchiveTests: XCTestCase {
                              settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
         let incarnation = try XCTUnwrap(database.sessionState("gone")?.incarnation)
         model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["gone": .confirmedAbsent],
-            memberships: ["gone": MembershipRef(id: "gone", host: .local, incarnation: incarnation)]))
+            memberships: ["gone": MembershipRef(id: "gone", host: .local, incarnation: incarnation)]).onThisMac)
         try await Task.sleep(for: .milliseconds(1300))
         XCTAssertEqual(try database.sessionState("gone")?.archived, false)
         XCTAssertNil(model.autoArchiveNotice)
@@ -490,7 +496,7 @@ final class AutoArchiveTests: XCTestCase {
                        "1 session archived: folder gone")
         // History tags Temple's rows with the reason; one from a newer build
         // that this one cannot name gets no tag.
-        let tag = { (id: String) in h.model.sessions.first { $0.id == id }.map { HistoryRow(member: $0).conditionTag } }
+        let tag = { (id: String) in h.model.sessions.first { $0.sessionID == id }.map { HistoryRow(member: $0).conditionTag } }
         XCTAssertEqual(tag("gone"), .noFolder)
         let future = Session(state: SessionState(id: "future", pinned: false, archived: true, customName: nil, color: nil,
             generatedTitle: nil, lastOpenedAt: nil, joinedVia: nil, joinedAt: nil,
@@ -585,7 +591,7 @@ final class AutoArchiveTests: XCTestCase {
         let future = Date(timeIntervalSince1970: (Date().timeIntervalSince1970 + 86_400 * 365).rounded())
         try h.database.touch(sessionID: "a", host: .local, at: future)
         XCTAssertEqual(try h.database.autoArchive([AutoArchiveEntry(ref: XCTUnwrap(h.ref("a")), reason: .transcriptMissing)],
-                                                  idleBefore: .distantFuture), ["a"])
+                                                  idleBefore: .distantFuture).map(\.id), ["a"])
         h.overlay.touch("a", host: .local, at: Date().addingTimeInterval(-60))   // typed before the Restore
         h.model.restoreSession("a", undoManager: nil)
         h.overlay.flushPendingTouches()

@@ -78,7 +78,7 @@ final class HistoryTests: XCTestCase {
             now: { [now] in now })
         var opened: [String] = []
         history.openSession = { opened.append($0.id) }
-        history.openMember = { opened.append($0.id) }
+        history.openMember = { opened.append($0.sessionID) }
         return Harness(history: history, overlay: overlay, database: database, opened: { opened })
     }
 
@@ -167,7 +167,7 @@ final class HistoryTests: XCTestCase {
             cwd: "/changed", firstPrompt: "Changed", lastEntryAt: date.addingTimeInterval(100))
         XCTAssertEqual(overlay.import([changed]).map(\.label), ["skipped"], "already Temple's: left as it is")
         XCTAssertEqual(try db.sessionState("a"), row)
-        XCTAssertEqual(overlay.leave([SessionKey(id: "a", host: .local)]), ["a"], "fact fills remain undoable")
+        XCTAssertEqual(overlay.leave([SessionKey(id: "a", host: .local)]).map(\.id), ["a"], "fact fills remain undoable")
     }
 
     func testImportNeverPersistsPlaceholders() throws {
@@ -930,7 +930,7 @@ final class HistoryTests: XCTestCase {
         let h = harness([session("a", hoursAgo: 1), session("b", project: "/p/b", hoursAgo: 2),
                          session("c", project: "/p/b", hoursAgo: 3)], members: ["a", "b", "c"])
         var archived: [String] = []
-        h.history.archiveMembers = { ids, _, _ in archived += ids }
+        h.history.archiveMembers = { ids, _, _ in archived += ids.map(\.id) }
         await load(h.history)
         let gate = gate(h.history)
 
@@ -976,7 +976,7 @@ final class HistoryTests: XCTestCase {
         let h = harness(rows, members: ["m1", "m2"])
         var archived: [String] = []
         h.history.archiveMembers = { [weak history = h.history] ids, _, _ in
-            archived += ids
+            archived += ids.map(\.id)
             history?.scope = .notInTemple   // newer input, arriving mid-replay
         }
         await load(h.history)
@@ -1074,7 +1074,7 @@ final class HistoryTests: XCTestCase {
     func testSelectAllThenArchiveWaitForTheFilteredPage() async {
         let h = harness([session("a", hoursAgo: 1), session("b", project: "/p/b", hoursAgo: 2)], members: ["a", "b"])
         var archived: [String] = []
-        h.history.archiveMembers = { ids, _, _ in archived += ids }
+        h.history.archiveMembers = { ids, _, _ in archived += ids.map(\.id) }
         await load(h.history)
         let gate = gate(h.history)
 
@@ -1365,7 +1365,7 @@ final class HistoryTabTests: XCTestCase {
         model.showInSidebar("a")
         XCTAssertEqual(model.highlightedID, "a")
         let first = try? XCTUnwrap(model.sidebarReveal)
-        XCTAssertEqual(first?.sessionID, "a")
+        XCTAssertEqual(first?.session, "a")
 
         model.showInSidebar("a")
         XCTAssertNotEqual(model.sidebarReveal, first, "asking again scrolls again")
@@ -1466,18 +1466,18 @@ final class HistoryUndoEngineTests: XCTestCase {
         model.history.catalog = { AsyncStream { $0.yield(.sessions([row], read: 1, total: 1)); $0.finish() } }
         model.history.activate()
         try await waitFor { model.history.readState == .done }
-        XCTAssertFalse(model.sessions.contains { $0.id == "imp" })
+        XCTAssertFalse(model.sessions.contains { $0.sessionID == "imp" })
         let manager = UndoManager()
         manager.groupsByEvent = false
 
         manager.beginUndoGrouping()
         await model.history.confirmImport(model.history.makeImportRequest(for: [row]), undoManager: manager)
         manager.endUndoGrouping()
-        try await waitFor { model.sessions.contains { $0.id == "imp" } }
+        try await waitFor { model.sessions.contains { $0.sessionID == "imp" } }
 
         manager.undo()
 
-        try await waitFor { !model.sessions.contains { $0.id == "imp" } }
+        try await waitFor { !model.sessions.contains { $0.sessionID == "imp" } }
         XCTAssertFalse(model.overlay.isTempleSession("imp"))
         XCTAssertNil(try database.sessionState("imp"))
         await watcher.stop()
@@ -1635,7 +1635,7 @@ final class HistoryArchiveTests: XCTestCase {
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay)
         model.history.catalog = { AsyncStream { $0.finish() } }
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, resolutions) })))
+        model.receiveEngineSnapshot(SessionsSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, resolutions) })))
         return (model, overlay, database)
     }
 
@@ -1681,8 +1681,8 @@ final class HistoryArchiveTests: XCTestCase {
 
         XCTAssertEqual(model.displayProjects.flatMap(\.sessions).map(\.id), ["a2", "b1"])
         XCTAssertTrue(model.pinnedSessions.isEmpty)
-        XCTAssertFalse(model.paletteResults("").contains { $0.id == "a1" })
-        XCTAssertFalse(model.paletteResults("alpha").contains { $0.id == "a1" }, "not in ⌘K")
+        XCTAssertFalse(model.paletteResults("").contains { $0.sessionID == "a1" })
+        XCTAssertFalse(model.paletteResults("alpha").contains { $0.sessionID == "a1" }, "not in ⌘K")
         let archived = await page(model)
         XCTAssertEqual(archived, ["a1"])
         let searched = await page(model, query: "alpha")
@@ -1752,7 +1752,7 @@ final class HistoryArchiveTests: XCTestCase {
         let ref = MembershipRef(id: "gone", host: .local, incarnation: try XCTUnwrap(database.sessionState("gone")?.incarnation))
         let archivedAt = Date(timeIntervalSince1970: 1_000_000)
         XCTAssertEqual(try database.autoArchive([AutoArchiveEntry(ref: ref, reason: .transcriptMissing)],
-                                                idleBefore: .distantFuture, at: archivedAt), ["gone"])
+                                                idleBefore: .distantFuture, at: archivedAt).map(\.id), ["gone"])
         _ = await page(model)
         let undo = undoManager()
 
@@ -1995,8 +1995,8 @@ final class HistoryArchiveTests: XCTestCase {
                 locator: TranscriptLocator(host: .local, path: "/tmp/\(id).jsonl"),
                 modifiedAt: Date(timeIntervalSince1970: 500), cwd: "/changed", firstPrompt: "Changed externally")
         }
-        model.receiveEngineSnapshot(.authorized(generation: 2, resolutions: [:],
-            summaries: Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) }), in: database))
+        model.receiveEngineSnapshot(EngineSnapshot.authorized(generation: 2, resolutions: [:],
+            summaries: Dictionary(uniqueKeysWithValues: summaries.map { ($0.id, $0) }), in: database).onThisMac)
 
         XCTAssertTrue(overlay.isArchived("a1"))
         XCTAssertTrue(overlay.isProjectArchived(Fixture.key("/p/b")))
@@ -2077,7 +2077,7 @@ final class HistoryArchiveTests: XCTestCase {
         model.archiveSession("z", undoManager: undo)
         undo.endUndoGrouping()
 
-        XCTAssertEqual(overlay.leave([SessionKey(id: "a1", host: .local)]), ["a1"])
+        XCTAssertEqual(overlay.leave([SessionKey(id: "a1", host: .local)]).map(\.id), ["a1"])
         _ = overlay.join("a1", via: .imported, agent: .claude, core: SessionCore(directory: "/p/y"))
         // As in the app: the event's group is only opened by a registration.
         var forgets = 0
@@ -2100,7 +2100,7 @@ final class HistoryArchiveTests: XCTestCase {
         overlay.setProjectArchived(true, key: Fixture.key("/p/a"))
         _ = await page(model)
         let shown = try ["a1", "a2"].map { try XCTUnwrap(row(model, $0)) }
-        XCTAssertEqual(overlay.leave([SessionKey(id: "a2", host: .local)]), ["a2"])
+        XCTAssertEqual(overlay.leave([SessionKey(id: "a2", host: .local)]).map(\.id), ["a2"])
         _ = overlay.join("a2", via: .imported, agent: .claude, core: SessionCore(directory: "/p/y"))
         let undo = undoManager()
 
@@ -2176,7 +2176,7 @@ final class HistoryArchiveTests: XCTestCase {
         let (model, overlay, database) = makeModel([Fixture.row("gone", project: "/p/a")])
         let ref = MembershipRef(id: "gone", host: .local, incarnation: try XCTUnwrap(database.sessionState("gone")?.incarnation))
         XCTAssertEqual(try database.autoArchive([AutoArchiveEntry(ref: ref, reason: .transcriptMissing)],
-                                                idleBefore: .distantFuture, at: Date()), ["gone"])
+                                                idleBefore: .distantFuture, at: Date()).map(\.id), ["gone"])
         _ = await page(model)
         return (model, overlay, try XCTUnwrap(row(model, "gone")))
     }
@@ -2254,7 +2254,7 @@ final class HistoryArchiveTests: XCTestCase {
         model.showInHistory(project: Fixture.key("/p/b"))
         XCTAssertNil(model.history.justArchivedChip)
         model.history.justArchivedChip = chip
-        model.showInHistory(sessionID: "a1")
+        model.showInHistory(.local("a1"))
         XCTAssertNil(model.history.justArchivedChip)
         model.history.justArchivedChip = chip
         model.history.scope = .archived
@@ -2291,7 +2291,7 @@ final class HistoryArchiveTests: XCTestCase {
         let shown = try XCTUnwrap(row(model, "a1"))
 
         // Before the page catches up (no await in between).
-        XCTAssertEqual(overlay.leave([SessionKey(id: "a1", host: .local)]), ["a1"])
+        XCTAssertEqual(overlay.leave([SessionKey(id: "a1", host: .local)]).map(\.id), ["a1"])
         _ = overlay.join("a1", via: .imported, agent: .claude, core: SessionCore(directory: "/p/x"))
         overlay.setProjectArchived(true, key: Fixture.key("/p/x"))
         let rejoined = try XCTUnwrap(database.sessionState("a1"))
@@ -2320,7 +2320,7 @@ final class HistoryArchiveTests: XCTestCase {
         undo.undo()
         XCTAssertTrue(overlay.isProjectArchived(Fixture.key("/p/a")))
 
-        XCTAssertEqual(overlay.leave([SessionKey(id: "a1", host: .local)]), ["a1"])
+        XCTAssertEqual(overlay.leave([SessionKey(id: "a1", host: .local)]).map(\.id), ["a1"])
         _ = overlay.join("a1", via: .imported, agent: .claude, core: SessionCore(directory: "/p/x"))
         overlay.setProjectArchived(true, key: Fixture.key("/p/x"))
         let rejoined = try XCTUnwrap(database.sessionState("a1"))

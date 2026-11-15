@@ -58,11 +58,11 @@ final class CoreWiringTests: XCTestCase {
         if injectEvents { watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated)) }
 
         let updateDeadline = Date().addingTimeInterval(5)
-        while !model.sessions.contains(where: { $0.id == "wired-session" }),
+        while !model.sessions.contains(where: { $0.sessionID == "wired-session" }),
               Date() < updateDeadline {
             try await Task.sleep(for: .milliseconds(25))
         }
-        XCTAssertTrue(model.sessions.contains(where: { $0.id == "wired-session" }))
+        XCTAssertTrue(model.sessions.contains(where: { $0.sessionID == "wired-session" }))
         if injectEvents { XCTAssertEqual(model.openSessions.activeTab?.sessionID, "wired-session") }
         // The engine's facts reach the row through the overlay's persister.
         let filled = Date().addingTimeInterval(5)
@@ -117,7 +117,6 @@ final class CoreWiringTests: XCTestCase {
     func testEngineSetReplaysTheLatestMergeAndStopClearsIt() async throws {
         let engine = FakeEngine(snapshot: EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent]))
         let set = EngineSet(engines: [engine])
-        set.owner = { _ in .local }
         var received = 0
         set.start { _ in received += 1 }
         try await waitFor { received == 1 }
@@ -146,18 +145,18 @@ final class CoreWiringTests: XCTestCase {
             overlay: SessionOverlayStore(db: database))
         model.start()
         try await waitFor { !model.isLoading }
-        XCTAssertEqual(model.openSessions.sessionKnown("pruned"), false)
-        XCTAssertNil(model.openSessions.sessionKnown("awaiting"))
+        XCTAssertEqual(model.openSessions.sessionKnown(.local("pruned")), false)
+        XCTAssertNil(model.openSessions.sessionKnown(.local("awaiting")))
         model.openSession(id: "awaiting")
         XCTAssertTrue(model.openSessions.tabs.isEmpty)
         let file = dir.appendingPathComponent("awaiting.jsonl")
         try "{".write(to: file, atomically: true, encoding: .utf8)
         watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemCreated))
         try await waitFor { watcher.resolution(for: "awaiting") == .incomplete }
-        XCTAssertNil(model.openSessions.sessionKnown("awaiting"))
+        XCTAssertNil(model.openSessions.sessionKnown(.local("awaiting")))
         try #"{"sessionId":"awaiting","type":"user","cwd":"/tmp/project","message":{"content":"late log"}}"#.write(to: file, atomically: true, encoding: .utf8)
         watcher.reconcileEvent(path: file.path, flags: UInt32(kFSEventStreamEventFlagItemModified))
-        try await waitFor { model.openSessions.sessionKnown("awaiting") == true }
+        try await waitFor { model.openSessions.sessionKnown(.local("awaiting")) == true }
         XCTAssertTrue(model.openSessions.tabs.isEmpty, "A final failed open must not create a much later tab")
 
         model.openSession(id: "pruned")
@@ -179,7 +178,7 @@ final class CoreWiringTests: XCTestCase {
         let model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), engines: [watcher],
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()), overlay: overlay)
         model.start()
-        try await waitFor { model.openSessions.sessionKnown("member") == true }
+        try await waitFor { model.openSessions.sessionKnown(.local("member")) == true }
         let loadedResolution = watcher.resolution(for: "member")
         let unexpected = expectation(description: "Loaded actions must not trigger engine joins")
         unexpected.isInverted = true

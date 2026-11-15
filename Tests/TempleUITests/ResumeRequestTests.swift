@@ -39,7 +39,7 @@ final class ResumeRequestTests: XCTestCase {
         let factory = FakeTerminalSurfaceFactory()
         let model = Fixture.openModel(factory: factory)
         model.openedHandler = { _ in .joined }
-        model.sessionRow = { [self] id in member(id, directory: "/work/recorded") }
+        model.sessionRow = { [self] key in member(key.id, host: key.host, directory: "/work/recorded") }
         XCTAssertTrue(model.resume(request("s1", directory: "/work/peer")))
         XCTAssertEqual(factory.created.first?.startedCommand?.cwd, "/work/recorded")
     }
@@ -48,15 +48,29 @@ final class ResumeRequestTests: XCTestCase {
         let factory = FakeTerminalSurfaceFactory()
         let model = Fixture.openModel(factory: factory)
         model.openedHandler = { _ in .joined }
-        model.sessionRow = { [self] id in member(id, directory: nil) }
+        model.sessionRow = { [self] key in member(key.id, host: key.host, directory: nil) }
         XCTAssertTrue(model.resume(request("s1", directory: "/work/peer")))
         XCTAssertEqual(factory.created.first?.startedCommand?.cwd, "/work/peer")
     }
 
-    func testAnotherHostsRowIsRefused() {
+    /// ADR-041: the same id on another host is another session. A row for
+    /// it elsewhere neither refuses this launch nor lends it its folder.
+    func testAnotherHostsRowWithTheSameIDIsAnotherSession() {
         let factory = FakeTerminalSurfaceFactory()
         let model = Fixture.openModel(factory: factory)
-        model.sessionRow = { [self] id in member(id, host: HostID(rawValue: "elsewhere"), directory: "/w") }
+        let elsewhere = HostID(rawValue: "elsewhere")
+        model.openedHandler = { _ in .joined }
+        model.sessionRow = { [self] key in key.host == elsewhere ? member(key.id, host: elsewhere, directory: "/w") : nil }
+        XCTAssertTrue(model.resume(request("s1")))
+        XCTAssertEqual(model.activeTab?.host, .local)
+        XCTAssertEqual(factory.created.first?.startedCommand?.cwd, "/work/peer", "the request's folder, not the other host's row's")
+    }
+
+    /// This host's row for the id as the other agent's: not this session.
+    func testThisHostsRowAsAnotherAgentIsRefused() {
+        let factory = FakeTerminalSurfaceFactory()
+        let model = Fixture.openModel(factory: factory)
+        model.sessionRow = { [self] key in member(key.id, host: key.host, agent: .codex, directory: "/w") }
         XCTAssertFalse(model.resume(request("s1")))
         XCTAssertTrue(model.tabs.isEmpty)
         XCTAssertTrue(factory.created.isEmpty)
@@ -81,7 +95,7 @@ final class ResumeRequestTests: XCTestCase {
         let model = OpenSessionsModel(surfaceFactory: factory, appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(), persistence: persistence)
         model.openedHandler = { _ in .joined }
-        model.sessionRow = { [self] id in member(id, directory: nil) }
+        model.sessionRow = { [self] key in member(key.id, host: key.host, directory: nil) }
         model.restore()
         XCTAssertTrue(factory.created.isEmpty, "inert")
         XCTAssertTrue(model.resume(request("s1", directory: "/work/peer", note: "noted")))

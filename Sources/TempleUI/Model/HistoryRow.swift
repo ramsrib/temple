@@ -20,7 +20,7 @@ public struct HistoryKey: Hashable, Sendable {
     }
 
     public init(_ member: Session) {
-        self.init(host: member.host, agent: member.agent, sessionID: member.id)
+        self.init(host: member.host, agent: member.agent, sessionID: member.sessionID)
     }
 }
 
@@ -301,7 +301,7 @@ final class HistoryRowBuilder {
             // A member with no folder recorded opens in its peer's (section 4).
             return (member.canResume || (peer != nil && member.agent != nil)) && !(archived && (transcriptMissing || folderMissing))
         }()
-        let openTab = member.map { context.openTabs.contains(SessionKey(id: $0.id, host: $0.host)) } ?? false
+        let openTab = member.map { context.openTabs.contains($0.id) } ?? false
         let canArchive = member != nil && !archived && !openTab
         let tag: HistoryConditionTag? = member == nil ? nil
             : transcriptMissing ? .noTranscript : folderMissing ? .noFolder : nil
@@ -364,7 +364,7 @@ final class HistoryRowBuilder {
     private static func provenUnlisted(_ member: Session, context: Context) -> Bool {
         guard let complete = context.coverage[member.host] else { return false }
         let agents = member.agent.map { [$0] } ?? Agent.allCases
-        return agents.allSatisfy { complete.provesAbsent(member.id, agent: $0) }
+        return agents.allSatisfy { complete.provesAbsent(member.sessionID, agent: $0) }
     }
 
     /// "In Temple · opened Sep 25" — how and when it joined, where known.

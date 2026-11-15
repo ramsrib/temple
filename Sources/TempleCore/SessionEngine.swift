@@ -125,7 +125,7 @@ public actor SessionEngine: HostEngine {
         self.initialMembers = database == nil ? members : []
         self.now = now
         self.sleep = sleep
-        let relay = EngineRelay(database: database)
+        let relay = EngineRelay(database: database, host: source.host)
         self.relay = relay
         relay.attach(self)
     }
@@ -279,7 +279,7 @@ public actor SessionEngine: HostEngine {
             return
         }
         let row: SessionState?
-        do { row = try database.sessionState(id) }
+        do { row = try database.sessionState(id, host: host) }
         catch { return }   // A failed read proves nothing; the member stays as it was.
         // Archiving takes a member out like a leave (its facts and verdict
         // are revoked); unarchiving brings it back like a join, with a fresh
@@ -1347,27 +1347,31 @@ final class EngineMirror: @unchecked Sendable {
 
 /// Database observer registrations made before the engine exists, routed
 /// to it weakly: a callback never keeps an engine alive, and each one only
-/// asks the engine to re-read the row.
+/// asks the engine to re-read the row. Only its own host's sessions reach
+/// it: the same id on another host is another session (ADR-041).
 final class EngineRelay: @unchecked Sendable {
     private let database: TempleDB?
+    private let host: HostID
     private let lock = NSLock()
     private weak var engine: SessionEngine?
     private var tokens: (join: UUID, leave: UUID, row: UUID)?
 
-    init(database: TempleDB?) { self.database = database }
+    init(database: TempleDB?, host: HostID) { self.database = database; self.host = host }
 
     func attach(_ engine: SessionEngine) {
         lock.lock(); self.engine = engine; lock.unlock()
         guard let database else { return }
-        let join = database.observeJoins { [weak self] id, awaiting in self?.deliver(id, awaiting: awaiting) }
-        let leave = database.observeLeaves { [weak self] id in self?.deliver(id, awaiting: false) }
-        let row = database.observeRowChanges { [weak self] id in self?.deliver(id, awaiting: false) }
+        let join = database.observeJoins { [weak self] key, awaiting in self?.deliver(key, awaiting: awaiting) }
+        let leave = database.observeLeaves { [weak self] key in self?.deliver(key, awaiting: false) }
+        let row = database.observeRowChanges { [weak self] key in self?.deliver(key, awaiting: false) }
         lock.lock(); tokens = (join, leave, row); lock.unlock()
     }
 
     private var held: [(String, Bool)]?
 
-    private func deliver(_ id: String, awaiting: Bool) {
+    private func deliver(_ key: SessionKey, awaiting: Bool) {
+        guard key.host == host else { return }
+        let id = key.id
         lock.lock()
         if held != nil { held?.append((id, awaiting)); lock.unlock(); return }
         let engine = self.engine

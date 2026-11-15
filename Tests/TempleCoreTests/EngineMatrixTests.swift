@@ -58,7 +58,7 @@ final class EngineMatrixTests: XCTestCase {
         func failNext(_ count: Int) { lock.lock(); failures = count; lock.unlock() }
         var attempted: [AuthorizedFacts] { lock.lock(); defer { lock.unlock() }; return attempts }
         var succeeded: [AuthorizedFacts] { lock.lock(); defer { lock.unlock() }; return successes }
-        func persist(_ id: String, _ facts: AuthorizedFacts) throws -> SessionWriteOutcome {
+        func persist(_ id: SessionKey, _ facts: AuthorizedFacts) throws -> SessionWriteOutcome {
             lock.lock()
             attempts.append(facts)
             if failures > 0 { failures -= 1; lock.unlock(); throw CocoaError(.fileWriteUnknown) }
@@ -121,7 +121,7 @@ final class EngineMatrixTests: XCTestCase {
             for await snapshot in stream {
                 // Received before it is recorded: a test that sees a
                 // snapshot recorded knows the consumer has it.
-                if consume { committer.receive(snapshot.facts) }
+                if consume { committer.receive(snapshot.keyedFacts) }
                 recorder.append(snapshot)
             }
         })
@@ -174,7 +174,7 @@ final class EngineMatrixTests: XCTestCase {
     /// Lets queued work run without a condition to wait for.
     func settle(_ milliseconds: Int = 150) async throws { try await Task.sleep(for: .milliseconds(milliseconds)) }
 
-    func row(_ h: Harness, _ id: String) throws -> SessionState? { try h.db.sessionState(id) }
+    func row(_ h: Harness, _ id: String) throws -> SessionState? { try h.db.onlySessionState(id) }
 
     func resolution(_ h: Harness, _ id: String) -> MemberResolution? { h.engine.latestSnapshot?.resolutions[id] }
 
@@ -277,7 +277,7 @@ final class EngineMatrixTests: XCTestCase {
             locator: TranscriptLocator(host: h.source.host, path: claudePath(id)), agent: .claude,
             signature: TranscriptSignature(modifiedAt: Date(), size: 1, identity: 1), coverage: 1,
             sharedRevision: nil, summary: nil)
-        XCTAssertEqual(try FactPersister(database: h.db).persist(id, facts), .ownershipMismatch)
+        XCTAssertEqual(try FactPersister(database: h.db).persist(.local(id), facts), .ownershipMismatch)
         XCTAssertEqual(h.trace.sessionRowUpdates, 0)
     }
 
@@ -437,7 +437,7 @@ final class EngineMatrixTests: XCTestCase {
         XCTAssertEqual(h.source.counters.locates, 1)
         XCTAssertTrue(h.recorder.snapshots.allSatisfy { $0.facts.isEmpty })
         XCTAssertTrue(h.writes.attempted.isEmpty)
-        XCTAssertNil(try readOnly.sessionState(id)?.title)
+        XCTAssertNil(try readOnly.onlySessionState(id)?.title)
     }
 
     /// 11. Another writer fills the row while the read is in flight: the
@@ -1162,8 +1162,8 @@ final class EngineMatrixTests: XCTestCase {
         try await waitUntil("first attempt failed") { writes.attempted.count == 1 }
         XCTAssertEqual(trace.sessionRowUpdates, 0)
         clock.advance(2)
-        try await waitUntil("retried by the loop") { try db.sessionState(id)?.title != nil }
-        XCTAssertEqual(try db.sessionState(id)?.title, "Through the CLI")
+        try await waitUntil("retried by the loop") { try db.onlySessionState(id)?.title != nil }
+        XCTAssertEqual(try db.onlySessionState(id)?.title, "Through the CLI")
         XCTAssertEqual(trace.sessionRowUpdates, 1)
         XCTAssertEqual(writes.attempted.count, 2)
 
@@ -1180,7 +1180,7 @@ final class EngineMatrixTests: XCTestCase {
         await engine.requestResolution(other)
         try await waitUntil("the loop saw the revocation") { committer.pendingIDs.isEmpty }
         clock.advance(10)
-        try await waitUntil("filled from the re-read") { try db.sessionState(other)?.title != nil }
+        try await waitUntil("filled from the re-read") { try db.onlySessionState(other)?.title != nil }
         try await Task.sleep(for: .milliseconds(100))
         XCTAssertFalse(writes.succeeded.contains { $0.authorization == stale }, "revoked facts never written")
         XCTAssertEqual(writes.succeeded.filter { $0.summary?.id == other }.count, 1)
@@ -1193,14 +1193,14 @@ final class EngineMatrixTests: XCTestCase {
         let id = uuid()
         let locator = TranscriptLocator(host: .local, path: "/tmp/\(id).jsonl")
         try db.join(sessionID: id, via: .imported)
-        let incarnation = try XCTUnwrap(try db.sessionState(id)?.incarnation)
+        let incarnation = try XCTUnwrap(try db.onlySessionState(id)?.incarnation)
         let clock = Clock()
         var failFill = true
         let persister = FactPersister(database: db)
         let committer = FactCommitter(persist: { id, facts in
             if failFill {
                 failFill = false
-                _ = try db.updateTranscriptHint(sessionID: id, incarnation: facts.incarnation, agent: facts.agent, locator: facts.locator)
+                _ = try db.updateTranscriptHint(sessionID: id.id, incarnation: facts.incarnation, agent: facts.agent, locator: facts.locator)
                 throw CocoaError(.fileWriteUnknown)
             }
             return try persister.persist(id, facts)
@@ -1210,14 +1210,14 @@ final class EngineMatrixTests: XCTestCase {
             coverage: 1, sharedRevision: nil,
             summary: TranscriptSummary(id: id, agent: .claude, locator: locator, modifiedAt: clock.now, cwd: "/w", firstPrompt: "Half"))
         trace.reset()
-        committer.receive([id: facts])
+        committer.receive([id: facts].onThisMac)
         XCTAssertEqual(trace.sessionRowUpdates, 1, "the hint")
-        XCTAssertEqual(try db.sessionState(id)?.transcriptPath, locator.path)
-        XCTAssertNil(try db.sessionState(id)?.title)
+        XCTAssertEqual(try db.onlySessionState(id)?.transcriptPath, locator.path)
+        XCTAssertNil(try db.onlySessionState(id)?.title)
         clock.advance(2)
         committer.retryDue()
         XCTAssertEqual(trace.sessionRowUpdates, 2, "the fill, and no second hint")
-        XCTAssertEqual(try db.sessionState(id)?.title, "Half")
+        XCTAssertEqual(try db.onlySessionState(id)?.title, "Half")
     }
 
     // MARK: Authorization edges
@@ -1287,7 +1287,7 @@ final class EngineMatrixTests: XCTestCase {
         XCTAssertTrue(try h.db.leave(sessionID: id, host: h.source.host))
         try join(h, id, path: claudePath(id))
         h.trace.reset()
-        let outcomes = h.committer.receive(published.facts)
+        let outcomes = h.committer.receive(published.keyedFacts)
         guard case .written(_, .ownershipMismatch)? = outcomes.first else { return XCTFail("\(outcomes)") }
         XCTAssertEqual(h.trace.sessionRowUpdates, 0)
         XCTAssertNil(try row(h, id)?.title)
@@ -1303,7 +1303,7 @@ final class EngineMatrixTests: XCTestCase {
         engines.append(engine)
         let committer = FactCommitter(database: db)
         let stream = engine.snapshots()
-        tasks.append(Task { for await snapshot in stream { committer.receive(snapshot.facts) } })
+        tasks.append(Task { for await snapshot in stream { committer.receive(snapshot.keyedFacts) } })
         let id = uuid()
         fake.setShared(.codex, CodexFormat.historyInput, history(id, "Shared"))
         fake.write(codexPath(id), agent: .codex, data: codexData(id, cwd: "/work"))
@@ -1311,10 +1311,10 @@ final class EngineMatrixTests: XCTestCase {
                     locator: TranscriptLocator(host: Self.remote, path: codexPath(id)), core: SessionCore(host: Self.remote))
         trace.reset()
         await engine.start()
-        try await waitUntil("titled") { try db.sessionState(id)?.title != nil }
+        try await waitUntil("titled") { try db.onlySessionState(id)?.title != nil }
         try await settle()
-        XCTAssertEqual(try db.sessionState(id)?.title, "Shared")
-        XCTAssertEqual(try db.sessionState(id)?.directory, "/work")
+        XCTAssertEqual(try db.onlySessionState(id)?.title, "Shared")
+        XCTAssertEqual(try db.onlySessionState(id)?.directory, "/work")
         XCTAssertEqual(fake.counters.reads, 2)
         XCTAssertEqual(trace.sessionRowUpdates, 2, "the titleless facts, then the title")
     }
@@ -1327,7 +1327,7 @@ final class EngineMatrixTests: XCTestCase {
         let id = uuid()
         let locator = TranscriptLocator(host: .local, path: "/tmp/\(id).jsonl")
         try db.join(sessionID: id, via: .imported, agent: .claude, locator: locator)
-        let incarnation = try XCTUnwrap(try db.sessionState(id)?.incarnation)
+        let incarnation = try XCTUnwrap(try db.onlySessionState(id)?.incarnation)
         let clock = Clock()
         var failures = 1
         let persister = FactPersister(database: db)
@@ -1343,34 +1343,34 @@ final class EngineMatrixTests: XCTestCase {
                 summary: TranscriptSummary(id: id, agent: .claude, locator: locator, modifiedAt: when, cwd: "/w", firstPrompt: title))
         }
         trace.reset()
-        let first = committer.receive([id: facts(1, title: "Stale")])
+        let first = committer.receive([id: facts(1, title: "Stale")].onThisMac)
         guard case .failed? = first.first else { return XCTFail() }
-        XCTAssertEqual(committer.pendingIDs, [id])
+        XCTAssertEqual(committer.pendingIDs, [.local(id)])
         // Revoked: a snapshot without the id.
-        committer.receive([:])
+        committer.receive([:].onThisMac)
         clock.advance(10)
         XCTAssertTrue(committer.retryDue().isEmpty)
         XCTAssertEqual(trace.sessionRowUpdates, 0)
         // Newly authorized facts: written once, not again on a re-delivery.
-        committer.receive([id: facts(2, title: "Fresh")])
-        committer.receive([id: facts(2, title: "Fresh")])
+        committer.receive([id: facts(2, title: "Fresh")].onThisMac)
+        committer.receive([id: facts(2, title: "Fresh")].onThisMac)
         XCTAssertEqual(trace.sessionRowUpdates, 1)
-        XCTAssertEqual(try db.sessionState(id)?.title, "Fresh")
+        XCTAssertEqual(try db.onlySessionState(id)?.title, "Fresh")
         // A failed write retried while still current.
         let other = uuid()
         try db.join(sessionID: other, via: .imported, agent: .claude, locator: TranscriptLocator(host: .local, path: "/tmp/\(other).jsonl"))
         failures = 1
-        let otherIncarnation = try XCTUnwrap(try db.sessionState(other)?.incarnation)
+        let otherIncarnation = try XCTUnwrap(try db.onlySessionState(other)?.incarnation)
         let otherLocator = TranscriptLocator(host: .local, path: "/tmp/\(other).jsonl")
         let otherFacts = AuthorizedFacts(authorization: .init(runEpoch: 1, opRevision: 1, incarnation: otherIncarnation),
             locator: otherLocator, agent: .claude, signature: TranscriptSignature(modifiedAt: Date(), size: 1, identity: 1),
             coverage: 1, sharedRevision: nil,
             summary: TranscriptSummary(id: other, agent: .claude, locator: otherLocator, modifiedAt: Date(), cwd: "/o"))
-        committer.receive([id: facts(2, title: "Fresh"), other: otherFacts])
-        XCTAssertEqual(committer.pendingIDs, [other])
+        committer.receive([id: facts(2, title: "Fresh"), other: otherFacts].onThisMac)
+        XCTAssertEqual(committer.pendingIDs, [.local(other)])
         clock.advance(2)
         committer.retryDue()
-        XCTAssertEqual(try db.sessionState(other)?.directory, "/o")
+        XCTAssertEqual(try db.onlySessionState(other)?.directory, "/o")
         XCTAssertTrue(committer.pendingIDs.isEmpty)
     }
 
@@ -1446,7 +1446,7 @@ final class Flag: @unchecked Sendable {
 final class FactCommitterClaimTests: XCTestCase {
     private func facts(_ db: TempleDB, _ id: String, cwd: String, revision: UInt64) throws -> AuthorizedFacts {
         let locator = TranscriptLocator(host: .local, path: "/tmp/\(id).jsonl")
-        return AuthorizedFacts(authorization: .init(runEpoch: 1, opRevision: revision, incarnation: try XCTUnwrap(try db.sessionState(id)?.incarnation)),
+        return AuthorizedFacts(authorization: .init(runEpoch: 1, opRevision: revision, incarnation: try XCTUnwrap(try db.onlySessionState(id)?.incarnation)),
             locator: locator, agent: .claude, signature: TranscriptSignature(modifiedAt: Date(timeIntervalSince1970: 1), size: 1, identity: 1),
             coverage: 1, sharedRevision: nil,
             summary: TranscriptSummary(id: id, agent: .claude, locator: locator, modifiedAt: Date(timeIntervalSince1970: 1), cwd: cwd))
@@ -1463,16 +1463,16 @@ final class FactCommitterClaimTests: XCTestCase {
             let box = Box()
             box.committer = FactCommitter(persist: { id, facts in
                 let outcome = try persister.persist(id, facts)
-                if id == "a", !box.done {
+                if id == .local("a"), !box.done {
                     // a's write delivers the next snapshot before returning.
                     box.done = true
-                    box.committer?.receive(revoke ? ["a": a] : ["a": a, "b": bNew])
+                    box.committer?.receive((revoke ? ["a": a] : ["a": a, "b": bNew]).onThisMac)
                 }
                 return outcome
             })
-            box.committer?.receive(["a": a, "b": bOld])
-            XCTAssertEqual(try db.sessionState("a")?.directory, "/a")
-            XCTAssertEqual(try db.sessionState("b")?.directory, revoke ? nil : "/b-new",
+            box.committer?.receive(["a": a, "b": bOld].onThisMac)
+            XCTAssertEqual(try db.onlySessionState("a")?.directory, "/a")
+            XCTAssertEqual(try db.onlySessionState("b")?.directory, revoke ? nil : "/b-new",
                            revoke ? "revoked facts were written" : "superseded facts were written")
         }
     }
@@ -1486,7 +1486,7 @@ final class FactCommitterReentrancyTests: XCTestCase {
         for id in ["first", "second"] { try db.join(sessionID: id, via: .imported) }
         func facts(_ id: String) throws -> AuthorizedFacts {
             let locator = TranscriptLocator(host: .local, path: "/tmp/\(id).jsonl")
-            return AuthorizedFacts(authorization: .init(runEpoch: 1, opRevision: 1, incarnation: try XCTUnwrap(try db.sessionState(id)?.incarnation)),
+            return AuthorizedFacts(authorization: .init(runEpoch: 1, opRevision: 1, incarnation: try XCTUnwrap(try db.onlySessionState(id)?.incarnation)),
                 locator: locator, agent: .claude, signature: TranscriptSignature(modifiedAt: Date(timeIntervalSince1970: 1), size: 1, identity: 1),
                 coverage: 1, sharedRevision: nil,
                 summary: TranscriptSummary(id: id, agent: .claude, locator: locator, modifiedAt: Date(timeIntervalSince1970: 1), cwd: "/\(id)"))
@@ -1498,20 +1498,20 @@ final class FactCommitterReentrancyTests: XCTestCase {
         // Stands in for the app's chain: a committed row change refreshes the
         // row, which re-merges ownership, which delivers a newer snapshot.
         let observer = db.observeRowChanges { id in
-            guard id == "first", !box.reentered else { return }
+            guard id == .local("first"), !box.reentered else { return }
             box.reentered = true
-            box.committer?.receive(["first": first, "second": second])
+            box.committer?.receive(["first": first, "second": second].onThisMac)
         }
         defer { db.removeRowChangeObserver(observer) }
         box.committer = FactCommitter(persist: { try persister.persist($0, $1) })
         let done = DispatchSemaphore(value: 0)
         DispatchQueue.global().async {
-            box.committer?.receive(["first": first])
+            box.committer?.receive(["first": first].onThisMac)
             done.signal()
         }
         XCTAssertEqual(done.wait(timeout: .now() + 3), .success, "deadlocked: the lock was held across the write")
         XCTAssertTrue(box.reentered)
-        XCTAssertEqual(try db.sessionState("first")?.directory, "/first")
-        XCTAssertEqual(try db.sessionState("second")?.directory, "/second")
+        XCTAssertEqual(try db.onlySessionState("first")?.directory, "/first")
+        XCTAssertEqual(try db.onlySessionState("second")?.directory, "/second")
     }
 }

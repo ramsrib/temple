@@ -31,7 +31,7 @@ extension EngineSnapshot {
 extension AuthorizedFacts {
     /// Facts for a summary, authorized for the row's current membership.
     static func current(_ summary: TranscriptSummary, in db: TempleDB, opRevision: UInt64 = 1) -> AuthorizedFacts? {
-        guard let incarnation = try? db.sessionState(summary.id)?.incarnation else { return nil }
+        guard let incarnation = try? db.sessionState(summary.id, host: summary.locator.host)?.incarnation else { return nil }
         return AuthorizedFacts(authorization: .init(runEpoch: 1, opRevision: opRevision, incarnation: incarnation),
                                locator: summary.locator, agent: summary.agent,
                                signature: TranscriptSignature(modifiedAt: summary.modifiedAt, size: 1, identity: 1),

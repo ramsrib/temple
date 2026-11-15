@@ -268,7 +268,7 @@ final class ControlServiceTests: XCTestCase {
         _ = try db.autoArchive([AutoArchiveEntry(ref: ref, reason: .folderMissing, directory: "/p/gone")],
                                idleBefore: .distantFuture)
         let app = model(db)
-        try await settle { app.sessions.contains { $0.id == "gone" && $0.state.archived } }
+        try await settle { app.sessions.contains { $0.sessionID == "gone" && $0.state.archived } }
         let answer = await ask(app, ControlRequest(.sessionsOpen, id: "gone"))
         XCTAssertEqual(answer.error?.code, .refused)
         XCTAssertEqual(answer.error?.message, "The folder it ran in is gone.")

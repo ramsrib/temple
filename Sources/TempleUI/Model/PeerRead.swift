@@ -41,6 +41,8 @@ public struct PeerRow: Equatable, Sendable {
     /// The name and colour an import or an open brings with it.
     public var marks: CarriedMarks { CarriedMarks(name: customName, color: color) }
     public var key: HistoryKey { HistoryKey(host: host, agent: agent, sessionID: id) }
+    /// The session this row is on its host (ADR-041).
+    public var session: SessionKey { SessionKey(id: id, host: host) }
     public var project: ProjectKey { ProjectKey(host: host, path: directory) }
     public var locator: TranscriptLocator? { transcriptPath.map { TranscriptLocator(host: host, path: $0) } }
 }

@@ -19,7 +19,7 @@ final class ProjectOrderTests: XCTestCase {
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             overlay: overlay
         )
-        model.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, MemberResolution.confirmedAbsent) })))
+        model.receiveEngineSnapshot(SessionsSnapshot(generation: 1, resolutions: Dictionary(uniqueKeysWithValues: model.sessions.map { ($0.id, MemberResolution.confirmedAbsent) })))
         return (model, overlay)
     }
 

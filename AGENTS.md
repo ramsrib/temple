@@ -361,12 +361,22 @@ during that refactor:
   through one boundary (`TempleDB.discardNeverStarted`), under the
   membership the proof was for. Don't widen that predicate, and don't
   add a second delete path beside it.
-- **Schema changes stay additive.** Builds before ADR-029 have no
-  newer-schema guard, so a dropped or retyped column breaks the installed
-  app running beside a dev build on the same file. `generated_title` is
-  still dual-written for them. (This rule used to end "until remote ships";
-  remote shipped without touching the core schema, and the owner keeps the
-  rule.)
+- **Schema changes stay additive, with one owner-approved exception.**
+  Builds before ADR-029 have no newer-schema guard, so a dropped or retyped
+  column breaks the installed app running beside a dev build on the same
+  file. `generated_title` is still dual-written for them. The exception is
+  `v14-session-host-key` (ADR-041): a session is its id on a host, which
+  SQLite can only key by rebuilding the table. It runs only when no other
+  Temple process has the file open (`TempleDB.soleAccessMigrations`,
+  `FileHolders`); every build since the guard then says "Update Temple".
+  Don't add another rebuild without the owner's say, and if one is ever
+  approved, add it to `soleAccessMigrations`.
+- **A session is its id on a host (ADR-041).** Every read, write, lookup,
+  dictionary and observer that names a session names both: `SessionKey`,
+  `Session.id`, `SessionTab.sessionKey`. A bare id is unique on one host
+  only: an engine's member ids (one engine per host) and the remote store's
+  `(host, session_id)` are the places it stands alone. Don't add a lookup by
+  id alone, and don't give a host a default in an API that takes one.
 
 ## User-facing words get a cold read, not just a design review
 
@@ -384,9 +394,10 @@ checks never assert exact strings.
 
 ## Sessions on hosts (ADR-036): where remote lives
 
-Remote shipped with **no core schema change**: core migrations still end at
-`v12-archive-provenance`, and `v13-project-host` stays reserved and unused
-(a restored tab's host is its row's host). Everything remote-only is
+Remote shipped with **no core schema change**: core migrations ended at
+`v12-archive-provenance`, and `v13-project-host` stays reserved and unused.
+`v14-session-host-key` (ADR-041) came later, for sessions copied between
+machines, and a saved tab now records its own host. Everything remote-only is
 deletable without touching core rows; keep it that way
 ([docs/designs/remote-ssh.md](docs/designs/remote-ssh.md) section 9,
 "Removing remote").

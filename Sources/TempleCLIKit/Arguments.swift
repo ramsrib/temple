@@ -13,13 +13,16 @@ public struct Invocation: Equatable, Sendable {
     public var argument: String?
     public var project: String?
     public var cli: Agent?
+    /// The host an id is on (`--host`): a name from Settings, or `""` for
+    /// this Mac. A session is its id on a host (ADR-041).
+    public var host: String?
     public var force = false
     public var json = false
 
     public init(noun: Noun, verb: Verb, argument: String? = nil, project: String? = nil, cli: Agent? = nil,
-                force: Bool = false, json: Bool = false) {
+                host: String? = nil, force: Bool = false, json: Bool = false) {
         self.noun = noun; self.verb = verb; self.argument = argument; self.project = project
-        self.cli = cli; self.force = force; self.json = json
+        self.cli = cli; self.host = host; self.force = force; self.json = json
     }
 
     /// What each noun answers to, and what its verb's argument is.
@@ -43,7 +46,8 @@ public struct Invocation: Equatable, Sendable {
         switch (noun, verb) {
         case (.sessions, .ls), (.history, .ls): flags.formUnion(["--project", "--cli"])
         case (.sessions, .search), (.history, .search), (.sessions, .new): flags.insert("--cli")
-        case (.sessions, .close): flags.insert("--force")
+        case (.sessions, .close): flags.formUnion(["--force", "--host"])
+        case (.sessions, .get), (.sessions, .open), (.history, .get): flags.insert("--host")
         default: break
         }
         return flags
@@ -64,6 +68,7 @@ public enum ArgumentParser {
         var words: [String] = []
         var project: String?
         var cli: Agent?
+        var host: String?
         var force = false
         var json = false
         var seenFlags: [String] = []
@@ -82,12 +87,13 @@ public enum ArgumentParser {
                 json = true; seenFlags.append(word)
             case "--force":
                 force = true; seenFlags.append(word)
-            case "--project", "--cli":
+            case "--project", "--cli", "--host":
                 guard index < arguments.count else { return .usageError("\(word) needs a value", noun(words)) }
                 let value = arguments[index]
                 index += 1
                 seenFlags.append(word)
                 if word == "--project" { project = value }
+                else if word == "--host" { host = value }
                 else {
                     guard let agent = Agent(rawValue: value.lowercased()) else {
                         let names = Agent.allCases.map(\.rawValue).joined(separator: ", ")
@@ -138,7 +144,7 @@ public enum ArgumentParser {
             return .usageError("\(noun.rawValue) \(verb.rawValue) does not take \(stray)", noun)
         }
         return .run(Invocation(noun: noun, verb: verb, argument: rest.first, project: project, cli: cli,
-                               force: force, json: json))
+                               host: host, force: force, json: json))
     }
 
     private static func noun(_ words: [String]) -> Invocation.Noun? {
@@ -186,6 +192,8 @@ public enum ArgumentParser {
               --cli <name>       ls, search: only this CLI; new: start this CLI
                                  (claude or codex; default: Temple's setting)
               --force            close: even while its agent is working
+              --host <name>      get, open, close: a session on another machine
+                                 (default: this Mac)
               --json             Machine-readable output
             """
         case .history:
@@ -199,6 +207,7 @@ public enum ArgumentParser {
             Flags:
               --project <dir>    ls: only this project
               --cli <name>       ls, search: only this CLI (claude or codex)
+              --host <name>      get: a session on another machine (default: this Mac)
               --json             Machine-readable output
 
             `temple sessions open <id>` opens any session History lists.

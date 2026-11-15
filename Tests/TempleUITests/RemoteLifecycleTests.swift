@@ -455,7 +455,7 @@ final class RemoteLifecycleTests: XCTestCase {
     var factory: FakeTerminalSurfaceFactory!
     var model: OpenSessionsModel!
     var persistence: UserDefaultsTabPersistence!
-    var rows: [String: Session] = [:]
+    var rows: [SessionKey: Session] = [:]
     var recordedDirectories: [(String, HostID, String)] = []
     var notices: [String] = []
 
@@ -477,7 +477,7 @@ final class RemoteLifecycleTests: XCTestCase {
         model.remoteTabs.recordPollDelays = [0.01]
         model.settleDelaySeconds = 60
         model.sessionRow = { [weak self] in self?.rows[$0] }
-        model.launchDirectoryHandler = { [weak self] id, host, directory in self?.recordedDirectories.append((id, host, directory)) }
+        model.launchDirectoryHandler = { [weak self] key, directory in self?.recordedDirectories.append((key.id, key.host, directory)) }
         model.remoteTabs.noticeHandler = { [weak self] _, message in self?.notices.append(message) }
     }
 
@@ -490,7 +490,7 @@ final class RemoteLifecycleTests: XCTestCase {
 
     private func openRow(_ id: String = "s1", directory: String = "/home/u/project") async -> SessionTab {
         let row = Fixture.row(id, project: directory, host: hostID)
-        rows[id] = row
+        rows[row.id] = row
         model.openSession(row)
         let tab = model.activeTab!
         await settle(tab.hasLiveProcess, "the tab connects")
@@ -549,7 +549,7 @@ final class RemoteLifecycleTests: XCTestCase {
     func testARefusedOpenSpawnsNothingAndSaysWhy() async throws {
         remote.openError = HostLaunchError.preparation("Temple couldn't record this session before starting it: disk full")
         let row = Fixture.row("s1", project: "/p", host: hostID)
-        rows["s1"] = row
+        rows[row.id] = row
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
         await settle(tab.launchPreparationError != nil)
@@ -560,7 +560,7 @@ final class RemoteLifecycleTests: XCTestCase {
     func testARemovedHostIsNotSetUpAndIsNeverAsked() async throws {
         makeModel(launcher: { _ in nil })
         let row = Fixture.row("s1", project: "/p", host: hostID)
-        rows["s1"] = row
+        rows[row.id] = row
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
         XCTAssertEqual(tab.launchPreparationError, "box is not in Temple's hosts, so this session can't open. Add the host in Settings.")
@@ -570,7 +570,7 @@ final class RemoteLifecycleTests: XCTestCase {
 
     func testAClosedTabDuringTheOpenAbandonsTheCreation() async throws {
         let row = Fixture.row("s1", project: "/p", host: hostID)
-        rows["s1"] = row
+        rows[row.id] = row
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
         model.closeTab(tab.id)
@@ -590,7 +590,7 @@ final class RemoteLifecycleTests: XCTestCase {
         await settle(tab.remote?.phase == .disconnected)
         XCTAssertTrue(model.tabs.contains { $0 === tab })
         // Open again: an attach, never a creation (bound to the run).
-        model.openSession(rows["s1"]!)
+        model.openSession(rows[SessionKey(id: "s1", host: hostID)]!)
         await settle(tab.hasLiveProcess)
         XCTAssertEqual(remote.opens.count, 1)
         XCTAssertEqual(remote.reattaches, ["h1"])
@@ -667,7 +667,7 @@ final class RemoteLifecycleTests: XCTestCase {
     /// (the tab closes, as a finished agent's does), never a resume.
     func testAReattachThatFindsNothingNeverResumes() async throws {
         var touches = 0
-        model.touchHandler = { _, _, _ in touches += 1 }
+        model.touchHandler = { _, _ in touches += 1 }
         var gone: [String] = []
         model.remoteTabs.sessionGoneHandler = { _, id in gone.append(id) }
         let tab = await openRow()
@@ -1021,7 +1021,7 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(opened, 2, "the person's Reconnect is their open")
         // The sidebar's click and the command line's open are the same
         // open, by the tab's state, not by the button.
-        model.openSession(rows["s1"]!)
+        model.openSession(rows[SessionKey(id: "s1", host: hostID)]!)
         await settle(self.remote.reattaches.count == 2)
         model.focusOrReconnect(tab)
         await settle(self.remote.reattaches.count == 3)
@@ -1391,7 +1391,7 @@ final class RemoteLifecycleTests: XCTestCase {
 
     func testStopOnHostFromARowWithoutATab() async throws {
         remote.runs = [.init(handle: "h9", sessionID: "s9", resume: true)]
-        rows["s9"] = Fixture.row("s9", project: "/p", host: hostID)
+        rows[SessionKey(id: "s9", host: hostID)] = Fixture.row("s9", project: "/p", host: hostID)
         XCTAssertTrue(model.remoteTabs.hasRun(sessionID: "s9", host: hostID))
         model.remoteTabs.stopSession(sessionID: "s9", host: hostID)
         await settle(self.remote.stops.count == 1)
@@ -1520,7 +1520,7 @@ final class RemoteLifecycleTests: XCTestCase {
         let openGate = Gate()
         remote.openGate = { await openGate.wait() }
         let row = Fixture.row("o", project: "/p", host: hostID)
-        rows["o"] = row
+        rows[row.id] = row
         model.openSession(row)
         let opening = try XCTUnwrap(model.activeTab)
         let stopGate = Gate()
@@ -1554,7 +1554,7 @@ final class RemoteLifecycleTests: XCTestCase {
         let openGate = Gate()
         remote.openGate = { await openGate.wait() }
         let row = Fixture.row("behind", project: "/p", host: hostID)
-        rows["behind"] = row
+        rows[row.id] = row
         model.openSession(row)
         let behind = try XCTUnwrap(model.activeTab)
         model.activate(tab)
@@ -1569,7 +1569,7 @@ final class RemoteLifecycleTests: XCTestCase {
         let fieldGate = Gate()
         remote.openGate = { await fieldGate.wait() }
         let typingRow = Fixture.row("typing", project: "/p", host: hostID)
-        rows["typing"] = typingRow
+        rows[typingRow.id] = typingRow
         model.openSession(typingRow)
         let typing = try XCTUnwrap(model.activeTab)
         model.keyboardHeldByField = { true }
@@ -1603,7 +1603,7 @@ final class RemoteLifecycleTests: XCTestCase {
         // What the host side's collection says once it recorded the failure.
         remote.collectResult = .failedLaunch("the launch couldn't be prepared: ~/.temple/launch isn't a private folder of this account's")
         let row = Fixture.row("s1", project: "/home/u/project", host: hostID)
-        rows["s1"] = row
+        rows[row.id] = row
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
         await settle(factory.created.last?.didTerminate == true, "the client ends rather than wait out its own deadline")
@@ -1634,9 +1634,9 @@ final class RemoteLifecycleTests: XCTestCase {
         remote.decision = true
         var discardedRows: [String] = []
         model.remoteTabs.rowIncarnation = { "inc-\($0)" }
-        model.remoteTabs.discardHandler = { id, _, _, _ in discardedRows.append(id) }
+        model.remoteTabs.discardHandler = { key, _, _ in discardedRows.append(key.id) }
         let row = Fixture.row("u", project: "/p", host: hostID)
-        rows["u"] = row
+        rows[row.id] = row
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
         await settle(tab.remote?.phase == .needsDecision(checked: true))
@@ -1647,7 +1647,7 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "create", "h1"])
         // Discard instead, on another.
         let other = Fixture.row("v", project: "/p", host: hostID)
-        rows["v"] = other
+        rows[other.id] = other
         model.openSession(other)
         let second = try XCTUnwrap(model.activeTab)
         await settle(second.remote?.phase == .needsDecision(checked: true))
@@ -1664,9 +1664,9 @@ final class RemoteLifecycleTests: XCTestCase {
         remote.decision = true
         var discardedRows: [String] = []
         model.remoteTabs.rowIncarnation = { "inc-\($0)" }
-        model.remoteTabs.discardHandler = { id, _, _, _ in discardedRows.append(id) }
+        model.remoteTabs.discardHandler = { key, _, _ in discardedRows.append(key.id) }
         let row = Fixture.row("v", project: "/p", host: hostID)
-        rows["v"] = row
+        rows[row.id] = row
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
         await settle(tab.remote?.phase == .needsDecision(checked: true))
@@ -1685,11 +1685,11 @@ final class RemoteLifecycleTests: XCTestCase {
     func testADispositionThatFailsIsSaid() async throws {
         remote.decision = true
         model.remoteTabs.rowIncarnation = { "inc-\($0)" }
-        model.remoteTabs.discardHandler = { _, _, _, _ in throw CocoaError(.fileWriteUnknown) }
+        model.remoteTabs.discardHandler = { _, _, _ in throw CocoaError(.fileWriteUnknown) }
         var notices: [String] = []
         model.remoteTabs.noticeHandler = { _, text in notices.append(text) }
         let row = Fixture.row("w", project: "/p", host: hostID)
-        rows["w"] = row
+        rows[row.id] = row
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
         await settle(tab.remote?.phase == .needsDecision(checked: true))
@@ -1711,7 +1711,7 @@ final class RemoteLifecycleTests: XCTestCase {
         remote.decision = true
         remote.decisionChecked = false
         let row = Fixture.row("u", project: "/p", host: hostID)
-        rows["u"] = row
+        rows[row.id] = row
         model.openSession(row)
         let tab = try XCTUnwrap(model.activeTab)
         await settle(tab.remote?.phase == .needsDecision(checked: false))
@@ -1774,8 +1774,8 @@ final class RemoteLifecycleTests: XCTestCase {
 
     func testARemoteTabRestoresUnderItsRowsHostAndAttachesOnActivation() async throws {
         remote.runs = [.init(handle: "kept", sessionID: "s1", resume: false)]
-        persistence.save([PersistedTab(sessionID: "s1", agent: .claude, projectPath: "/home/u/project", title: "T", isActive: false)])
-        rows["s1"] = Fixture.row("s1", project: "/home/u/project", host: hostID)
+        persistence.save([PersistedTab(sessionID: "s1", host: hostID, agent: .claude, projectPath: "/home/u/project", title: "T", isActive: false)])
+        rows[SessionKey(id: "s1", host: hostID)] = Fixture.row("s1", project: "/home/u/project", host: hostID)
         model.restore()
         let tab = try XCTUnwrap(model.tabs.first)
         XCTAssertEqual(tab.host, hostID)
@@ -1786,7 +1786,7 @@ final class RemoteLifecycleTests: XCTestCase {
         // A stopped session's chip starts a new run with resume.
         remote.runs[0].ended = true
         model.closeTab(tab.id)
-        persistence.save([PersistedTab(sessionID: "s1", agent: .claude, projectPath: "/home/u/project", title: "T", isActive: true)])
+        persistence.save([PersistedTab(sessionID: "s1", host: hostID, agent: .claude, projectPath: "/home/u/project", title: "T", isActive: true)])
         makeModel()
         model.restore()
         await settle(self.model.activeTab?.hasLiveProcess == true)
@@ -1797,7 +1797,7 @@ final class RemoteLifecycleTests: XCTestCase {
     // MARK: Restored chips (the remote audit, 2026-10-26)
 
     private func saveChip(active: Bool = false) {
-        persistence.save([PersistedTab(sessionID: "s1", agent: .claude, projectPath: "/home/u/project", title: "T", isActive: active)])
+        persistence.save([PersistedTab(sessionID: "s1", host: hostID, agent: .claude, projectPath: "/home/u/project", title: "T", isActive: active)])
     }
 
     /// A restored chip not opened this run, whose session still has a run
@@ -1807,7 +1807,7 @@ final class RemoteLifecycleTests: XCTestCase {
     /// session whose run ended closes at once, as before.
     func testClosingARestoredChipWithALiveRunAsksThenStopsByRow() async throws {
         remote.runs = [.init(handle: "kept", sessionID: "s1", resume: false)]
-        rows["s1"] = Fixture.row("s1", project: "/home/u/project", host: hostID)
+        rows[SessionKey(id: "s1", host: hostID)] = Fixture.row("s1", project: "/home/u/project", host: hostID)
         saveChip()
         model.restore()
         let chip = try XCTUnwrap(model.tabs.first)
@@ -1850,7 +1850,7 @@ final class RemoteLifecycleTests: XCTestCase {
     /// lets it run inside the quit's window, as any stop a close started.
     func testAChipStopIsOwnedFromTheMomentItIsAsked() async throws {
         remote.runs = [.init(handle: "kept", sessionID: "s1", resume: false)]
-        rows["s1"] = Fixture.row("s1", project: "/home/u/project", host: hostID)
+        rows[SessionKey(id: "s1", host: hostID)] = Fixture.row("s1", project: "/home/u/project", host: hostID)
         saveChip()
         model.restore()
         let chip = try XCTUnwrap(model.tabs.first)
@@ -1878,7 +1878,7 @@ final class RemoteLifecycleTests: XCTestCase {
     /// for "nothing to stop": the chip is gone, and nothing is retried.
     func testAChipStopWhoseLookupFailedIsSaidOnce() async throws {
         remote.runs = [.init(handle: "kept", sessionID: "s1", resume: false)]
-        rows["s1"] = Fixture.row("s1", project: "/home/u/project", host: hostID)
+        rows[SessionKey(id: "s1", host: hostID)] = Fixture.row("s1", project: "/home/u/project", host: hostID)
         saveChip()
         model.restore()
         let chip = try XCTUnwrap(model.tabs.first)
@@ -1898,7 +1898,7 @@ final class RemoteLifecycleTests: XCTestCase {
     /// happen once the lookup answers, and the run is never stopped late.
     func testAChipStopCancelledBeforeItsRunWasKnownIsRecorded() async throws {
         remote.runs = [.init(handle: "kept", sessionID: "s1", resume: false)]
-        rows["s1"] = Fixture.row("s1", project: "/home/u/project", host: hostID)
+        rows[SessionKey(id: "s1", host: hostID)] = Fixture.row("s1", project: "/home/u/project", host: hostID)
         saveChip()
         model.restore()
         let chip = try XCTUnwrap(model.tabs.first)
@@ -1955,7 +1955,7 @@ final class RemoteLifecycleTests: XCTestCase {
     /// A local restored chip is never asked about: there is no run.
     func testALocalRestoredChipClosesAtOnce() throws {
         persistence.save([PersistedTab(sessionID: "l1", agent: .claude, projectPath: "/p", title: "T", isActive: false)])
-        rows["l1"] = Fixture.row("l1", project: "/p")
+        rows[.local("l1")] = Fixture.row("l1", project: "/p")
         model.restore()
         let chip = try XCTUnwrap(model.tabs.first)
         XCTAssertFalse(model.chipMayBeRunning(chip))
@@ -1970,7 +1970,7 @@ final class RemoteLifecycleTests: XCTestCase {
     func testAnArchivedActiveTabRestoresInert() async throws {
         remote.runs = [.init(handle: "kept", sessionID: "s1", resume: false)]
         let open = Fixture.row("s1", project: "/home/u/project", host: hostID).state
-        rows["s1"] = Session(state: SessionState(
+        rows[SessionKey(id: "s1", host: hostID)] = Session(state: SessionState(
             id: open.id, pinned: false, archived: true, customName: nil, color: nil, generatedTitle: nil,
             lastOpenedAt: nil, joinedVia: open.joinedVia, joinedAt: nil, agent: open.agent, host: open.host,
             directory: open.directory, directorySource: open.directorySource, title: open.title,
@@ -2017,7 +2017,7 @@ final class RemoteLifecycleTests: XCTestCase {
 
     func testACodexRowWithAnIDResumes() async throws {
         let row = Fixture.row("c1", agent: .codex, project: "/p", host: hostID)
-        rows["c1"] = row
+        rows[row.id] = row
         model.openSession(row)
         await settle(self.model.activeTab?.hasLiveProcess == true)
         XCTAssertEqual(remote.opens.last?.sessionID, "c1")

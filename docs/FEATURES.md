@@ -369,6 +369,12 @@ it. What follows appears for an enabled host only.
   for either only when it can't tell. It says "No session … on <host>" only
   when it looked through every store there; a host that didn't answer is
   said as that.
+- **A session is its id on one machine.** Copy a transcript to another
+  machine (with rsync, say) and that machine has a second session with the
+  same id: it opens, lists and imports there on its own, with its own name,
+  colour, pin and archive, and nothing done to one touches the other. Both
+  can be open in tabs at once, and both come back after a relaunch
+  ([ADR-041](./DECISIONS.md#adr-041--a-session-is-its-id-on-a-host)).
 - **It keeps running.** The agent runs inside a hidden tmux server of
   Temple's own on the host (`tmux -L temple`, tmux 3.2 or newer), so it
   survives a dropped connection, a sleeping Mac and a Temple quit while it
@@ -910,9 +916,9 @@ It ships inside the app at `Temple.app/Contents/Helpers/temple`.
 
 ```
 temple projects ls | get <dir>
-temple sessions ls [--project DIR] [--cli NAME] | search <term> | get <id>
-temple sessions new [dir] [--cli NAME] | open <id> | close <id> [--force]
-temple history ls [--project DIR] [--cli NAME] | search <term> | get <id>
+temple sessions ls [--project DIR] [--cli NAME] | search <term> | get <id> [--host NAME]
+temple sessions new [dir] [--cli NAME] | open <id> [--host NAME] | close <id> [--force] [--host NAME]
+temple history ls [--project DIR] [--cli NAME] | search <term> | get <id> [--host NAME]
 temple --version
 ```
 
@@ -937,6 +943,11 @@ it ships in, the same number About shows.
   the reason.
 - **`sessions close` is `⌘W`**: it refuses while the agent is working unless
   given `--force`.
+- **An id names this Mac's session**: `get`, `open` and `close` act on this
+  Mac's session with that id; `--host NAME` names a session on another
+  machine (an id copied between machines is a session on each). Tables add a
+  HOST column when a row is on a host, and `--json` always says `host` (`""`
+  for this Mac).
 - `new` and `open` start Temple when no Temple is running (only the app the
   command ships in) and bring it forward. A Temple that runs but does not
   answer, such as an older version, is reported rather than started twice.

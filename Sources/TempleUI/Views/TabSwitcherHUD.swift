@@ -83,7 +83,7 @@ struct TabSwitcherHUD: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(TabColorMark.rowFill(
-            TabColorMark.color(for: tab.sessionID, in: model),
+            TabColorMark.color(for: tab.sessionKey, in: model),
             selected: selected, hovering: false))
         .contentShape(Rectangle())
         .onTapGesture {

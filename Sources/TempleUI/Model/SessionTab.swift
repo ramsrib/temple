@@ -44,6 +44,9 @@ public final class SessionTab: ObservableObject, Identifiable {
     @Published public var sessionID: String?
     @Published public private(set) var agent: Agent
     @Published public private(set) var host: HostID
+    /// The session this tab runs: its id on the tab's host (ADR-041). The
+    /// same id in a tab on another host is another session.
+    public var sessionKey: SessionKey? { sessionID.map { SessionKey(id: $0, host: host) } }
     public var projectKey: ProjectKey { ProjectKey(host: host, path: projectPath) }
     /// Fixed by the session's `cwd`; drives per-project tab-bar scoping (U2).
     @Published public private(set) var projectPath: String
@@ -173,11 +176,12 @@ public final class SessionTab: ObservableObject, Identifiable {
         prepareResume(session, agent: agent, directory: directory)
     }
 
-    /// An inert resume chip takes the latest row before its first spawn.
+    /// An inert resume chip takes the latest row before its first spawn:
+    /// its own session's row, never another host's (ADR-041), so its host
+    /// never changes.
     func prepareResume(_ session: Session, agent: Agent, directory: String) {
-        guard surface == nil, isResume else { return }
+        guard surface == nil, isResume, session.host == host else { return }
         self.agent = agent
-        self.host = session.host
         self.projectPath = directory
         self.title = session.state.customName ?? session.state.title ?? self.title
     }

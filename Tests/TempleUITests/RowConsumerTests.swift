@@ -33,7 +33,7 @@ final class RowConsumerTests: XCTestCase {
     }
 
     private func freeze(_ app: AppModel) {
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1,
+        app.receiveEngineSnapshot(SessionsSnapshot(generation: 1,
             resolutions: Dictionary(uniqueKeysWithValues: app.sessions.map { ($0.id, MemberResolution.confirmedAbsent) })))
         XCTAssertTrue(app.sidebarRanksFrozen)
     }
@@ -56,10 +56,10 @@ final class RowConsumerTests: XCTestCase {
         }
         let expected = order.compactMap { projectKey, ids -> SessionRowProject? in
             let members = full.first { $0.key == projectKey }?.sessions ?? []
-            XCTAssertEqual(Set(members.map(\.id)), Set(ids), file: file, line: line)
+            XCTAssertEqual(Set(members.map(\.sessionID)), Set(ids), file: file, line: line)
             guard !app.overlay.isProjectArchived(projectKey) else { return nil }
             let rank = Dictionary(uniqueKeysWithValues: ids.enumerated().map { ($0.element, $0.offset) })
-            let visible = members.filter { !$0.state.archived }.sorted { rank[$0.id]! < rank[$1.id]! }
+            let visible = members.filter { !$0.state.archived }.sorted { rank[$0.sessionID]! < rank[$1.sessionID]! }
             return visible.isEmpty ? nil : SessionRowProject(key: projectKey, sessions: visible)
         }
         XCTAssertEqual(app.displayProjects.map(\.key), expected.map(\.key), file: file, line: line)
@@ -73,11 +73,11 @@ final class RowConsumerTests: XCTestCase {
                              Fixture.row("a2", project: "/a", updated: 20), Fixture.row("b", project: "/b", updated: 10)])
         freeze(app)
         assertFrozenPresentation(app, [(key("/a"), ["a1", "a2"]), (key("/b"), ["b"])])
-        XCTAssertEqual(app.overlay.leave([SessionKey(id: "a1", host: .local)]), ["a1"])
+        XCTAssertEqual(app.overlay.leave([SessionKey(id: "a1", host: .local)]).map(\.id), ["a1"])
         assertFrozenPresentation(app, [(key("/a"), ["a2"]), (key("/b"), ["b"])])
-        XCTAssertEqual(app.overlay.leave([SessionKey(id: "a2", host: .local)]), ["a2"])
+        XCTAssertEqual(app.overlay.leave([SessionKey(id: "a2", host: .local)]).map(\.id), ["a2"])
         assertFrozenPresentation(app, [(key("/b"), ["b"])])
-        XCTAssertEqual(app.overlay.leave([SessionKey(id: "b", host: .local)]), ["b"])
+        XCTAssertEqual(app.overlay.leave([SessionKey(id: "b", host: .local)]).map(\.id), ["b"])
         assertFrozenPresentation(app, [])
     }
 
@@ -87,13 +87,13 @@ final class RowConsumerTests: XCTestCase {
                              Fixture.row("anchor", project: "/same", updated: 10, host: remote)])
         freeze(app)
         assertFrozenPresentation(app, [(key("/same"), ["moving"]), (key("/same", host: remote), ["anchor"])])
-        XCTAssertEqual(app.overlay.leave([SessionKey(id: "moving", host: .local)]), ["moving"])
+        XCTAssertEqual(app.overlay.leave([SessionKey(id: "moving", host: .local)]).map(\.id), ["moving"])
         assertFrozenPresentation(app, [(key("/same", host: remote), ["anchor"])])
         XCTAssertTrue(app.overlay.join("moving", via: .imported, agent: .claude,
             core: SessionCore(host: remote, directory: "/same", title: "Remote", lastActiveAt: Date(timeIntervalSince1970: 40))).isJoined)
         assertFrozenPresentation(app, [(key("/same", host: remote), ["moving", "anchor"])])
-        XCTAssertEqual(app.overlay.leave([SessionKey(id: "moving", host: .local)]), [], "the row is the remote host's now")
-        XCTAssertEqual(app.overlay.leave([SessionKey(id: "moving", host: remote)]), ["moving"])
+        XCTAssertEqual(app.overlay.leave([SessionKey(id: "moving", host: .local)]).map(\.id), [], "the row is the remote host's now")
+        XCTAssertEqual(app.overlay.leave([SessionKey(id: "moving", host: remote)]).map(\.id), ["moving"])
         assertFrozenPresentation(app, [(key("/same", host: remote), ["anchor"])])
         XCTAssertTrue(app.overlay.join("moving", via: .imported, agent: .claude,
             core: SessionCore(directory: "/same", title: "Local again", lastActiveAt: Date(timeIntervalSince1970: 50))).isJoined)
@@ -153,7 +153,7 @@ final class RowConsumerTests: XCTestCase {
             let date = Date(timeIntervalSince1970: Double(100 + tick))
             app.overlay.touch(id, host: .local, at: date)
             await nextPresentationTurn()
-            XCTAssertEqual(app.sessions.first { $0.id == id }?.sortDate, date, "read on demand, current")
+            XCTAssertEqual(app.sessions.first { $0.sessionID == id }?.sortDate, date, "read on demand, current")
             XCTAssertEqual(app.sessionPresentationBuildCount, builds)
             XCTAssertEqual(app.rowPresentationSortCount, sorts)
             XCTAssertEqual(app.rowProjectBuildCount, groups)
@@ -222,18 +222,18 @@ final class RowConsumerTests: XCTestCase {
         let app = try model([Fixture.row("a", project: "/a", updated: 20),
                              Fixture.row("b", project: "/b", updated: 10)])
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1,
-            resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]))
+            resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]).onThisMac)
         let builds = app.sessionPresentationBuildCount
         let groups = app.rowProjectBuildCount
         for tick in 1...100 { app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: Double(100 + tick))) }
         XCTAssertEqual(app.sessionPresentationBuildCount, builds)
-        XCTAssertEqual(app.overlay.rows["b"]?.lastActiveAt, Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(app.overlay.rows[.local("b")]?.lastActiveAt, Date(timeIntervalSince1970: 200))
         await nextPresentationTurn()
         // Ported for B9: the burst used to cost one coalesced build; after
         // the freeze it costs none.
         XCTAssertEqual(app.sessionPresentationBuildCount, builds)
         XCTAssertEqual(app.rowProjectBuildCount, groups)
-        XCTAssertEqual(app.sessions.first { $0.id == "b" }?.sortDate, Date(timeIntervalSince1970: 200))
+        XCTAssertEqual(app.sessions.first { $0.sessionID == "b" }?.sortDate, Date(timeIntervalSince1970: 200))
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
         XCTAssertEqual(app.projectPickerResults("").map(\.path), ["/b", "/a"])
         // A real title change is immediate and consumes queued activity too.
@@ -300,7 +300,7 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(cost.willChange, 0, "nothing the window draws changed")
         assertFrozenPresentation(app, order)
         // b (touched last, at 160) leads live recency; the rail stays frozen.
-        XCTAssertEqual(app.sessions.first { $0.id == "b" }?.sortDate, Date(timeIntervalSince1970: 160))
+        XCTAssertEqual(app.sessions.first { $0.sessionID == "b" }?.sortDate, Date(timeIntervalSince1970: 160))
         XCTAssertEqual(app.projectPickerResults("").map(\.path), ["/b", "/a"])
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
     }
@@ -359,7 +359,7 @@ final class RowConsumerTests: XCTestCase {
         try await settle()
 
         cost = PresentationCost(app)
-        XCTAssertEqual(app.overlay.leave([SessionKey(id: "new", host: .local)]), ["new"])
+        XCTAssertEqual(app.overlay.leave([SessionKey(id: "new", host: .local)]).map(\.id), ["new"])
         XCTAssertEqual(cost.addedBuilds, 1, "a leave")
         XCTAssertGreaterThan(cost.willChange, 0)
         try await settle()
@@ -368,7 +368,7 @@ final class RowConsumerTests: XCTestCase {
         app.overlay.rename("b", to: "Renamed")
         XCTAssertEqual(cost.addedBuilds, 1, "a fact (the name)")
         XCTAssertGreaterThan(cost.willChange, 0)
-        XCTAssertEqual(app.sessions.first { $0.id == "b" }?.displayTitle, "Renamed")
+        XCTAssertEqual(app.sessions.first { $0.sessionID == "b" }?.displayTitle, "Renamed")
         try await settle()
 
         cost = PresentationCost(app)
@@ -379,7 +379,7 @@ final class RowConsumerTests: XCTestCase {
 
         cost = PresentationCost(app)
         app.receiveEngineSnapshot(EngineSnapshot(generation: 2,
-            resolutions: ["a": .confirmedAbsent, "b": .loaded(TranscriptLocator(host: .local, path: "/tmp/b.jsonl"))]))
+            resolutions: ["a": .confirmedAbsent, "b": .loaded(TranscriptLocator(host: .local, path: "/tmp/b.jsonl"))]).onThisMac)
         XCTAssertEqual(cost.addedBuilds, 1, "a resolution")
         XCTAssertGreaterThan(cost.willChange, 0)
         try await settle()
@@ -387,7 +387,7 @@ final class RowConsumerTests: XCTestCase {
         // A snapshot that changes nothing builds nothing.
         cost = PresentationCost(app)
         app.receiveEngineSnapshot(EngineSnapshot(generation: 3,
-            resolutions: ["a": .confirmedAbsent, "b": .loaded(TranscriptLocator(host: .local, path: "/tmp/b.jsonl"))]))
+            resolutions: ["a": .confirmedAbsent, "b": .loaded(TranscriptLocator(host: .local, path: "/tmp/b.jsonl"))]).onThisMac)
         XCTAssertEqual(cost.addedBuilds, 0)
         XCTAssertEqual(cost.willChange, 0)
     }
@@ -405,8 +405,8 @@ final class RowConsumerTests: XCTestCase {
         let summary = TranscriptSummary(id: "a", agent: .claude, locator: TranscriptLocator(host: .local, path: "/tmp/a.jsonl"),
             modifiedAt: Date(timeIntervalSince1970: 50), cwd: "/a", firstPrompt: "Filled title")
         let cost = PresentationCost(app)
-        app.receiveEngineSnapshot(.authorized(generation: 2, resolutions: ["a": .confirmedAbsent],
-                                              summaries: ["a": summary], in: db))
+        app.receiveEngineSnapshot(EngineSnapshot.authorized(generation: 2, resolutions: ["a": .confirmedAbsent],
+                                              summaries: ["a": summary], in: db).onThisMac)
         XCTAssertEqual(try db.sessionState("a")?.title, "Filled title")
         XCTAssertEqual(cost.addedBuilds, 1)
         XCTAssertEqual(app.sessions.first?.displayTitle, "Filled title")
@@ -419,7 +419,7 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertEqual(app.displayProjects.map(\.path), ["/b", "/a"])
         app.overlay.touch("a", host: .local, at: Date(timeIntervalSince1970: 40))
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1,
-            resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]))
+            resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]).onThisMac)
         XCTAssertTrue(app.sidebarRanksFrozen)
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
         app.overlay.observeLaunchDirectory("b", host: .local, "/a")
@@ -501,7 +501,7 @@ final class RowConsumerTests: XCTestCase {
         app.history.hasOpenTab = { $0.sessionID == "c" }
         XCTAssertFalse(app.history.canArchiveSelection, "not when it would skip a row")
         app.history.archiveSelected(undoManager: nil)
-        XCTAssertFalse(app.overlay.rows["a"]!.archived)
+        XCTAssertFalse(app.overlay.rows[.local("a")]!.archived)
         app.history.hasOpenTab = { _ in false }
         XCTAssertTrue(app.history.canArchiveSelection)
 
@@ -531,7 +531,7 @@ final class RowConsumerTests: XCTestCase {
         for member in app.sessions {
             let row = HistoryRow(member: member)
             XCTAssertTrue(app.history.canArchive(row))
-            app.history.hasOpenTab = { $0.sessionID == member.id }
+            app.history.hasOpenTab = { $0.sessionID == member.sessionID && $0.host == member.host }
             XCTAssertFalse(app.history.canArchive(row))
             app.history.archive(row, undoManager: undo)
             XCTAssertFalse(app.overlay.rows[member.id]!.archived)
@@ -558,11 +558,11 @@ final class RowConsumerTests: XCTestCase {
         undo.beginUndoGrouping()
         app.history.openSelected(undoManager: undo)
         undo.endUndoGrouping()
-        XCTAssertFalse(app.overlay.rows["unknown"]!.archived)
+        XCTAssertFalse(app.overlay.rows[.local("unknown")]!.archived)
         XCTAssertTrue(app.openSessions.tabs.isEmpty)
         XCTAssertTrue(app.historyActive || app.openSessions.activeTab == nil, "nothing navigated away")
         undo.undo()
-        XCTAssertTrue(app.overlay.rows["unknown"]!.archived)
+        XCTAssertTrue(app.overlay.rows[.local("unknown")]!.archived)
         app.history.deactivate()
     }
     func testProjectFinderRevealRequiresLocalHostEvenWithTheSamePath() {
@@ -574,7 +574,7 @@ final class RowConsumerTests: XCTestCase {
 
     func testAMemberWithoutATranscriptStillHasASidebarRow() throws {
         let app = try model([Fixture.row("missing", project: "/gone", title: "Kept")])
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["missing": .confirmedAbsent]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["missing": .confirmedAbsent]).onThisMac)
         XCTAssertEqual(app.displayProjects.flatMap(\.sessions).map(\.id), ["missing"])
         XCTAssertEqual(app.displayProjects.first?.sessions.first?.displayTitle, "Kept")
         XCTAssertNil(app.displayProjects.first?.sessions.first?.transcript)
@@ -638,7 +638,7 @@ final class RowConsumerTests: XCTestCase {
         let rows = ["absent", "unreadable", "resolving", "awaiting", "unknown"].map { Fixture.row($0, title: $0) }
         let app = try model(rows)
         app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["absent": .confirmedAbsent,
-            "unreadable": .unreadable, "resolving": .resolving, "awaiting": .awaitingCreation]))
+            "unreadable": .unreadable, "resolving": .resolving, "awaiting": .awaitingCreation]).onThisMac)
         try await read(app, events: [.storeFailed(agent: .codex, message: "Failed scan")])
         XCTAssertEqual(app.history.allRows.count, 5)
         XCTAssertEqual(app.history.allRows.filter(\.transcriptMissing).map(\.sessionID), ["absent"])
@@ -649,7 +649,7 @@ final class RowConsumerTests: XCTestCase {
         await app.history.settle()
         XCTAssertTrue(app.openSessions.tabs.isEmpty)
         // A stale absence cannot replace newer unresolved evidence.
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["unknown": .confirmedAbsent]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["unknown": .confirmedAbsent]).onThisMac)
         await app.history.rebuild()
         XCTAssertFalse(app.history.allRows.first { $0.sessionID == "unknown" }!.transcriptMissing)
         // Cancelling a later scan leaves the member union and its evidence intact.
@@ -694,8 +694,8 @@ final class RowConsumerTests: XCTestCase {
         let remote = HostID(rawValue: "remote")
         let app = try model([Fixture.row("local", project: "/same", title: "Local row"),
             Fixture.row("remote", project: "/same", title: "Remote row", host: remote)])
-        app.openSessions.openSession(app.sessions.first { $0.id == "local" }!)
-        app.openSessions.openSession(app.sessions.first { $0.id == "remote" }!)
+        app.openSessions.openSession(app.sessions.first { $0.sessionID == "local" }!)
+        app.openSessions.openSession(app.sessions.first { $0.sessionID == "remote" }!)
         let local = ProjectKey(host: .local, path: "/same"), other = ProjectKey(host: remote, path: "/same")
         XCTAssertEqual(app.openSessions.openProjectKeys, [local, other])
         XCTAssertEqual(app.switchableProjectKeys, [other, local])
@@ -714,7 +714,7 @@ final class RowConsumerTests: XCTestCase {
     /// its band asks which session it is shows its title plain.
     func testATabOnAHostSaysEndedOrPlainInsteadOfStarting() throws {
         let app = try model([Fixture.row("local", project: "/same", title: "Local row")])
-        app.openSessions.openSession(app.sessions.first { $0.id == "local" }!)
+        app.openSessions.openSession(app.sessions.first { $0.sessionID == "local" }!)
         let tab = try XCTUnwrap(app.openSessions.activeTab)
         tab.isProvisional = true
         let title = app.sessionTabTitle(tab)
@@ -731,12 +731,13 @@ final class RowConsumerTests: XCTestCase {
         let remote = HostID(rawValue: "remote")
         let app = try model([Fixture.row("local", project: "/same", title: "Local row"),
             Fixture.row("remote", project: "/same", title: "Remote row", host: remote)])
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["local": .confirmedAbsent, "remote": .confirmedAbsent]))
-        app.openSessions.openSession(app.sessions.first { $0.id == "remote" }!)
+        app.receiveEngineSnapshot(SessionsSnapshot(generation: 1, resolutions: ["local": .confirmedAbsent,
+                                                                             SessionKey(id: "remote", host: remote): .confirmedAbsent]))
+        app.openSessions.openSession(app.sessions.first { $0.sessionID == "remote" }!)
         let tab = try XCTUnwrap(app.openSessions.activeTab)
         tab.title = "Stale chip title"
         XCTAssertEqual(app.tabDisplayTitle(tab), "Remote row")
-        app.overlay.rename("remote", to: "Renamed row")
+        app.overlay.rename(SessionKey(id: "remote", host: remote), to: "Renamed row")
         XCTAssertEqual(app.tabDisplayTitle(tab), "Renamed row")
         XCTAssertEqual(tab.projectKey.displayName, "same @remote")
         let local = ProjectKey(host: .local, path: "/same"), other = tab.projectKey
@@ -753,17 +754,17 @@ final class RowConsumerTests: XCTestCase {
 
     func testFrozenRankWaitsForTheFirstCompleteGeneration() async throws {
         let app = try model([Fixture.row("a", project: "/a", updated: 20), Fixture.row("b", project: "/b", updated: 10)])
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .resolving]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .resolving]).onThisMac)
         XCTAssertFalse(app.sidebarRanksFrozen)
         app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 30))
         await nextPresentationTurn()
         XCTAssertEqual(app.displayProjects.map(\.path), ["/b", "/a"])
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["a": .resolving, "b": .confirmedAbsent]))
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["a": .resolving, "b": .confirmedAbsent]).onThisMac)
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]).onThisMac)
         XCTAssertFalse(app.sidebarRanksFrozen, "a stale complete generation cannot freeze the newer one")
         app.overlay.touch("a", host: .local, at: Date(timeIntervalSince1970: 40))
         await nextPresentationTurn()
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["a": .confirmedAbsent, "b": .confirmedAbsent]).onThisMac)
         XCTAssertTrue(app.sidebarRanksFrozen)
         XCTAssertEqual(app.displayProjects.map(\.path), ["/a", "/b"])
         app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 50))
@@ -773,11 +774,11 @@ final class RowConsumerTests: XCTestCase {
 
     func testSidebarSessionsSortLiveUntilInitialResolutionCompletes() async throws {
         let app = try model([Fixture.row("a", project: "/same", updated: 20), Fixture.row("b", project: "/same", updated: 10)])
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .loaded(URL(fileURLWithPath: "/tmp/a.jsonl")), "b": .resolving]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .loaded(URL(fileURLWithPath: "/tmp/a.jsonl")), "b": .resolving]).onThisMac)
         app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 30))
         await nextPresentationTurn()
         XCTAssertEqual(app.displayProjects.first?.sessions.map(\.id), ["b", "a"])
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .loaded(URL(fileURLWithPath: "/tmp/a.jsonl")), "b": .unreadable]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .loaded(URL(fileURLWithPath: "/tmp/a.jsonl")), "b": .unreadable]).onThisMac)
         XCTAssertTrue(app.sidebarRanksFrozen)
         app.overlay.touch("a", host: .local, at: Date(timeIntervalSince1970: 40))
         await nextPresentationTurn()
@@ -791,7 +792,7 @@ final class RowConsumerTests: XCTestCase {
         var deadline: (@MainActor () -> Void)?
         app.scheduleSidebarFreeze = { delay, action in XCTAssertEqual(delay, 3); deadline = action }
         app.beginSidebarRanking()
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .unreadable, "b": .awaitingCreation]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["a": .unreadable, "b": .awaitingCreation]).onThisMac)
         XCTAssertFalse(app.sidebarRanksFrozen)
         app.overlay.touch("b", host: remote, at: Date(timeIntervalSince1970: 30))
         await nextPresentationTurn()
@@ -813,14 +814,14 @@ final class RowConsumerTests: XCTestCase {
         XCTAssertNil(app.transcriptURL(for: "local"), "legacy index presence is not a row locator")
         let localURL = URL(fileURLWithPath: "/tmp/local.jsonl")
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["local": .loaded(localURL),
-            "remote": .loaded(TranscriptLocator(host: remote, path: "/remote/transcript.jsonl"))]))
+            "remote": .loaded(TranscriptLocator(host: remote, path: "/remote/transcript.jsonl"))]).onThisMac)
         XCTAssertEqual(app.transcriptURL(for: "local"), localURL)
         XCTAssertNil(app.transcriptURL(for: "remote"), "remote locators cannot reveal a local file")
         let tab = SessionTab(kind: .session, sessionID: "local", agent: .codex,
             projectPath: "/wrong", title: "Old title")
         XCTAssertEqual(app.resumeArgv(for: tab), ["claude", "--resume", "local"])
         app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["local": .confirmedAbsent,
-            "remote": .unreadable]))
+            "remote": .unreadable]).onThisMac)
         XCTAssertNil(app.transcriptURL(for: "local"))
         XCTAssertNil(app.transcriptURL(for: "remote"))
     }
@@ -830,7 +831,7 @@ final class RowConsumerTests: XCTestCase {
             Fixture.row("remote", project: "/same", host: HostID(rawValue: "remote")), Fixture.row("unknown")])
         XCTAssertEqual(Set(app.displayProjects.map(\.key)), [ProjectKey(host: .local, path: "/same"), ProjectKey(host: HostID(rawValue: "remote"), path: "/same")])
         app.overlay.togglePin("unknown")
-        XCTAssertFalse(app.highlightableSessions.contains { $0.id == "unknown" })
+        XCTAssertFalse(app.highlightableSessions.contains { $0.sessionID == "unknown" })
         XCTAssertEqual(app.sessions.count, 3)
     }
 }

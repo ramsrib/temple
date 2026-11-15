@@ -26,12 +26,12 @@ struct AutoArchivePolicy {
     static let idleAfter: TimeInterval = 7 * 86_400
 
     /// Rows nobody is using, with the membership a write would name.
-    static func candidates(rows: Dictionary<String, SessionState>.Values, openSessionIDs: Set<String>,
+    static func candidates(rows: Dictionary<SessionKey, SessionState>.Values, openSessions: Set<SessionKey>,
                            now: Date) -> [(state: SessionState, ref: MembershipRef)] {
         rows.compactMap { state in
             guard let incarnation = state.incarnation,
                   !state.pinned, !state.archived,
-                  !openSessionIDs.contains(state.id),
+                  !openSessions.contains(state.key),
                   state.keptAt == nil, state.archiveReason == nil,
                   now.timeIntervalSince(Session(state: state).sortDate) >= idleAfter
             else { return nil }
@@ -41,9 +41,9 @@ struct AutoArchivePolicy {
 
     /// The engine's hint for this candidate: an absence it reported for this
     /// very membership. A hint makes the row worth a proof, nothing more.
-    static func transcriptGone(_ ref: MembershipRef, in snapshot: EngineSnapshot?) -> Bool {
+    static func transcriptGone(_ ref: MembershipRef, in snapshot: SessionsSnapshot?) -> Bool {
         guard let snapshot else { return false }
-        return snapshot.resolutions[ref.id] == .confirmedAbsent && snapshot.memberships[ref.id] == ref
+        return snapshot.resolutions[ref.key] == .confirmedAbsent && snapshot.memberships[ref.key] == ref
     }
 
     /// One proof per host and agent.
@@ -58,11 +58,12 @@ struct AutoArchivePolicy {
 
     /// The proofs a sweep asks for: per host and agent, the hinted
     /// candidates that agent could hold, each with the membership it was
-    /// asked for. One call each, however many rows.
-    static func proofRequests(rows: Dictionary<String, SessionState>.Values, snapshot: EngineSnapshot?,
-                              openSessionIDs: Set<String>, now: Date) -> [ProofKey: [String: MembershipRef]] {
+    /// asked for (keyed by id: one host's ids are its own sessions). One
+    /// call each, however many rows.
+    static func proofRequests(rows: Dictionary<SessionKey, SessionState>.Values, snapshot: SessionsSnapshot?,
+                              openSessions: Set<SessionKey>, now: Date) -> [ProofKey: [String: MembershipRef]] {
         var requests: [ProofKey: [String: MembershipRef]] = [:]
-        for candidate in candidates(rows: rows, openSessionIDs: openSessionIDs, now: now)
+        for candidate in candidates(rows: rows, openSessions: openSessions, now: now)
         where transcriptGone(candidate.ref, in: snapshot) {
             for agent in agents(for: candidate.state) {
                 requests[ProofKey(host: candidate.ref.host, agent: agent), default: [:]][candidate.ref.id] = candidate.ref
@@ -74,9 +75,9 @@ struct AutoArchivePolicy {
     /// The folders worth asking about: every candidate's, hinted or not (a
     /// hint the proof does not bear out leaves the folder to decide). One
     /// question per folder, however many rows.
-    static func foldersToCheck(rows: Dictionary<String, SessionState>.Values, snapshot: EngineSnapshot?,
-                               openSessionIDs: Set<String>, now: Date) -> Set<ProjectKey> {
-        Set(candidates(rows: rows, openSessionIDs: openSessionIDs, now: now).compactMap { candidate in
+    static func foldersToCheck(rows: Dictionary<SessionKey, SessionState>.Values, snapshot: SessionsSnapshot?,
+                               openSessions: Set<SessionKey>, now: Date) -> Set<ProjectKey> {
+        Set(candidates(rows: rows, openSessions: openSessions, now: now).compactMap { candidate in
             Session(state: candidate.state).project
         })
     }
@@ -85,7 +86,7 @@ struct AutoArchivePolicy {
     /// that could hold it — for this very membership: a proof asked for
     /// an earlier one (a leave and rejoin while it ran) proves nothing about
     /// this one.
-    static func transcriptProven(_ candidate: (state: SessionState, ref: MembershipRef), snapshot: EngineSnapshot?,
+    static func transcriptProven(_ candidate: (state: SessionState, ref: MembershipRef), snapshot: SessionsSnapshot?,
                                  proofs: [ProofKey: AbsenceProof], requested: [ProofKey: [String: MembershipRef]]) -> Bool {
         guard transcriptGone(candidate.ref, in: snapshot) else { return false }
         return agents(for: candidate.state).allSatisfy { agent in
@@ -110,11 +111,11 @@ struct AutoArchivePolicy {
 
     /// The plan's transcript entries whose row never started, apart from
     /// the entries to archive.
-    static func partition(_ entries: [AutoArchiveEntry], rows: [String: SessionState])
+    static func partition(_ entries: [AutoArchiveEntry], rows: [SessionKey: SessionState])
         -> (dropped: [AutoArchiveEntry], archived: [AutoArchiveEntry]) {
         var dropped: [AutoArchiveEntry] = [], archived: [AutoArchiveEntry] = []
         for entry in entries {
-            if entry.reason == .transcriptMissing, let state = rows[entry.ref.id], neverStarted(state) {
+            if entry.reason == .transcriptMissing, let state = rows[entry.ref.key], neverStarted(state) {
                 dropped.append(entry)
             } else {
                 archived.append(entry)
@@ -125,11 +126,11 @@ struct AutoArchivePolicy {
 
     /// `host`: only that host's rows (each host's archives are written as
     /// soon as its own proofs are in).
-    static func plan(rows: Dictionary<String, SessionState>.Values, snapshot: EngineSnapshot?,
+    static func plan(rows: Dictionary<SessionKey, SessionState>.Values, snapshot: SessionsSnapshot?,
                      proofs: [ProofKey: AbsenceProof], requested: [ProofKey: [String: MembershipRef]],
-                     folders: [ProjectKey: DirectoryEvidence], openSessionIDs: Set<String>, now: Date,
+                     folders: [ProjectKey: DirectoryEvidence], openSessions: Set<SessionKey>, now: Date,
                      host: HostID? = nil) -> [AutoArchiveEntry] {
-        candidates(rows: rows, openSessionIDs: openSessionIDs, now: now).compactMap { candidate in
+        candidates(rows: rows, openSessions: openSessions, now: now).compactMap { candidate in
             if let host, candidate.ref.host != host { return nil }
             if transcriptProven(candidate, snapshot: snapshot, proofs: proofs, requested: requested) {
                 return AutoArchiveEntry(ref: candidate.ref, reason: .transcriptMissing)
@@ -140,6 +141,6 @@ struct AutoArchivePolicy {
             return nil
         }
         // Stable for logs and tests; the dictionary's order is not.
-        .sorted { $0.ref.id < $1.ref.id }
+        .sorted { $0.ref.key < $1.ref.key }
     }
 }

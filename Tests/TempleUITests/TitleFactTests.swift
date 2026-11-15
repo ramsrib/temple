@@ -34,10 +34,10 @@ final class TitleFactTests: XCTestCase {
         let codex = summary("codex", agent: .codex, shared: "Named thread")
         for item in [claude, codex] { overlay.join(item.id, via: .opened, agent: item.agent) }
         overlay.applyFacts(Dictionary(uniqueKeysWithValues: try [claude, codex].map {
-            ($0.id, try XCTUnwrap(AuthorizedFacts.current($0, in: db)))
+            (SessionKey(id: $0.id, host: $0.locator.host), try XCTUnwrap(AuthorizedFacts.current($0, in: db)))
         }))
-        XCTAssertEqual(overlay.rows["claude"]?.title, claude.catalogTitle)
-        XCTAssertEqual(overlay.rows["codex"]?.title, "Named thread")
+        XCTAssertEqual(overlay.rows[.local("claude")]?.title, claude.catalogTitle)
+        XCTAssertEqual(overlay.rows[.local("codex")]?.title, "Named thread")
 
         let imported = summary("imported", agent: .claude, prompt: "First prompt", recorded: "Recorded summary")
         XCTAssertEqual(overlay.import([imported]).map(\.label), ["joined"])

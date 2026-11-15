@@ -42,7 +42,7 @@ final class OverlayFactTests: XCTestCase {
         overlay.applyFacts(["s": fresh])
         overlay.applyFacts(["s": fresh])
         XCTAssertEqual(trace.sessionRowUpdates, 1)
-        XCTAssertEqual(overlay.rows["s"]?.title, "Fresh")
+        XCTAssertEqual(overlay.rows[.local("s")]?.title, "Fresh")
     }
 
     func testARetryStillCurrentIsWrittenAndAMismatchAsksTheEngineAgain() throws {
@@ -64,7 +64,7 @@ final class OverlayFactTests: XCTestCase {
         clock = clock.addingTimeInterval(2)
         timers.removeFirst()()
         XCTAssertEqual(trace.sessionRowUpdates, 1)
-        XCTAssertEqual(overlay.rows["s"]?.title, "Kept")
+        XCTAssertEqual(overlay.rows[.local("s")]?.title, "Kept")
 
         // Facts for a membership that has since left and rejoined: refused
         // in SQL, and the owning engine is asked to re-read the row.
@@ -72,7 +72,7 @@ final class OverlayFactTests: XCTestCase {
         XCTAssertTrue(try db.leave(sessionID: "s", host: .local))
         try db.join(sessionID: "s", via: .imported, agent: .claude, locator: TranscriptLocator(host: .local, path: "/tmp/s.jsonl"))
         var asked: [(String, HostID)] = []
-        overlay.onOwnershipMismatch = { asked.append(($0, $1)) }
+        overlay.onOwnershipMismatch = { asked.append(($0.id, $0.host)) }
         trace.reset()
         overlay.applyFacts(["s": stale])
         XCTAssertEqual(trace.sessionRowUpdates, 0)
@@ -114,12 +114,12 @@ final class AppModelFactReentrancyTests: XCTestCase {
         local.publish(.authorized(generation: 1, resolutions: ["s": .loaded(TranscriptLocator(host: .local, path: "/tmp/s.jsonl"))],
                                   summaries: ["s": summary], in: db))
         let deadline = Date().addingTimeInterval(3)
-        while app.sessions.first(where: { $0.id == "other" })?.resolution != remoteVerdict, Date() < deadline {
+        while app.sessions.first(where: { $0.id == SessionKey(id: "other", host: b) })?.resolution != remoteVerdict, Date() < deadline {
             try await Task.sleep(for: .milliseconds(10))
         }
         XCTAssertTrue(joinedOther)
         XCTAssertEqual(try db.sessionState("s")?.title, "Filled")
-        XCTAssertEqual(app.sessions.first { $0.id == "other" }?.resolution, remoteVerdict,
-                       "the ownership change was merged once the facts were applied")
+        XCTAssertEqual(app.sessions.first { $0.id == SessionKey(id: "other", host: b) }?.resolution, remoteVerdict,
+                       "a row joined during the write takes its host's verdict once the facts were applied")
     }
 }

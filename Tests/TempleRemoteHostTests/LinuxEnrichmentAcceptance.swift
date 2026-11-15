@@ -115,12 +115,12 @@ extension LinuxAcceptanceTests {
         await engine.start()
         let deadline = Date().addingTimeInterval(90)
         func filled() throws -> Bool {
-            try ids.allSatisfy { id, _ in try db.sessionState(id)?.title != nil && db.sessionState(id)?.lastActiveAt != nil }
+            try ids.allSatisfy { id, _ in try db.sessionState(id, host: host)?.title != nil && db.sessionState(id, host: host)?.lastActiveAt != nil }
         }
         while try !filled(), Date() < deadline { try await Task.sleep(for: .milliseconds(200)) }
         let elapsed = Date().timeIntervalSince(started)
         for (id, agent) in ids {
-            let row = try XCTUnwrap(try db.sessionState(id), "\(name): \(agent) row")
+            let row = try XCTUnwrap(try db.sessionState(id, host: host), "\(name): \(agent) row")
             log.append("\(agent.rawValue) row filled in \(String(format: "%.1f", elapsed)) s: title=\(row.title ?? "nil") "
                        + "directory=\(row.directory ?? "nil") lastActive=\(row.lastActiveAt.map { "\($0)" } ?? "nil") "
                        + "transcript=\(row.transcriptPath ?? "nil")")

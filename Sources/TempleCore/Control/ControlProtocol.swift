@@ -6,8 +6,9 @@ import Foundation
 /// actions, so nothing on the wire is trusted beyond naming what to act on.
 public enum ControlProtocol {
     /// Bumped only for a change an older peer would misread. A newer request
-    /// is refused rather than half understood.
-    public static let version = 1
+    /// is refused rather than half understood. 2: a session is its id on a
+    /// host (ADR-041): requests may name the host, and sessions say theirs.
+    public static let version = 2
     /// The socket file's name in the state directory.
     public static let socketName = "control.sock"
     /// A request or a response larger than this is not one of ours.
@@ -43,17 +44,22 @@ public struct ControlRequest: Codable, Equatable, Sendable {
     public var command: Command
     /// A session id (`get`, `open`, `close`).
     public var id: String?
+    /// The host the id is on (`get`, `open`, `close`): a name from Settings,
+    /// or `""` for this Mac. Nil: any host, so an id on more than one is
+    /// ambiguous and refused.
+    public var host: String?
     /// A folder: the project to list or get, or where `new` starts.
     public var directory: String?
     public var cli: Agent?
     public var term: String?
     public var force: Bool?
 
-    public init(_ command: Command, id: String? = nil, directory: String? = nil, cli: Agent? = nil,
+    public init(_ command: Command, id: String? = nil, host: String? = nil, directory: String? = nil, cli: Agent? = nil,
                 term: String? = nil, force: Bool? = nil) {
         self.version = ControlProtocol.version
         self.command = command
         self.id = id
+        self.host = host
         self.directory = directory
         self.cli = cli
         self.term = term
@@ -72,6 +78,8 @@ public struct ControlSession: Codable, Equatable, Sendable {
     /// The CLI's own session id; nil while a new Codex session has none yet
     /// (it is pending until Codex writes its rollout).
     public var id: String?
+    /// The host it runs on: its name, or `""` for this Mac.
+    public var host: String
     public var cli: Agent
     public var project: String
     public var title: String
@@ -82,15 +90,15 @@ public struct ControlSession: Codable, Equatable, Sendable {
     public var resumeCommand: [String]?
     public var transcript: String?
 
-    public init(id: String?, cli: Agent, project: String, title: String, state: State, focused: Bool,
+    public init(id: String?, host: String = "", cli: Agent, project: String, title: String, state: State, focused: Bool,
                 resumeCommand: [String]? = nil, transcript: String? = nil) {
-        self.id = id; self.cli = cli; self.project = project; self.title = title
+        self.id = id; self.host = host; self.cli = cli; self.project = project; self.title = title
         self.state = state; self.focused = focused
         self.resumeCommand = resumeCommand; self.transcript = transcript
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, cli, project, title, state, focused, resumeCommand, transcript
+        case id, host, cli, project, title, state, focused, resumeCommand, transcript
     }
 
     /// A pending session says `"id": null` rather than leaving the key out,
@@ -98,6 +106,7 @@ public struct ControlSession: Codable, Equatable, Sendable {
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         try container.encode(id, forKey: .id)
+        try container.encode(host, forKey: .host)
         try container.encode(cli, forKey: .cli)
         try container.encode(project, forKey: .project)
         try container.encode(title, forKey: .title)

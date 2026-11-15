@@ -60,8 +60,8 @@ final class StartupIndexTests: XCTestCase {
         model.start()
         // Authorized facts for the row's own membership: the persisted
         // title is NULL-only, so a transcript cannot overwrite it.
-        model.receiveEngineSnapshot(first.snapshot(authorizedBy: db, generation: 1))
-        model.receiveEngineSnapshot(second.snapshot(authorizedBy: db, generation: 2))
+        model.receiveEngineSnapshot(first.snapshot(authorizedBy: db, generation: 1).onThisMac)
+        model.receiveEngineSnapshot(second.snapshot(authorizedBy: db, generation: 2).onThisMac)
         XCTAssertEqual(model.sessions.first?.displayTitle, "Before")
         XCTAssertEqual(try db.sessionState("member")?.title, "Before")
     }

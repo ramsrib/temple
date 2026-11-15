@@ -53,7 +53,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
             self?.joins.append(open)
             return self?.joinAnswer ?? .joined
         }
-        model.launchDirectoryHandler = { [weak self] id, host, directory in self?.directories.append((id, host, directory)) }
+        model.launchDirectoryHandler = { [weak self] key, directory in self?.directories.append((key.id, key.host, directory)) }
         model.remoteTabs.noticeHandler = { [weak self] _, message in self?.notices.append(message) }
     }
 
@@ -227,15 +227,15 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(tab.remote?.suggestions.count == 1)
     }
 
-    /// Core refuses the id (another host's, or another agent's): the claim
+    /// Core refuses the id (this host's row is another agent's): the claim
     /// stays in place, the tab stays pending and says core's reason.
     func testACoreRefusalKeepsTheClaimAndSaysWhy() async throws {
-        joinAnswer = .refused(.host(HostID(rawValue: "jet")))
+        joinAnswer = .refused(.agent(.claude))
         remote.identityResult = .adopted("c9", directory: "/home/u/project")
         let tab = await newCodex()
         await settle(tab.remote?.identityNote != nil)
         XCTAssertNil(tab.sessionID)
-        XCTAssertEqual(tab.remote?.identityNote, JoinConflict.host(HostID(rawValue: "jet")).message)
+        XCTAssertEqual(tab.remote?.identityNote, JoinConflict.agent(.claude).message)
         XCTAssertTrue(remote.released.isEmpty)
         XCTAssertTrue(remote.joinedMarks.isEmpty)
     }
@@ -901,8 +901,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
     func testAYesForAnEndedSessionClosesItsTabAndHintsTheRowsTitle() async throws {
         var titles: [(String, String)] = []
         var hints: [(String, String)] = []
-        model.titleHandler = { id, _, title in titles.append((id, title)) }
-        model.titleHintHandler = { hints.append(($0, $1)) }
+        model.titleHandler = { key, title in titles.append((key.id, title)) }
+        model.titleHintHandler = { hints.append(($0.id, $1)) }
         remote.pending = [.init(handle: "p7", directory: "/home/u/project", ended: true, typed: true)]
         remote.suggestionsResult = .candidates([suggestion("c7", prompt: "  reply with the word ok\n")])
         model.remoteTabs.restorePending(hosts: [hostID])
@@ -931,7 +931,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
     /// ids are compared by bytes.
     func testAYesSeedsTheTitleHintOnlyForTheCandidatesOwnID() async throws {
         var hints: [(String, String)] = []
-        model.titleHintHandler = { hints.append(($0, $1)) }
+        model.titleHintHandler = { hints.append(($0.id, $1)) }
         for (answer, candidate) in [("c8", "c7"), ("ce\u{301}", "c\u{e9}"), ("c7", "c7")] {
             let tab = await newCodex()
             remote.confirmResult = .known(answer, directory: "/home/u/project")
@@ -1307,7 +1307,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
     /// the same id every minute; Try again, or the conflicting
     /// row going away, lets it be claimed once more.
     func testACoreRefusalIsRememberedUntilTryAgain() async throws {
-        joinAnswer = .refused(.host(HostID(rawValue: "jet")))
+        joinAnswer = .refused(.agent(.claude))
         remote.identityResult = .adopted("c9", directory: "/home/u/project")
         remote.suggestionsResult = .candidates([suggestion("c9"), suggestion("c8")])
         let tab = await newCodex()
@@ -1325,7 +1325,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
     /// A remembered refusal is said again, with Try again, whenever its run
     /// reopens: a reconnect, and a detach then Open (round 3).
     func testARememberedRefusalIsShownWhenTheRunReopens() async throws {
-        joinAnswer = .refused(.host(HostID(rawValue: "jet")))
+        joinAnswer = .refused(.agent(.claude))
         remote.identityResult = .adopted("c9", directory: "/home/u/project")
         let tab = await newCodex()
         await settle(tab.remote?.identityRefused == true)
@@ -1355,9 +1355,9 @@ final class RemoteCodexIdentityTests: XCTestCase {
     }
 
     func testAConflictingRowGoingAwayLiftsTheRefusal() async throws {
-        var rows: [String: Session] = ["c9": Fixture.row("c9", agent: .codex, project: "/x", host: HostID(rawValue: "jet"))]
+        var rows: [SessionKey: Session] = [SessionKey(id: "c9", host: hostID): Fixture.row("c9", agent: .claude, project: "/x", host: hostID)]
         model.sessionRow = { rows[$0] }
-        joinAnswer = .refused(.host(HostID(rawValue: "jet")))
+        joinAnswer = .refused(.agent(.claude))
         remote.identityResult = .adopted("c9", directory: "/home/u/project")
         let tab = await newCodex()
         await settle(tab.remote?.identityRefused == true)

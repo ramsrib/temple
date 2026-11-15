@@ -85,19 +85,19 @@ final class OpenSessionsModelTests: XCTestCase {
         let app = AppModel(surfaceFactory: factory, engines: [FakeEngine(CatalogFixtureIndex(projects: []))],
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             hostRegistry: Fixture.hostsWithoutFolderEvidence())
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["row": .resolving]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["row": .resolving]).onThisMac)
         app.openSession(id: "row")
         XCTAssertEqual(factory.created.count, 1)
         let tab = try XCTUnwrap(app.openSessions.activeTab)
         app.openSessions.surface(try XCTUnwrap(tab.surface), didChangeState: .exited(status: 1))
         XCTAssertFalse(tab.resumeTargetMissing)
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["row": .unreadable]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["row": .unreadable]).onThisMac)
         XCTAssertNil(app.openSessions.sessionKnown("row"))
         XCTAssertFalse(tab.resumeTargetMissing)
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 3, resolutions: ["row": .confirmedAbsent]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 3, resolutions: ["row": .confirmedAbsent]).onThisMac)
         XCTAssertTrue(tab.resumeTargetMissing)
         // Older generations cannot replace the completed evidence.
-        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: [:]))
+        app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: [:]).onThisMac)
         XCTAssertEqual(app.openSessions.sessionKnown("row"), false)
     }
 
@@ -116,7 +116,7 @@ final class OpenSessionsModelTests: XCTestCase {
             database: db, settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
             hostRegistry: Fixture.hostsWithoutFolderEvidence())
         app.receiveEngineSnapshot(EngineSnapshot(generation: 1, resolutions: ["pruned": .confirmedAbsent,
-                                                                               "unknown": .resolving]))
+                                                                               "unknown": .resolving]).onThisMac)
         let rows = Dictionary(uniqueKeysWithValues: app.sessions.map { ($0.id, $0) })
         XCTAssertEqual(rows["pruned"]?.transcriptConfirmedMissing, true, "the sidebar dims this row")
         XCTAssertEqual(rows["unknown"]?.transcriptConfirmedMissing, false, "still resolving is not missing")
@@ -135,7 +135,7 @@ final class OpenSessionsModelTests: XCTestCase {
         XCTAssertFalse(unknown.resumeTargetAbsentAtLaunch)
         app.openSessions.surface(try XCTUnwrap(unknown.surface), didChangeState: .exited(status: 1))
         app.receiveEngineSnapshot(EngineSnapshot(generation: 2, resolutions: ["pruned": .confirmedAbsent,
-                                                                               "unknown": .confirmedAbsent]))
+                                                                               "unknown": .confirmedAbsent]).onThisMac)
         XCTAssertEqual(unknown.resumeTargetMissingMessage,
                        "No transcript on disk carries this ID. It was deleted or pruned, or the conversation "
                        + "continued under a new ID after /resume or /clear — check the sidebar.")
@@ -147,9 +147,9 @@ final class OpenSessionsModelTests: XCTestCase {
         app.closeAndArchive(pruned, undoManager: undo)
         undo.endUndoGrouping()
         XCTAssertNil(app.openSessions.openTab(forSessionID: "pruned"), "the dead tab goes first")
-        XCTAssertEqual(app.overlay.rows["pruned"]?.archived, true)
+        XCTAssertEqual(app.overlay.rows[.local("pruned")]?.archived, true)
         undo.undo()
-        XCTAssertEqual(app.overlay.rows["pruned"]?.archived, false, "undo brings the row back")
+        XCTAssertEqual(app.overlay.rows[.local("pruned")]?.archived, false, "undo brings the row back")
     }
 
     func testRestoreAndReopenPreferTheRowAndKeepRestoreInert() throws {
@@ -200,7 +200,7 @@ final class OpenSessionsModelTests: XCTestCase {
         })
         let model = OpenSessionsModel(surfaceFactory: FakeTerminalSurfaceFactory(), appearanceProvider: { .default },
             runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(), persistence: persistence)
-        let rows = ["a": Fixture.archived(Fixture.row("a", project: "/p/a")), "b": Fixture.row("b", project: "/p/b")]
+        let rows: [SessionKey: Session] = ["a": Fixture.archived(Fixture.row("a", project: "/p/a")), "b": Fixture.row("b", project: "/p/b")]
         model.sessionRow = { rows[$0] }
         model.restore()
         XCTAssertEqual(model.tabs.map(\.sessionID), ["a", "b"], "a local archived row still restores")
@@ -388,8 +388,8 @@ final class OpenSessionsModelTests: XCTestCase {
             if open.via == .opened { overlay.recordOpened(open.id, host: open.host) }
             return result
         }
-        model.touchHandler = { overlay.touch($0, host: $1, at: $2) }
-        model.launchDirectoryHandler = { overlay.observeLaunchDirectory($0, host: $1, $2) }
+        model.touchHandler = { overlay.touch($0, at: $1) }
+        model.launchDirectoryHandler = { overlay.observeLaunchDirectory($0, $1) }
         return model
     }
 
@@ -414,7 +414,7 @@ final class OpenSessionsModelTests: XCTestCase {
             XCTAssertNil(row.directory)
             XCTAssertNil(row.directorySource)
             XCTAssertNil(tab.launchObservation)
-            XCTAssertNil(overlay.rows[row.id]?.lastActiveAt)
+            XCTAssertNil(overlay.rows[row.key]?.lastActiveAt)
         }
     }
 
@@ -446,7 +446,7 @@ final class OpenSessionsModelTests: XCTestCase {
         date = Date(timeIntervalSince1970: 200)
         model.adopt(sessionID: "codex-id", for: tab.id)
         overlay.flushPendingTouches()
-        XCTAssertEqual(overlay.rows["codex-id"]?.lastActiveAt, Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(overlay.rows[.local("codex-id")]?.lastActiveAt, Date(timeIntervalSince1970: 100))
         XCTAssertEqual(try db.sessionState("codex-id")?.lastActiveAt, Date(timeIntervalSince1970: 100))
     }
 
@@ -501,7 +501,7 @@ final class OpenSessionsModelTests: XCTestCase {
         model.adopt(sessionID: "codex-id", for: tab.id)
         XCTAssertEqual(try db.sessionState("codex-id")?.directory, directory.path)
         XCTAssertEqual(try db.sessionState("codex-id")?.directorySource, .tab)
-        XCTAssertNotNil(overlay.rows["codex-id"]?.lastActiveAt)
+        XCTAssertNotNil(overlay.rows[.local("codex-id")]?.lastActiveAt)
     }
 
     func testRestoredChipWritesNoDirectoryUntilItSpawns() throws {
@@ -532,7 +532,7 @@ final class OpenSessionsModelTests: XCTestCase {
             scheduled.append((delay, action)); return {}
         })
         overlay.touch("a", host: .local)
-        XCTAssertEqual(overlay.rows["a"]?.lastActiveAt, date)
+        XCTAssertEqual(overlay.rows[.local("a")]?.lastActiveAt, date)
         XCTAssertNil(try db.sessionState("a")?.lastActiveAt)
         date = Date(timeIntervalSince1970: 120)
         overlay.touch("a", host: .local)
@@ -541,7 +541,7 @@ final class OpenSessionsModelTests: XCTestCase {
         overlay.touch("b", host: .local)
         XCTAssertEqual(scheduled.count, 2, "each session owns a coalescing window")
         XCTAssertEqual(scheduled.map { $0.0 }, [30, 30])
-        XCTAssertEqual(overlay.rows["a"]?.lastActiveAt, Date(timeIntervalSince1970: 120))
+        XCTAssertEqual(overlay.rows[.local("a")]?.lastActiveAt, Date(timeIntervalSince1970: 120))
         scheduled[0].1()
         XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, Date(timeIntervalSince1970: 120))
         XCTAssertNil(try db.sessionState("b")?.lastActiveAt)
@@ -567,7 +567,7 @@ final class OpenSessionsModelTests: XCTestCase {
         model.surface(try XCTUnwrap(tab.surface), didChangeState: .exited(status: 0))
         model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
         model.surface(try XCTUnwrap(tab.surface), didUpdateTitle: "Shutdown")
-        XCTAssertEqual(overlay.rows[id]?.lastActiveAt, Date(timeIntervalSince1970: 100))
+        XCTAssertEqual(overlay.rows[.local(id)]?.lastActiveAt, Date(timeIntervalSince1970: 100))
         XCTAssertEqual(try db.sessionState(id)?.lastActiveAt, Date(timeIntervalSince1970: 100))
         XCTAssertEqual(try db.sessionState(id)?.title, "Pending title")
     }
@@ -582,10 +582,10 @@ final class OpenSessionsModelTests: XCTestCase {
         let model = writerModel(db: db, overlay: overlay, persistence: persistence, now: { date.addingTimeInterval(50) })
         model.restore()
         overlay.flushPendingTouches()
-        XCTAssertEqual(overlay.rows["a"]?.lastActiveAt, date)
+        XCTAssertEqual(overlay.rows[.local("a")]?.lastActiveAt, date)
         XCTAssertEqual(try db.sessionState("a")?.lastActiveAt, date)
         model.activate(try XCTUnwrap(model.tabs.first))
-        XCTAssertEqual(overlay.rows["a"]?.lastActiveAt, date.addingTimeInterval(50))
+        XCTAssertEqual(overlay.rows[.local("a")]?.lastActiveAt, date.addingTimeInterval(50))
     }
 
     func testALateAbsentVerdictAnnotatesAnExitedTab() throws {
@@ -620,7 +620,7 @@ final class OpenSessionsModelTests: XCTestCase {
     func testActivitySignalsTouchButQuietAgentsAndRefocusingDoNot() throws {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         var touched: [String] = []
-        model.touchHandler = { id, _, _ in touched.append(id) }
+        model.touchHandler = { key, _ in touched.append(key.id) }
         let tab = model.newSession(agent: .claude, project: Fixture.key("/p"))
         let id = try XCTUnwrap(tab.sessionID)
         let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
@@ -683,7 +683,7 @@ final class OpenSessionsModelTests: XCTestCase {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.openSession(Fixture.session("a", project: "/p/a"))
         var recorded: [String: String] = [:]
-        model.titleHandler = { recorded[$0] = $2 }
+        model.titleHandler = { recorded[$0.id] = $1 }
 
         let surface = try! XCTUnwrap(model.tabs.first?.surface)
         model.surface(surface, didUpdateTitle: "Fixing the shift+enter encoding")
@@ -700,7 +700,7 @@ final class OpenSessionsModelTests: XCTestCase {
         let model = Fixture.openModel(factory: FakeTerminalSurfaceFactory())
         model.openSession(Fixture.session("a", project: "/p/a"))
         var recorded: [String: String] = [:]
-        model.titleHandler = { recorded[$0] = $2 }
+        model.titleHandler = { recorded[$0.id] = $1 }
         let surface = try! XCTUnwrap(model.tabs.first?.surface)
         model.surface(surface, didUpdateTitle: "Agent title")
         model.surface(surface, didUpdateTitle: "")
@@ -1345,7 +1345,7 @@ final class OpenSessionsModelTests: XCTestCase {
             persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
             launcherForHost: { _ in LocalHostLauncher(binaryPath: { _ in "/bin/claude" }, folderEvidence: { _ in .unknown }) },
             directoryEvidence: directoryEvidence)
-        model.sessionKnown = sessionKnown
+        model.sessionKnown = { sessionKnown($0.id) }
         return model
     }
 
@@ -1363,7 +1363,7 @@ final class OpenSessionsModelTests: XCTestCase {
             launcherForHost: { _ in LocalHostLauncher() },
             directoryEvidence: Fixture.localDirectoryEvidence)
         var recorded: [String] = []
-        model.launchDirectoryHandler = { _, _, path in recorded.append(path) }
+        model.launchDirectoryHandler = { _, path in recorded.append(path) }
         var joined: [String] = []
         model.openedHandler = { open in joined.append(open.id); return .joined }
         model.openSession(Fixture.session("gone", project: directory.path))

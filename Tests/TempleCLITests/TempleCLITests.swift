@@ -22,6 +22,11 @@ final class ArgumentParserTests: XCTestCase {
                        .run(Invocation(noun: .history, verb: .search, argument: "keychain", cli: .claude)))
         XCTAssertEqual(ArgumentParser.parse(["history", "search", "--", "-x"]),
                        .run(Invocation(noun: .history, verb: .search, argument: "-x")))
+        XCTAssertEqual(parse("sessions open abc --host box"),
+                       .run(Invocation(noun: .sessions, verb: .open, argument: "abc", host: "box")))
+        XCTAssertEqual(ArgumentParser.parse(["history", "get", "abc", "--host", ""]),
+                       .run(Invocation(noun: .history, verb: .get, argument: "abc", host: "")))
+        guard case .usageError = parse("sessions ls --host box") else { return XCTFail("ls takes no --host") }
     }
 
     func testHelp() {
@@ -160,6 +165,27 @@ final class TempleCLITests: XCTestCase {
         XCTAssertEqual(sent.count, count, "nothing sent for a folder that is not one")
     }
 
+    /// The host goes with the id (ADR-041), and a table names hosts only
+    /// when a row is on one.
+    func testSessionsSendTheHostAndTablesShowItOnlyWhenOneIsThere() async {
+        _ = await run(["sessions", "close", "abc", "--host", "box"])
+        XCTAssertEqual(sent.last?.host, "box")
+        _ = await run(["sessions", "open", "abc"])
+        XCTAssertNil(sent.last?.host, "no --host: Temple takes it as this Mac")
+        _ = await run(["sessions", "get", "abc", "--host", ""])
+        XCTAssertEqual(sent.last?.host, "")
+        let sessions = [
+            ControlSession(id: "a", cli: .claude, project: "/p/one", title: "here", state: .idle, focused: false),
+            ControlSession(id: "a", host: "box", cli: .claude, project: "/p/one", title: "there", state: .idle, focused: true),
+        ]
+        _ = await run(["sessions", "ls"], answer: ControlResponse(sessions: sessions))
+        XCTAssertEqual(out.last, """
+              ID  HOST      CLI     STATE  PROJECT  TITLE
+              a   this Mac  claude  idle   one      here
+            * a   box       claude  idle   one      there
+            """)
+    }
+
     func testJSONSaysAPendingIDIsNull() async {
         let pending = ControlSession(id: nil, cli: .codex, project: "/p", title: "t", state: .running, focused: false)
         _ = await run(["sessions", "ls", "--json"], answer: ControlResponse(sessions: [pending]))
@@ -210,9 +236,25 @@ final class TempleCLITests: XCTestCase {
         let exit = await run(["history", "get", "c1"], history: rows)
         XCTAssertEqual(exit, .ok)
         XCTAssertTrue(out.last?.contains("resume:  claude --resume c1") == true, out.last ?? "")
+        // ADR-041: the same id on two hosts is two sessions; this Mac's is
+        // the one meant unless --host names another.
         let duplicate = await run(["history", "get", "dup"], history: rows)
-        XCTAssertEqual(duplicate, .failure)
-        XCTAssertEqual(err.last, "temple: 2 sessions have the id dup.")
+        XCTAssertEqual(duplicate, .ok)
+        XCTAssertTrue(out.last?.contains("title:   here") == true, out.last ?? "")
+        let elsewhere = [row("dup", project: "/p", title: "box", host: HostID(rawValue: "box"))]
+        let notHere = await run(["history", "get", "dup"], history: elsewhere)
+        XCTAssertEqual(notHere, .failure, "no --host: this Mac, which doesn't have it")
+        let there = await run(["history", "get", "dup", "--host", "box", "--json"], history: rows)
+        XCTAssertEqual(there, .ok)
+        XCTAssertTrue(out.last?.contains("\"host\" : \"box\"") == true, out.last ?? "")
+        for spelling in ["", "this Mac"] {
+            let here = await run(["history", "get", "dup", "--host", spelling], history: rows)
+            XCTAssertEqual(here, .ok, spelling)
+            XCTAssertTrue(out.last?.contains("title:   here") == true, out.last ?? "")
+        }
+        let nowhere = await run(["history", "get", "dup", "--host", "jet"], history: rows)
+        XCTAssertEqual(nowhere, .failure)
+        XCTAssertEqual(err.last, "temple: No session has the id dup on jet.")
         let missing = await run(["history", "get", "nope"], history: rows)
         XCTAssertEqual(missing, .failure)
     }

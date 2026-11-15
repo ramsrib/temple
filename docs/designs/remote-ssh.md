@@ -1137,10 +1137,13 @@ address, user, port, identity file and jump host change freely without
 touching a row. Rejected: a host UUID (a table and an indirection for a
 property the name has); `user@hostname` (changes when the box moves).
 
-**Session ids stay globally unique in `session_state`**; host is an
-attribute, and a join or adoption for an id already present on another host
-or as another agent is refused and shown. "Already host-keyed" means
-`ProjectKey` and the row's host, not the primary key.
+**Superseded by ADR-041 (2026-11-15):** a session is its id on a host, and
+`session_state` is keyed by `(id, host)` since `v14-session-host-key`; the
+same id on another host is another session, and only another agent on the
+same host is refused. The text below was the v1 rule: session ids stayed
+globally unique in `session_state`; host was an attribute, and a join or
+adoption for an id already present on another host or as another agent was
+refused and shown.
 
 ### Core (generic, meaningful with no remote at all)
 

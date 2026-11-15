@@ -13,9 +13,12 @@ public struct FactPersister: Sendable {
     /// `.ownershipMismatch` when the row the facts were authorized for is
     /// gone, rejoined (another incarnation) or on another host — nothing is
     /// written then. `.unchanged` is a legitimate NULL-only no-op.
-    public func persist(_ id: String, _ facts: AuthorizedFacts) throws -> SessionWriteOutcome {
-        // Facts for another session, or a summary of another file, are not
-        // this row's — whatever authorized them.
+    public func persist(_ key: SessionKey, _ facts: AuthorizedFacts) throws -> SessionWriteOutcome {
+        // Facts for another session, a transcript on another host, or a
+        // summary of another file, are not this row's — whatever authorized
+        // them.
+        let id = key.id
+        guard facts.locator.host == key.host else { return .ownershipMismatch }
         if let summary = facts.summary, summary.id != id || summary.locator != facts.locator {
             return .ownershipMismatch
         }
@@ -45,7 +48,7 @@ public struct FactPersister: Sendable {
 /// overlay and writable `templectl`: persist the latest snapshot's
 /// authorized facts, retry a failed write with backoff — and only while the
 /// latest snapshot still carries the same facts, under the same
-/// authorization, for that id. A snapshot without the id, or with another
+/// authorization, for that session. A snapshot without it, or with another
 /// authorization, revokes them: a pending retry is dropped, never applied
 /// late. (The engine never reuses an authorization for different facts;
 /// comparing the whole value makes that a checked property here too.)
@@ -53,16 +56,17 @@ public struct FactPersister: Sendable {
 /// Thread-safe, and the lock is never held while persisting: a write fires
 /// the database's committed observers synchronously, and whatever they
 /// reach — the app's row refresh, an ownership re-merge, a new snapshot's
-/// `receive` — may call back in. An id being written is not attempted again
-/// until that write returns; then the newest facts for it, if different,
-/// are attempted.
+/// `receive` — may call back in. A session being written is not attempted
+/// again until that write returns; then the newest facts for it, if
+/// different, are attempted. Keyed by session (`SessionKey`): the same id on
+/// two hosts is two sessions, each with its own facts (ADR-041).
 public final class FactCommitter: @unchecked Sendable {
-    public typealias Persist = (String, AuthorizedFacts) throws -> SessionWriteOutcome
+    public typealias Persist = (SessionKey, AuthorizedFacts) throws -> SessionWriteOutcome
 
     public enum Outcome {
-        case written(String, SessionWriteOutcome)
-        case failed(String, Error)
-        public var id: String {
+        case written(SessionKey, SessionWriteOutcome)
+        case failed(SessionKey, Error)
+        public var id: SessionKey {
             switch self { case .written(let id, _), .failed(let id, _): id }
         }
     }
@@ -76,13 +80,13 @@ public final class FactCommitter: @unchecked Sendable {
     private let lock = NSLock()
     private let persist: Persist
     private let now: () -> Date
-    private var current: [String: AuthorizedFacts] = [:]
+    private var current: [SessionKey: AuthorizedFacts] = [:]
     /// What was persisted per id, compared whole: facts are revoked when the
     /// latest snapshot no longer carries exactly them.
-    private var applied: [String: AuthorizedFacts] = [:]
-    private var pending: [String: Pending] = [:]
-    /// Ids with a write under way (outside the lock).
-    private var inFlight: Set<String> = []
+    private var applied: [SessionKey: AuthorizedFacts] = [:]
+    private var pending: [SessionKey: Pending] = [:]
+    /// Sessions with a write under way (outside the lock).
+    private var inFlight: Set<SessionKey> = []
 
     public init(persist: @escaping Persist, now: @escaping () -> Date = Date.init) {
         self.persist = persist; self.now = now
@@ -98,8 +102,8 @@ public final class FactCommitter: @unchecked Sendable {
     /// The latest snapshot's facts, whole. Revokes what it no longer carries
     /// as it was, then persists every newly authorized entry once.
     @discardableResult
-    public func receive(_ facts: [String: AuthorizedFacts]) -> [Outcome] {
-        let ids: [String] = locked {
+    public func receive(_ facts: [SessionKey: AuthorizedFacts]) -> [Outcome] {
+        let ids: [SessionKey] = locked {
             current = facts
             for (id, entry) in pending where facts[id] != entry.facts { pending.removeValue(forKey: id) }
             for (id, entry) in applied where facts[id] != entry { applied.removeValue(forKey: id) }
@@ -122,7 +126,7 @@ public final class FactCommitter: @unchecked Sendable {
     @discardableResult
     public func retryDue() -> [Outcome] {
         let time = now()
-        let ids: [String] = locked { pending.filter { $0.value.due <= time }.keys.sorted() }
+        let ids: [SessionKey] = locked { pending.filter { $0.value.due <= time }.keys.sorted() }
         var outcomes: [Outcome] = []
         for id in ids {
             let claim: (AuthorizedFacts, TimeInterval)? = locked {
@@ -142,17 +146,17 @@ public final class FactCommitter: @unchecked Sendable {
     /// When the earliest pending retry is due (nil: nothing pending).
     public var nextRetry: Date? { locked { pending.values.map(\.due).min() } }
 
-    public var pendingIDs: Set<String> { locked { Set(pending.keys) } }
+    public var pendingIDs: Set<SessionKey> { locked { Set(pending.keys) } }
 
     /// The current facts for `id` if they still need a write and none is
     /// under way; marks it under way.
-    private func claimLocked(_ id: String) -> AuthorizedFacts? {
+    private func claimLocked(_ id: SessionKey) -> AuthorizedFacts? {
         guard let entry = current[id], applied[id] != entry, pending[id] == nil, !inFlight.contains(id) else { return nil }
         inFlight.insert(id)
         return entry
     }
 
-    private func attempt(_ id: String, _ facts: AuthorizedFacts, delay: TimeInterval) -> [Outcome] {
+    private func attempt(_ id: SessionKey, _ facts: AuthorizedFacts, delay: TimeInterval) -> [Outcome] {
         let outcome: Outcome
         do {
             let written = try persist(id, facts)
@@ -186,7 +190,7 @@ public extension FactCommitter {
         }
         defer { retries.cancel() }
         for await snapshot in snapshots {
-            receive(snapshot.facts)
+            receive(snapshot.keyedFacts)
             try onSnapshot(snapshot)
         }
     }

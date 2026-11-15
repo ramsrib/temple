@@ -219,7 +219,7 @@ public struct RootView: View {
     private var pendingCloseTitle: String {
         guard let tab = model.openSessions.pendingCloseTab else { return "Close session?" }
         let name: String
-        if let sid = tab.sessionID, let custom = model.overlay.customName(for: sid) {
+        if let key = tab.sessionKey, let custom = model.overlay.customName(for: key) {
             name = custom
         } else {
             name = tab.title

@@ -339,7 +339,7 @@ private struct SessionTerminalView: View {
         case .exitedEarly:
             exitedEarly(host)
         case .decision(let checked):
-            let archives = tab.sessionID.map(model.discardArchives) ?? false
+            let archives = tab.sessionKey.map(model.discardArchives) ?? false
             notice(symbol: "questionmark.circle",
                    text: checked ? RemoteCopy.unconfirmedConversation : RemoteCopy.uncheckedConversation(host)) {
                 if !checked {
@@ -566,12 +566,12 @@ private struct SessionTerminalView: View {
                 Button("Archive") { model.closeAndArchive(tab, undoManager: undoManager) }
                     .buttonStyle(.link)
                     .font(.system(size: 12))
-            } else if tab.launchPreparationError == OpenSessionsModel.unknownDirectoryMessage, let sid = tab.sessionID {
+            } else if tab.launchPreparationError == OpenSessionsModel.unknownDirectoryMessage, let key = tab.sessionKey {
                 HStack(spacing: 12) {
                     if model.offersArchiveForUnknownDirectory(tab) {
                         Button("Archive") { model.closeAndArchive(tab, undoManager: undoManager) }
                     }
-                    Button("Show in History") { model.showInHistory(sessionID: sid) }
+                    Button("Show in History") { model.showInHistory(key) }
                 }
                 .buttonStyle(.link)
                 .font(.system(size: 12))

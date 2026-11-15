@@ -25,6 +25,32 @@ public struct EngineSnapshot: Equatable, Sendable {
     }
 }
 
+public extension EngineSnapshot {
+    /// The facts keyed by session: an engine's ids are its host's (ADR-041).
+    /// Each entry's own locator names the host it was authorized on.
+    var keyedFacts: [SessionKey: AuthorizedFacts] {
+        Dictionary(uniqueKeysWithValues: facts.map { (SessionKey(id: $0.key, host: $0.value.locator.host), $0.value) })
+    }
+}
+
+/// Every host engine's latest snapshot as one, keyed by session (ADR-041):
+/// the same id on two hosts is two sessions, each from its own host's
+/// engine. What the app consumes.
+public struct SessionsSnapshot: Equatable, Sendable {
+    public let generation: UInt64
+    public let resolutions: [SessionKey: MemberResolution]
+    public let facts: [SessionKey: AuthorizedFacts]
+    /// Which membership each resolution describes (see `EngineSnapshot`).
+    public let memberships: [SessionKey: MembershipRef]
+    public init(generation: UInt64, resolutions: [SessionKey: MemberResolution],
+                facts: [SessionKey: AuthorizedFacts] = [:], memberships: [SessionKey: MembershipRef] = [:]) {
+        self.generation = generation
+        self.resolutions = resolutions
+        self.facts = facts
+        self.memberships = memberships
+    }
+}
+
 /// Transcript facts the engine stands behind for one membership, at one point
 /// of its work. The consumer persists them only while the latest snapshot
 /// still carries the same `authorization` for the id: a snapshot without

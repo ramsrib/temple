@@ -33,9 +33,9 @@ final class OpenByIDSheetTests: XCTestCase {
                 return world.lookup
             },
             checkFolder: { _, path in world.folders[path] ?? .exists(path) },
-            member: { id in world.members.first { $0.id == id } },
-            hasLiveTab: { _, _ in false },
-            openMember: { world.opened.append($0.id) },
+            member: { key in world.members.first { $0.id == key } },
+            hasLiveTab: { _ in false },
+            openMember: { world.opened.append($0.sessionID) },
             resume: { world.resumed.append($0); return true },
             configuration: { host in host.isLocal ? 0 : world.configuration },
             recentFolders: { _ in [] })
@@ -140,7 +140,12 @@ final class OpenByIDSheetTests: XCTestCase {
         XCTAssertTrue(world.resumed.isEmpty)
     }
 
-    func testAMemberHereOpensWithoutLookingAndOneElsewhereOffersItsHost() async {
+    /// ADR-041: the session is the id on the chosen host. A member there
+    /// opens without a lookup; a member with the same id on another host is
+    /// another session, so This Mac looks up and opens its own (the owner's
+    /// rsync case: the transcript was copied, and Temple already had it on
+    /// the other machine).
+    func testAMemberHereOpensWithoutLookingAndOneOnAnotherHostChangesNothing() async {
         let world = World()
         world.members = [Session(state: SessionState(id: id, pinned: false, archived: false, customName: nil, color: nil,
                                                      generatedTitle: nil, lastOpenedAt: nil, joinedVia: .opened, joinedAt: nil,
@@ -151,11 +156,17 @@ final class OpenByIDSheetTests: XCTestCase {
         XCTAssertEqual(world.lookups, 0)
 
         world.opened = []
-        let elsewhere = sheet(world, host: .local)
-        elsewhere.confirm()
-        XCTAssertEqual(elsewhere.check, .elsewhere(box))
-        elsewhere.openElsewhere()
-        XCTAssertEqual(world.opened, [id])
+        let local = TranscriptLocator(host: .local, path: "/Users/me/.claude/projects/-work-app/\(id).jsonl")
+        world.lookup = SessionLookup(agents: [.claude: .found(local, directory: "/work/app"), .codex: .notFound])
+        let copy = sheet(world, host: .local)
+        copy.confirm()
+        await settle(copy)
+        XCTAssertEqual(world.resumed.count, 1)
+        XCTAssertEqual(world.lookups, 1, "this Mac's own copy is looked up")
+        XCTAssertTrue(world.opened.isEmpty, "the other host's session is not opened")
+        XCTAssertEqual(world.resumed.first?.host, .local)
+        XCTAssertEqual(world.resumed.first?.id, id)
+        XCTAssertEqual(world.resumed.first?.launchDirectory, "/work/app")
     }
 
     func testAnAnswerForAChangedHostOrIdOpensNothing() async {
@@ -234,8 +245,8 @@ final class OpenByIDSheetTests: XCTestCase {
         var acting = true
         let dependencies = OpenByIDSheetModel.Dependencies(
             hosts: { [box] in [.local, box] }, lookup: { _, _ in world.lookup },
-            checkFolder: { _, path in .exists(path) }, member: { id in world.members.first { $0.id == id } },
-            hasLiveTab: { _, _ in false }, openMember: { world.opened.append($0.id) },
+            checkFolder: { _, path in .exists(path) }, member: { key in world.members.first { $0.id == key } },
+            hasLiveTab: { _ in false }, openMember: { world.opened.append($0.sessionID) },
             resume: { world.resumed.append($0); return true }, configuration: { _ in 1 },
             canAct: { acting }, recentFolders: { _ in [] })
         let here = OpenByIDSheetModel(request: OpenByIDRequest(host: box, sessionID: id), dependencies: dependencies) {}
@@ -243,13 +254,6 @@ final class OpenByIDSheetTests: XCTestCase {
         here.confirm()
         XCTAssertTrue(world.opened.isEmpty, "a member's shortcut is gated too")
 
-        acting = true
-        let elsewhere = OpenByIDSheetModel(request: OpenByIDRequest(host: .local, sessionID: id), dependencies: dependencies) {}
-        elsewhere.confirm()
-        XCTAssertEqual(elsewhere.check, .elsewhere(box))
-        acting = false
-        elsewhere.openElsewhere()
-        XCTAssertTrue(world.opened.isEmpty, "Open it is gated too")
     }
 
     func testThisMacIsTheDefaultAndTheHostFieldAppearsOnlyWithAHost() {
@@ -259,7 +263,7 @@ final class OpenByIDSheetTests: XCTestCase {
         XCTAssertTrue(withHost.showsHost)
         let alone = OpenByIDSheetModel(request: OpenByIDRequest(), dependencies: OpenByIDSheetModel.Dependencies(
             hosts: { [.local] }, lookup: { _, _ in world.lookup }, checkFolder: { _, path in .exists(path) },
-            member: { _ in nil }, hasLiveTab: { _, _ in false }, openMember: { _ in }, resume: { _ in true },
+            member: { _ in nil }, hasLiveTab: { _ in false }, openMember: { _ in }, resume: { _ in true },
             configuration: { _ in 0 }, recentFolders: { _ in [] })) {}
         XCTAssertFalse(alone.showsHost, "with no host connected there is nothing to choose")
         XCTAssertEqual(alone.host, .local)
@@ -272,7 +276,7 @@ final class OpenByIDSheetTests: XCTestCase {
         var connected: [HostID] = [.local, box]
         let model = OpenByIDSheetModel(request: OpenByIDRequest(sessionID: id), dependencies: OpenByIDSheetModel.Dependencies(
             hosts: { connected }, lookup: { _, _ in world.lookup }, checkFolder: { _, path in .exists(path) },
-            member: { _ in nil }, hasLiveTab: { _, _ in false }, openMember: { _ in }, resume: { _ in true },
+            member: { _ in nil }, hasLiveTab: { _ in false }, openMember: { _ in }, resume: { _ in true },
             configuration: { _ in 1 }, recentFolders: { _ in [] })) {}
         model.host = box
         connected = [.local]
