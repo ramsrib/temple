@@ -2758,6 +2758,13 @@ its review: [docs/designs/session-host-key.md](./designs/session-host-key.md).
   `host`, sessions always say theirs.
 - **A notification from an older build** carries the id alone; its click
   opens the session only when exactly one host has the id.
+- **Each History page is one machine's sessions** (owner, on Show in
+  History listing both copies). This Mac's page used to list Temple's
+  sessions on hosts too; now it lists this Mac's, each host's page lists
+  that host's, and Show in History, Show only a project and a host
+  project's links open the session's own machine's page. The "Archived
+  just now" chip names exact memberships and shows them on any page.
+  Amends ADR-039's "This Mac's page is History as it was".
 
 **Accepted limits.** A host is its configured name: two aliases for one
 machine are two namespaces. Another Temple's saved tabs (ADR-039's "In a

@@ -98,6 +98,56 @@ final class SessionHostKeyTests: XCTestCase {
         XCTAssertNotNil(app.openSessions.openTab(for: SessionKey(id: id, host: box)), "the box's tab is not closed on a guess")
     }
 
+    /// "Show in History" on one machine's copy shows that copy only: each
+    /// History page is one machine's sessions.
+    func testShowInHistoryShowsOnlyThatMachinesCopy() async throws {
+        let db = try TempleDB.inMemory()
+        try joinBoth(db)
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), database: db,
+                           settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                           hostRegistry: Fixture.hostsWithoutFolderEvidence())
+        app.start()
+        app.history.activate()
+        for (host, title) in [(HostID.local, "Here"), (box, "There")] {
+            app.showInHistory(SessionKey(id: id, host: host))
+            XCTAssertEqual(app.history.page, host.isLocal ? .thisMac : .host(host))
+            await app.history.rebuild()
+            XCTAssertEqual(app.history.visibleRows.map(\.host), [host], "only \(host.displayName)'s copy")
+            XCTAssertEqual(app.history.visibleRows.first?.title, title)
+        }
+    }
+
+    /// "Archived just now" names exact sessions on any machine: on This
+    /// Mac's page, a box session it names is listed and counted; ⌘⇧Y keeps
+    /// the page it was on.
+    func testTheArchivedChipListsAndCountsItsSessionsOnAnyPage() async throws {
+        let db = try TempleDB.inMemory()
+        try db.join(sessionID: "gone", via: .opened, agent: .claude,
+                    core: SessionCore(host: box, directory: "/w", directorySource: .tab, title: "Gone"))
+        try db.setArchived(true, sessionID: "gone", host: box)
+        let incarnation = try XCTUnwrap(db.sessionState("gone", host: box)?.incarnation)
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(), database: db,
+                           settings: SettingsStore(defaults: Fixture.uniqueDefaults()),
+                           hostRegistry: Fixture.hostsWithoutFolderEvidence())
+        app.start()
+        app.history.activate()
+        await app.history.rebuild()
+        XCTAssertTrue(app.history.allRows.isEmpty, "This Mac's page has none of its own")
+        app.history.justArchivedChip = .init(memberships: [MembershipRef(id: "gone", host: box, incarnation: incarnation)])
+        app.history.scope = .archived
+        await app.history.rebuild()
+        XCTAssertEqual(app.history.visibleRows.map(\.host), [box])
+        XCTAssertEqual(app.history.allRows.count, 1, "the chip's rows are what the counts are of")
+        XCTAssertEqual(app.history.archivedCount, 1)
+
+        app.history.justArchivedChip = nil
+        app.history.scope = .all
+        app.history.page = .host(box)
+        app.showArchived()
+        XCTAssertEqual(app.history.page, .host(box), "⌘⇧Y stays on the machine's page")
+        XCTAssertEqual(app.history.scope, .archived)
+    }
+
     /// A notification an older build posted names the id alone: it opens
     /// only when one host has that id, never a guess between two.
     func testALegacyNotificationOpensOnlyAnUnambiguousSession() throws {

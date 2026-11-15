@@ -449,7 +449,7 @@ final class RowConsumerTests: XCTestCase {
         await app.history.settle()
         let member = try XCTUnwrap(app.history.allRows.first { $0.member != nil })
         XCTAssertNil(member.catalog, "the box's entry does not attach to this Mac's member")
-        XCTAssertEqual(app.history.allRows.count, 2)
+        XCTAssertEqual(app.history.allRows.count, 1, "the box's entry is on the box's page")
         let builds = app.history.rebuildCount
         app.overlay.touch("shared", host: .local, at: Date(timeIntervalSince1970: 400))
         await nextPresentationTurn()

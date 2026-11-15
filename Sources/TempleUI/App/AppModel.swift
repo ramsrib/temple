@@ -1756,9 +1756,9 @@ public final class AppModel: ObservableObject {
     /// showing Archived it changes nothing but a floating panel.
     public func showArchived() {
         putFloatingPanelsAway()
-        if history.scope != .archived || history.page != .thisMac {
+        // The machine's page stays: each page is one machine's (ADR-041).
+        if history.scope != .archived {
             history.cancelPendingCommands()
-            history.page = .thisMac
             history.scope = .archived
         }
         openSessions.openHistory()
@@ -1796,7 +1796,7 @@ public final class AppModel: ObservableObject {
     /// project, archived ones one segment away.
     public func showInHistory(project key: ProjectKey) {
         history.cancelPendingCommands()
-        history.page = .thisMac
+        history.page = key.host.isLocal ? .thisMac : .host(key.host)
         history.justArchivedChip = nil
         history.query = ""
         history.agentFilter = nil

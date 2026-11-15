@@ -280,25 +280,21 @@ final class HistoryPeerTests: XCTestCase {
         XCTAssertNil(try db.sessionState("p1", host: box), "the captured rows were the old host's")
     }
 
-    /// Reading another Temple changes nothing about This Mac's page: a
-    /// member with no folder keeps no project and can't open there.
-    func testThisMacsRowsAreTheSameAfterAHostWasRead() async throws {
+    /// Each page is one machine's (ADR-041): a member on the box is on the
+    /// box's page, with the other Temple's row beside it, and never on This
+    /// Mac's, before or after the box was read.
+    func testAHostsMemberIsOnItsHostsPageOnly() async throws {
         let db = try TempleDB.inMemory()
         try db.join(sessionID: "m1", via: .imported, agent: .claude, core: SessionCore(host: box))
         let peer = Peer(.listed(PeerListing(sessions: [peerRow("m1", directory: "/work/app")])))
         let history = history(db, peer: peer)
         history.activate()
         await waitFor { history.readState == .done }
-        let before = try XCTUnwrap(history.allRows.first { $0.sessionID == "m1" })
-
+        XCTAssertNil(history.allRows.first { $0.sessionID == "m1" })
         await show(history, page: .host(box), peer: peer)
         XCTAssertNotNil(history.allRows.first { $0.sessionID == "m1" }?.peer)
         await show(history, page: .thisMac, peer: peer)
-        let after = try XCTUnwrap(history.allRows.first { $0.sessionID == "m1" })
-        XCTAssertNil(after.peer)
-        XCTAssertEqual(after.project, before.project)
-        XCTAssertEqual(after.canResume, before.canResume)
-        XCTAssertEqual(after, before)
+        XCTAssertNil(history.allRows.first { $0.sessionID == "m1" })
     }
 
     func testProjectNavigationLandsOnThisMac() async throws {

@@ -1214,9 +1214,9 @@ public final class HistoryModel: ObservableObject {
         askToImport(importable.compactMap(\.catalog), peers: importable.filter { $0.catalog == nil }.compactMap(\.peer))
     }
 
-    /// A host's project narrows that host's page; any other goes to This Mac.
+    /// A project narrows its own machine's page.
     public func showOnly(project key: ProjectKey) {
-        if page.host != key.host || key.host.isLocal { page = .thisMac }
+        page = key.host.isLocal ? .thisMac : .host(key.host)
         projectKeyFilter = key
     }
 

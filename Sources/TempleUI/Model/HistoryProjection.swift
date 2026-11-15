@@ -52,11 +52,13 @@ public enum HistoryPage: Hashable, Sendable {
 
     public var host: HostID? { if case .host(let host) = self { host } else { nil } }
 
-    /// This page lists the row: This Mac's never lists a row only another
+    /// This page lists the row: each page is one machine's sessions
+    /// (ADR-041: the same id on two machines is two sessions, each on its
+    /// own machine's page). This Mac's never lists a row only another
     /// Temple knows; a host's lists only that host's rows.
     func lists(_ row: HistoryRow) -> Bool {
         switch self {
-        case .thisMac: row.member != nil || row.catalog != nil
+        case .thisMac: row.host.isLocal && (row.member != nil || row.catalog != nil)
         case .host(let host): row.host == host
         }
     }
@@ -77,8 +79,17 @@ struct HistoryQuery: Equatable, Sendable {
     /// Nothing narrows the page beyond which page it is.
     var isDefault: Bool { self == HistoryQuery(page: page) }
 
+    /// The rows the page is about: its machine's, or, under the "Archived
+    /// just now" chip, exactly the chip's memberships on whichever machines
+    /// they are. Rows, counts and the project menu all start here.
+    func lists(_ row: HistoryRow) -> Bool {
+        guard let justArchived else { return page.lists(row) }
+        guard let state = row.member?.state, let incarnation = state.incarnation else { return false }
+        return justArchived.contains(MembershipRef(id: state.id, host: state.host, incarnation: incarnation))
+    }
+
     func admits(_ row: HistoryRow, needle: [UInt8]) -> Bool {
-        guard page.lists(row), scope.admits(row) else { return false }
+        guard lists(row), scope.admits(row) else { return false }
         if let agent, row.agent != agent { return false }
         if let project, row.project != project { return false }
         if let justArchived {
@@ -301,7 +312,7 @@ actor HistoryProjector {
         }
         if rebuildAll { dirty = Set(keysByID.keys).union(members.keys).union(peersByID.keys) }
         let queryChanged = input.generation != generation || (input.query.map { $0 != query } ?? false)
-        let pageChanged = input.query.map { $0.page != query.page } ?? false
+        let pageChanged = input.query.map { $0.page != query.page || $0.justArchived != query.justArchived } ?? false
         if let next = input.query { query = next }
         // A member carries another Temple's row only on that host's page:
         // This Mac's rows never change because another Temple was read.
@@ -513,8 +524,8 @@ actor HistoryProjector {
     private func recount() {
         var counts = HistoryCounts()
         var byProject: [ProjectKey: Int] = [:]
-        let page = query.page
-        let listed = ordered.filter { page.lists($0) }
+        let query = self.query
+        let listed = ordered.filter { query.lists($0) }
         counts.all = listed.count
         for row in listed {
             if row.isArchived { counts.archived += 1 } else if row.isMember { counts.inTemple += 1 }
@@ -536,7 +547,7 @@ actor HistoryProjector {
 
     private func project() -> HistorySnapshot {
         let visible: [HistoryRow]
-        let pageRows = ordered.filter { query.page.lists($0) }
+        let pageRows = ordered.filter { query.lists($0) }
         if query.isDefault {
             visible = pageRows
         } else {

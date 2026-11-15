@@ -373,7 +373,9 @@ it. What follows appears for an enabled host only.
   machine (with rsync, say) and that machine has a second session with the
   same id: it opens, lists and imports there on its own, with its own name,
   colour, pin and archive, and nothing done to one touches the other. Both
-  can be open in tabs at once, and both come back after a relaunch
+  can be open in tabs at once, and both come back after a relaunch. Each
+  History page (**This Mac** and each host) lists that machine's sessions
+  only, and **Show in History** opens the session's own machine's page
   ([ADR-041](./DECISIONS.md#adr-041--a-session-is-its-id-on-a-host)).
 - **It keeps running.** The agent runs inside a hidden tmux server of
   Temple's own on the host (`tmux -L temple`, tmux 3.2 or newer), so it

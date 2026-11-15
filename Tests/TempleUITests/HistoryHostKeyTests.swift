@@ -61,6 +61,12 @@ final class HistoryHostKeyTests: XCTestCase {
         XCTFail("condition never held", file: file, line: line)
     }
 
+    /// The page of one machine, settled (each page is one machine's sessions).
+    private func on(_ history: HistoryModel, _ host: HostID) async {
+        history.page = host.isLocal ? .thisMac : .host(host)
+        await history.rebuild()
+    }
+
     private func row(_ history: HistoryModel, _ key: HistoryKey, file: StaticString = #filePath, line: UInt = #line) throws -> HistoryRow {
         try XCTUnwrap(history.allRows.first { $0.id == key }, "no row \(key)", file: file, line: line)
     }
@@ -95,31 +101,34 @@ final class HistoryHostKeyTests: XCTestCase {
         await load(history)
 
         let localKey = HistoryKey(local), boxKey = HistoryKey(box)
-        XCTAssertEqual(Set(history.allRows.map(\.id)), [localKey, boxKey], "one row per host, same id")
+        XCTAssertEqual(Set(history.allRows.map(\.id)), [localKey], "This Mac's page: this Mac's session")
+        await on(history, remote)
+        XCTAssertEqual(Set(history.allRows.map(\.id)), [boxKey], "the box's page: the box's, same id")
         history.click(boxKey)
-        XCTAssertEqual(history.selection, [boxKey], "selecting one host's row selects only it")
+        XCTAssertEqual(history.selection, [boxKey])
 
+        await on(history, .local)
         history.requestImport([try row(history, localKey)])
         await history.confirmImport(undoManager: nil)
         XCTAssertEqual(try db.sessionState("same")?.host, .local)
         XCTAssertEqual(history.justImported, [localKey], "the other host's row is not 'Imported'")
+        XCTAssertTrue(history.isInTemple(try row(history, localKey)))
 
-        let attached = try row(history, localKey)
-        XCTAssertTrue(history.isInTemple(attached))
+        await on(history, remote)
         let other = try row(history, boxKey)
         XCTAssertNil(other.member, "a member never attaches to another host's row")
         XCTAssertFalse(history.isInTemple(other))
         XCTAssertNil(other.conflict, "another host's session with the same id is no conflict")
         XCTAssertTrue(other.canImport)
         XCTAssertTrue(other.canResume)
-        XCTAssertEqual(history.inTempleCount, 1)
-
+        XCTAssertEqual(history.inTempleCount, 0, "nothing in Temple on the box yet")
         history.requestImport([other])
         XCTAssertNotNil(history.pendingImport)
         await history.confirmImport(undoManager: nil)
         XCTAssertEqual(try db.sessionState("same", host: remote)?.host, remote)
-        XCTAssertEqual(history.inTempleCount, 2)
+        XCTAssertEqual(history.inTempleCount, 1)
         XCTAssertNotNil(try row(history, boxKey).member)
+        await on(history, .local)
         XCTAssertEqual(try row(history, localKey).member?.host, .local, "each row keeps its own host's member")
         XCTAssertEqual(overlay.rows[.local("same")]?.host, .local)
         XCTAssertEqual(overlay.rows[SessionKey(id: "same", host: remote)]?.host, remote)
@@ -242,29 +251,23 @@ final class HistoryHostKeyTests: XCTestCase {
         }
     }
 
-    /// The same id on two hosts in one bulk import: two sessions, both
-    /// imported, each undone with the one undo step (ADR-041).
-    func testABulkImportOfOneIDOnTwoHostsImportsBoth() async throws {
+    /// A selection is one machine's page: Select All on This Mac imports
+    /// this Mac's copy only; the box's is imported from the box's page.
+    func testSelectAllImportsOnlyThePagesMachine() async throws {
         let db = try TempleDB.inMemory()
         let first = summary("pair", host: .local, secondsAgo: 30), second = summary("pair", host: remote, secondsAgo: 60)
         let (history, overlay) = history(db, catalog: events([(.local, [first]), (remote, [second])]))
         await load(history)
         history.selectAll()
         history.requestImport()
-        let request = try XCTUnwrap(history.pendingImport)
-        let manager = undoManager()
-        manager.beginUndoGrouping()
-        await history.confirmImport(request, undoManager: manager)
-        manager.endUndoGrouping()
-        XCTAssertEqual(history.notice?.text, "2 sessions imported")
-        XCTAssertNil(history.importFailure)
-        XCTAssertEqual(history.justImported, [HistoryKey(first), HistoryKey(second)])
-        XCTAssertEqual(history.inTempleCount, 2)
-        manager.undo()
-        XCTAssertNil(try db.sessionState("pair"))
-        XCTAssertNil(try db.sessionState("pair", host: remote))
-        manager.redo()
+        await history.confirmImport(try XCTUnwrap(history.pendingImport), undoManager: nil)
+        XCTAssertEqual(history.notice?.text, "1 session imported")
         XCTAssertTrue(overlay.isTempleSession("pair"))
+        XCTAssertFalse(overlay.isTempleSession(SessionKey(id: "pair", host: remote)))
+        await on(history, remote)
+        history.selectAll()
+        history.requestImport()
+        await history.confirmImport(try XCTUnwrap(history.pendingImport), undoManager: nil)
         XCTAssertTrue(overlay.isTempleSession(SessionKey(id: "pair", host: remote)))
     }
 
@@ -287,7 +290,7 @@ final class HistoryHostKeyTests: XCTestCase {
 
         // This Mac's row goes another way; the id then joins from the box.
         XCTAssertEqual(overlay.leave([SessionKey(id: "moved", host: .local)]).map(\.id), ["moved"])
-        await history.rebuild()
+        await on(history, remote)
         XCTAssertTrue(try row(history, HistoryKey(box)).canImport)
         let second = undoManager()
         second.beginUndoGrouping()
@@ -456,7 +459,9 @@ final class HistoryHostKeyTests: XCTestCase {
         XCTAssertTrue(history.isReading, "the slow host has not finished")
         gate.open()
         await waitFor { history.readState == .done }
-        XCTAssertEqual(Set(history.allRows.map(\.host)), [.local, remote])
+        XCTAssertEqual(Set(history.allRows.map(\.host)), [.local], "This Mac's page")
+        await on(history, remote)
+        XCTAssertEqual(Set(history.allRows.map(\.host)), [remote], "the slow host's rows, on its page")
     }
 
     /// A host whose folder checks stall holds up only its own rows: the
@@ -522,7 +527,9 @@ final class HistoryHostKeyTests: XCTestCase {
         XCTAssertTrue(history.isReading, "the remote is still held")
         stalled.open()
         await waitFor { history.readState == .done }
-        XCTAssertEqual(history.allRows.count, 401)
+        XCTAssertEqual(history.allRows.count, 1, "This Mac's page")
+        await on(history, remote)
+        XCTAssertEqual(history.allRows.count, 400, "the remote's rows, on its page")
     }
 
     /// Progress is the sum over the hosts heard from; a host still listing
