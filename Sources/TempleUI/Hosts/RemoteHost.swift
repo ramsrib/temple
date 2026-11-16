@@ -81,18 +81,31 @@ final class RemoteHostLauncher: RemoteSessionHost {
 
     func open(agent: Agent, sessionID: String, resume: Bool, directory: String, resumeAnyway: Bool,
               startNew: Bool, resumeUnconfirmed: Bool) async throws -> RemoteOpenResult {
-        let outcome = try await sessions.open(.init(agent: agent, sessionID: sessionID, mode: resume ? .resume : .new,
+        let outcome: RemoteSessions.OpenOutcome
+        do {
+            outcome = try await sessions.open(.init(agent: agent, sessionID: sessionID, mode: resume ? .resume : .new,
                                                     directory: directory, extraArguments: extraArgs(agent),
                                                     resumeAnyway: resumeAnyway, startNew: startNew,
                                                     resumeUnconfirmed: resumeUnconfirmed))
+        } catch let failure as AttachPreparationFailed {
+            // An ordinary open (a restored tab, the sidebar) that found the
+            // session's run live and failed attaching: bound to that run all
+            // the same.
+            throw RemoteReattachFailure(handle: failure.handle, attachment: failure.attachment, message: failure.localizedDescription)
+        }
         await refreshLiveSessions()
         return Self.result(outcome)
     }
 
     func reattach(agent: Agent, sessionID: String, directory: String, handle: String) async throws -> RemoteOpenResult {
-        let outcome = try await sessions.reattach(.init(agent: agent, sessionID: sessionID, mode: .resume, directory: directory,
+        let outcome: RemoteSessions.OpenOutcome
+        do {
+            outcome = try await sessions.reattach(.init(agent: agent, sessionID: sessionID, mode: .resume, directory: directory,
                                                         extraArguments: extraArgs(agent), resumeAnyway: false, startNew: false,
                                                         resumeUnconfirmed: false), handle: handle)
+        } catch let failure as AttachPreparationFailed {
+            throw RemoteReattachFailure(handle: failure.handle, attachment: failure.attachment, message: failure.localizedDescription)
+        }
         await refreshLiveSessions()
         return Self.result(outcome)
     }
@@ -279,7 +292,14 @@ final class RemoteHostLauncher: RemoteSessionHost {
     // MARK: Codex identity
 
     func openPending(handle: String?, directory: String) async throws -> RemotePendingOpenResult {
-        let outcome = try await sessions.openPending(handle: handle, directory: directory, extraArguments: extraArgs(.codex))
+        let outcome: RemoteSessions.PendingOpenOutcome
+        do {
+            outcome = try await sessions.openPending(handle: handle, directory: directory, extraArguments: extraArgs(.codex))
+        } catch let failure as AttachPreparationFailed {
+            throw RemoteReattachFailure(handle: failure.handle, attachment: failure.attachment, message: failure.localizedDescription)
+        } catch let gone as PendingRunGone {
+            throw RemoteRunNotTracked(message: gone.localizedDescription)
+        }
         await refreshLiveSessions()
         switch outcome {
         case .ended: return .ended

@@ -552,7 +552,8 @@ public final class RemoteSessions {
                     return try await reserveAndPlan(request, candidate: newRun(request, resume: candidate.mode == .resume),
                                                     connection: connection, recovering: false)
                 case .storage(let reason):
-                    throw OpenError.store(reason)
+                    // After the reservation: the caller keeps exactly it.
+                    throw AttachPreparationFailed(handle: run.handle, attachment: run.attachment, underlying: OpenError.store(reason))
                 default:
                     // The run's facts as collected, under the attachment
                     // this reservation took: two clients planned together
@@ -575,8 +576,18 @@ public final class RemoteSessions {
         let plan = RemoteLaunchPlan(handle: run.handle, marker: marker, directory: run.directoryIntent,
                                     agentArgv: [], path: launchPath, claudeConfig: launchConfig, socket: run.socketPath,
                                     stage: LaunchStage.attachName(marker: marker, nonce: token()))
-        let staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, creating: false,
+        let staged: Bool
+        do {
+            staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, creating: false,
                                                 script: keepAlive.attachScript(plan), connection: connection)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            // The run's attachment was already reserved for this attach: the
+            // caller takes exactly that one, never whatever the ledger says
+            // later (another client may have reserved since).
+            throw AttachPreparationFailed(handle: run.handle, attachment: run.attachment, underlying: error)
+        }
         return OpenPlan(handle: run.handle, attachment: run.attachment, creating: false,
                         argv: localArgv(connection, LaunchStage.command(stage: plan.stage), handle: run.handle, attachment: run.attachment), agentArgv: agentArgv,
                         directoryIntent: run.directoryIntent,
@@ -1325,7 +1336,7 @@ public final class RemoteSessions {
         }
         switch reservation {
         case .gone:
-            throw OpenError.refused("Temple no longer tracks this session on \(record.name).")
+            throw PendingRunGone(host: record.name)
         case .identified(let id):
             return .identified(handle: handle, sessionID: id)
         case .ended:
@@ -1337,7 +1348,8 @@ public final class RemoteSessions {
                     // Never ran: nothing to attach to, nothing to identify.
                     return .ended(handle: handle)
                 case .storage(let reason):
-                    throw OpenError.store(reason)
+                    // After the reservation: the caller keeps exactly it.
+                    throw AttachPreparationFailed(handle: run.handle, attachment: run.attachment, underlying: OpenError.store(reason))
                 default:
                     // The run's facts as collected, under the attachment
                     // this reservation took: two clients planned together
@@ -1573,4 +1585,24 @@ public final class RemoteSessions {
         try await write { try $0.dismissRun(handle, at: now) }
     }
 
+}
+
+
+/// An attach whose run attachment was reserved, then whose preparation
+/// (staging the attach over the connection) failed: carries the exact
+/// reservation, so the tab's later checks of the run are its own.
+public struct AttachPreparationFailed: Error, LocalizedError {
+    /// The run reserved: whichever open route chose it (a reattach, or an
+    /// ordinary open or a restored tab that found it live).
+    public let handle: String
+    public let attachment: Int
+    public let underlying: any Error
+    public var errorDescription: String? { underlying.localizedDescription }
+}
+
+/// A pending run's reopen found no run to reopen (dismissed, or no longer
+/// tracked): unlike a failed attach, nothing is left to retry.
+public struct PendingRunGone: Error, LocalizedError {
+    public let host: String
+    public var errorDescription: String? { "Temple no longer tracks this session on \(host)." }
 }

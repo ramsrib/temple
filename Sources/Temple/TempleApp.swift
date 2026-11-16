@@ -27,6 +27,7 @@ struct TempleApp: App {
             GhosttyResources.configure(devCheckoutRoot: repoRoot)
             LoginShellEnvironment.adoptLoginShellPATH()
             UsageLog.fileURL = UsageLog.defaultFileURL
+            RemoteLog.fileURL = RemoteLog.defaultFileURL
             return AppModel(surfaceFactory: GhosttyTerminalSurfaceFactory(configDirectory: TempleState.directory),
                             database: database)
         })

@@ -1166,7 +1166,7 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertEqual(handle, first.handle)
         try await sessions.dismissRun(first.handle)
         do { _ = try await sessions.openPending(handle: first.handle, directory: "~", extraArguments: []); XCTFail() }
-        catch RemoteSessions.OpenError.refused {}
+        catch is PendingRunGone {}
     }
 }
 
