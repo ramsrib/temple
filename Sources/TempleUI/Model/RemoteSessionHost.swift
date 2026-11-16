@@ -400,6 +400,11 @@ public struct RemoteTabState: Equatable {
     /// The client's end was the connection failing (ssh's 255), not a
     /// detach: what the host answers decides a reattach.
     var connectionFailed = false
+    /// Consecutive reattaches of this run whose preparation failed before
+    /// any client started: each takes the recheck schedule up where the
+    /// last left off, so a host that keeps answering "present" while
+    /// every attach fails is not retried at the first delay forever.
+    var preparationFailures = 0
     /// The owned schedule asking the host again while it cannot tell.
     var recheckOperation: UUID?
 
@@ -460,6 +465,18 @@ public enum RemoteCopy {
     /// Why Temple can't tell after its own reattach was refused: the run
     /// the tab was in is not one Temple tracks any more.
     public static let runNoLongerTracked = "Temple no longer tracks the run this tab was in"
+
+    /// Reconnecting to a run that is still tracked failed on the way (the
+    /// connection half-down after a sleep, a staging step refused): the
+    /// tab stays bound to the run, and Temple tries again.
+    /// Says when to wait and when to act: Temple's checks run for about
+    /// half an hour (`recheckDelays`), Reconnect tries at once. The detail
+    /// is an error's own sentence, set in lower case inside the parentheses.
+    public static func reconnectFailed(_ detail: String) -> String {
+        var text = trimmed(detail)
+        if let first = text.first, text.dropFirst().first?.isLowercase ?? true { text = first.lowercased() + text.dropFirst() }
+        return "the last try failed (\(text)). Temple keeps trying for about half an hour; Reconnect tries now"
+    }
 
     public static func cannotEnter(_ directory: String, host: String) -> String {
         "Temple couldn't enter the folder \(directory) on \(host)."
@@ -1139,4 +1156,14 @@ public protocol RemoteProjectStatePersisting: AnyObject {
     func projectStates() -> [(key: ProjectKey, archived: Bool, position: Int?)]
     func setArchived(_ archived: Bool, key: ProjectKey)
     func setOrder(_ keys: [(key: ProjectKey, position: Int)])
+}
+
+
+/// A reattach whose attachment was reserved before its preparation failed
+/// (`RemoteHost` translates the remote module's own error into this one).
+public struct RemoteReattachFailure: Error, LocalizedError {
+    public let attachment: Int
+    public let message: String
+    public init(attachment: Int, message: String) { self.attachment = attachment; self.message = message }
+    public var errorDescription: String? { message }
 }

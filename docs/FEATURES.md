@@ -390,6 +390,16 @@ it. What follows appears for an enabled host only.
   about 34 minutes; your Mac waking, or a network path becoming usable,
   restarts those checks while Temple is still trying; when they stop, the
   tab stays disconnected and Reconnect is yours. A client detached from the host's side stays disconnected.
+  A reattach that fails on the way (after a sleep the old connection can
+  be half-down, and the step that sends the attach over it fails) keeps
+  the tab on its session: it says it can't tell, with the reason, keeps
+  checking on the same schedule, and Reconnect stays in its band; it never
+  needs a relaunch. The same holds when Temple's own launch step never
+  reached the host (it exits 125), and when another Temple attached to the
+  session while this tab was checking it (the tab shows Reconnect rather
+  than waiting forever). Every remote tab's exit, the host's answer, each
+  reattach and each retry are written to `<state dir>/logs/remote.log`
+  (and the unified log), to trace a report like this one later.
   Temple stops retrying when an automatic connection ends before reaching
   the session, or when three in a row each last under a minute; choose
   Reconnect to try again. If a reattach finds the session already

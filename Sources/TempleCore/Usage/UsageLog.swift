@@ -77,39 +77,17 @@ public enum UsageLog {
 
     private static func write(to url: URL, at: Date, level: String, message: String) {
         let line = "\(stamp.string(from: at)) \(level) \(message)\n"
-        let fm = FileManager.default
         do {
-            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-            if !fm.fileExists(atPath: url.path), !fm.createFile(atPath: url.path, contents: nil) {
-                throw CocoaError(.fileWriteUnknown)
-            }
-            let handle = try FileHandle(forWritingTo: url)
-            defer { try? handle.close() }
-            try handle.seekToEnd()
-            try handle.write(contentsOf: Data(line.utf8))
-            try trimIfNeeded(url)
+            try LogFile.append(line, to: url, capBytes: capBytes)
             reportedFailure = nil
         } catch {
             // The home directory is the user's name; keep it out of a
             // public log line.
-            let home = FileManager.default.homeDirectoryForCurrentUser.path
-            let reason = "\(url.path): \(error)".replacingOccurrences(of: home, with: "~")
+            let reason = LogFile.redactingHome("\(url.path): \(error)")
             if reportedFailure != reason {
                 reportedFailure = reason
                 logger.error("usage log file cannot be written — \(reason, privacy: .public)")
             }
         }
-    }
-
-    /// Past the cap, keep the newer half, cut at a line boundary.
-    private static func trimIfNeeded(_ url: URL) throws {
-        guard let size = try FileManager.default.attributesOfItem(atPath: url.path)[.size] as? Int,
-              size > capBytes else { return }
-        let data = try Data(contentsOf: url)
-        var tail = data.suffix(capBytes / 2)
-        if let newline = tail.firstIndex(of: UInt8(ascii: "\n")) {
-            tail = tail[tail.index(after: newline)...]
-        }
-        try Data(tail).write(to: url)
     }
 }

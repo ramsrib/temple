@@ -3483,3 +3483,34 @@ r4 and r5), so per the pre-committed bound in the review ledger they are
 reverted (`155d49f`, `4bffa79`, `6fec8a2`) and this stays as pushed in
 phase 1b. A failed Try again still shows its reason; a scheduled check that
 fails while candidates are listed stays quiet too, as before.
+
+
+## Reconnect hardening (2026-11-16, owner report)
+
+The owner: after a sleep or a Wi-Fi change a remote tab showed an error and
+nothing recovered it short of quitting Temple. sol's investigation
+(reproduced locally, no real host) found the three-valued liveness proof
+sound (a transport failure is never read as absence) and three recovery
+holes, all fixed:
+
+1. **A failed reattach dropped the run.** `stageBeforeSpawn` can fail over a
+   master that answers locally but is dead upstream; the open's failure
+   path set `tab.remote = nil`, so neither the wake/path triggers nor the
+   band's Reconnect could reach the tab (Reconnect needs `remote`). A
+   reattach (Temple's own or a person's) that fails now keeps the handle,
+   takes the attachment the reservation already made (or every later
+   check is refused as another client's), goes `.unknown` with the reason,
+   and is rechecked on `recheckDelays`. The pending Codex open likewise.
+2. **A stale verdict stranded `.checking`.** When another client reserved
+   the run while a tab's exit check was out, the gate refused the verdict
+   and nothing moved the tab out of `.checking`, which has no band. The
+   refusal stands; the tab, if still checking with no process, becomes
+   `.disconnected` (Reconnect).
+3. **Exit 125 was not a connection failure.** The staged-launch executor
+   exits 125 when its script never arrived (staging travels over the
+   connection); with the run present that now reattaches as 255 does.
+
+`RemoteLog` (`<state dir>/logs/remote.log`, both entry points) records each
+client exit with ssh's own status, each verdict, reattach, recheck,
+give-up and refused result, by host and handle: never terminal contents,
+commands or credentials.

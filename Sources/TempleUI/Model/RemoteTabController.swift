@@ -160,9 +160,14 @@ public final class RemoteTabController {
         state.resumedAfterAbsence = tab.remote?.resumedAfterAbsence ?? false
         state.automatic = automatic
         state.automaticShortLived = automatic ? (tab.remote?.automaticShortLived ?? 0) : 0
+        // Temple's own retries continue the schedule; a person's open starts it over.
+        state.preparationFailures = automatic ? (tab.remote?.preparationFailures ?? 0) : 0
         // The run a reattach is bound to is the tab's from the start, so a
         // Stop for it finds the tab while the open is out.
         state.handle = reattachHandle
+        // The attachment the tab last had: what the run still has if this
+        // reattach fails before reserving another.
+        let previousAttachment = tab.remote?.attachment
         tab.remote = state
         let ticket = gate.ticket(for: tab)
         let agent = tab.agent, directory = tab.projectPath
@@ -171,10 +176,18 @@ public final class RemoteTabController {
         let resume = (tab.isResume || tab.inputSubmitted || resumeAnyway || resumeUnconfirmed) && !startNew
         operations.run(host: tab.host, .open) { [weak self] in
             var result: Result<RemoteOpenResult, Error>
+            // Whether the failure (if any) is the reattach's own, not the
+            // ordinary open a proven end leads a person's Reconnect to.
+            var reattachFailed = false
             do {
                 if let reattachHandle {
-                    result = .success(try await host.reattach(agent: agent, sessionID: sid, directory: directory,
-                                                              handle: reattachHandle))
+                    do {
+                        result = .success(try await host.reattach(agent: agent, sessionID: sid, directory: directory,
+                                                                  handle: reattachHandle))
+                    } catch {
+                        reattachFailed = true
+                        throw error
+                    }
                     // A person's Reconnect whose run is proven ended is
                     // their open of the session, as any: it may resume
                     // (never so for Temple's own reattach, and never for a
@@ -205,6 +218,18 @@ public final class RemoteTabController {
             switch result {
             case .failure(let error):
                 guard !(error is CancellationError) else { return }
+                if let reattachHandle, reattachFailed {
+                    // A reattach of a run Temple still tracks (after a sleep,
+                    // the old connection half-down): the tab keeps the run,
+                    // says it can't tell, and is asked about again, on a
+                    // schedule and on wake or a network change. Dropping
+                    // `remote` here left no Reconnect and no retry, and only
+                    // a relaunch got the tab back (2026-11-16).
+                    let attachment = (error as? RemoteReattachFailure)?.attachment ?? previousAttachment
+                    self.keepRunAfterFailedAttach(tab, host: host, handle: reattachHandle, attachment: attachment,
+                                                  error: error, automatic: automatic)
+                    return
+                }
                 TempleUILog.launch.error("remote open refused: \(error.localizedDescription, privacy: .public)")
                 tab.remote = nil
                 tab.launchPreparationError = error.localizedDescription
@@ -231,7 +256,28 @@ public final class RemoteTabController {
         }
     }
 
+    /// A reattach (or a pending run's reopen) that failed before any client
+    /// started: the tab stays bound to its run, at the attachment this
+    /// attempt reserved (its own, never another client's later one), says
+    /// it can't tell, and is eligible for wake and network-change recovery.
+    /// Its checks continue the schedule from where the last failure left
+    /// it; past the schedule only wake, a network change or Reconnect try
+    /// again.
+    private func keepRunAfterFailedAttach(_ tab: SessionTab, host: RemoteSessionHost, handle: String, attachment: Int?,
+                                          error: Error, automatic: Bool) {
+        let failures = (tab.remote?.preparationFailures ?? 0) + 1
+        RemoteLog.error("\(host.hostName) \(handle): \(automatic ? "automatic" : "person's") reattach failed (\(failures) in a row): \(error.localizedDescription)")
+        if let attachment { tab.remote?.attachment = attachment }
+        tab.remote?.preparationFailures = failures
+        tab.remote?.connectionFailed = true
+        tab.remote?.phase = .unknown(reason: RemoteCopy.reconnectFailed(error.localizedDescription))
+        tab.activity = .exited(status: -1)
+        let remaining = Array(recheckDelays.dropFirst(failures - 1))
+        if !remaining.isEmpty { scheduleRecheck(tab, host: host, handle: handle, delays: remaining) }
+    }
+
     private func spawn(_ tab: SessionTab, plan: RemoteOpenPlan, host: RemoteSessionHost) {
+        tab.remote?.preparationFailures = 0
         tab.remote?.handle = plan.handle
         tab.remote?.attachment = plan.attachment
         tab.remote?.creating = plan.creating
@@ -445,11 +491,17 @@ public final class RemoteTabController {
             // sleep, a network change, the master gone), never a detach,
             // which exits as tmux does. What the host answers then decides
             // a reattach; a stop out for the run decides instead.
-            let connectionFailed = await host.clientExitStatus(handle, attachment: state.attachment) == 255
+            // 125 is Temple's staged launch that never arrived (it travels
+            // over the connection, so a half-down one after a sleep loses
+            // it) while the run may be fine: a connection failure too.
+            let sshStatus = await host.clientExitStatus(handle, attachment: state.attachment)
+            let connectionFailed = sshStatus == 255 || sshStatus == 125
+            RemoteLog.notice("\(host.hostName) \(handle): client exited (terminal \(status), ssh \(sshStatus.map(String.init) ?? "unrecorded"), \(automatic ? "automatic attach" : "attach"), \(Int(age.isFinite ? age : -1))s)")
             if let self, self.gate.valid(ticket), let tab = ticket.tab {
                 tab.remote?.connectionFailed = connectionFailed
                 tab.remote?.automaticShortLived = shortLivedCount
                 if exhausted {
+                    RemoteLog.notice("\(host.hostName) \(handle): automatic reattach stopped after \(shortLivedCount) short-lived attaches; Reconnect is the way")
                     tab.remote?.automaticAttachFailed = true
                     TempleUILog.launch.notice("remote reattach stopped on its own: \(shortLivedCount, privacy: .public) short-lived of \(budget, privacy: .public)")
                 }
@@ -478,8 +530,11 @@ public final class RemoteTabController {
             }
             if case .failedCD(let directory) = outcome {
                 let runAttachment = await host.attachment(of: handle)
-                guard let self, self.gate.admit(.exitFailedToStart, ticket, runAttachment: runAttachment),
-                      let tab = ticket.tab else { return }
+                guard let self else { return }
+                guard self.gate.admit(.exitFailedToStart, ticket, runAttachment: runAttachment), let tab = ticket.tab else {
+                    self.releaseChecking(ticket, why: "failed-to-start verdict stale")
+                    return
+                }
                 tab.remote?.phase = .failedToStart(directory: directory)
                 tab.launchFailure = LaunchFailure(category: .cdFailed,
                                                   message: RemoteCopy.cannotEnter(directory, host: host.hostName))
@@ -487,8 +542,11 @@ public final class RemoteTabController {
             }
             if case .failedLaunch(let reason) = outcome {
                 let runAttachment = await host.attachment(of: handle)
-                guard let self, self.gate.admit(.exitFailedToStart, ticket, runAttachment: runAttachment),
-                      let tab = ticket.tab else { return }
+                guard let self else { return }
+                guard self.gate.admit(.exitFailedToStart, ticket, runAttachment: runAttachment), let tab = ticket.tab else {
+                    self.releaseChecking(ticket, why: "failed-to-start verdict stale")
+                    return
+                }
                 tab.remote?.phase = .failedToStart(directory: tab.projectPath)
                 tab.launchFailure = LaunchFailure(category: .transport,
                                                   message: RemoteCopy.launchFailed(host.hostName, reason: reason))
@@ -506,8 +564,15 @@ public final class RemoteTabController {
             }
             let liveness = await host.exitCheck(handle)
             let runAttachment = await host.attachment(of: handle)
-            guard let self, self.gate.admit(.exitVerdict, ticket, runAttachment: runAttachment),
-                  let tab = ticket.tab else { return }
+            guard let self else { return }
+            guard self.gate.admit(.exitVerdict, ticket, runAttachment: runAttachment), let tab = ticket.tab else {
+                // Another client took the run meanwhile, so this verdict is
+                // stale and is not applied; the tab must still leave
+                // Checking, which has no band and no way out.
+                self.releaseChecking(ticket, why: "verdict stale (run attachment \(runAttachment.map(String.init) ?? "none"))")
+                return
+            }
+            RemoteLog.notice("\(host.hostName) \(handle): host says \(liveness)\(mayReattach ? ", reattaching if present" : "")")
             var wantDiagnostics = false
             // A Stop chosen while the check was out owns the tab's fate,
             // out or answered (`stopping`, `stopFailed`, or back to
@@ -558,6 +623,16 @@ public final class RemoteTabController {
                   let tab = diagnosticsTicket.tab else { return }
             tab.remote?.diagnostics = RemoteCopy.diagnosticLines(raw)
         }
+    }
+
+    /// A verdict that is not applied (stale: another client attached to
+    /// the run meanwhile) leaves the tab where the person can act: a tab
+    /// still Checking, with no process of its own, becomes Disconnected,
+    /// whose band has Reconnect. A tab that moved on is left alone.
+    private func releaseChecking(_ ticket: RemoteTicket, why: String) {
+        guard gate.valid(ticket), let tab = ticket.tab, tab.remote?.phase == .checking, !tab.hasLiveProcess else { return }
+        RemoteLog.notice("\(tab.host.rawValue) \(tab.remote?.handle ?? "-"): \(why); tab shows Reconnect")
+        tab.remote?.phase = .disconnected
     }
 
     // MARK: Reconnect, Resume anyway, the unconfirmed conversation
@@ -637,6 +712,7 @@ public final class RemoteTabController {
                       let tab = ticket.tab, case .unknown = tab.remote?.phase else { return }
                 switch liveness {
                 case .present:
+                    RemoteLog.notice("\(host.hostName) \(handle): recheck found the run, reattaching")
                     tab.remote?.phase = .disconnected
                     tab.remote?.recheckOperation = nil
                     self.reattach(tab, host: host)
@@ -646,6 +722,7 @@ public final class RemoteTabController {
                     self.agentFinished(tab, host: host, handle: handle, say: true)
                     return
                 case .unknown(let reason):
+                    RemoteLog.notice("\(host.hostName) \(handle): recheck still can't tell: \(reason)")
                     tab.remote?.phase = .unknown(reason: reason)
                 }
             }
@@ -1207,6 +1284,8 @@ public final class RemoteTabController {
         state.automatic = automatic
         state.automaticShortLived = automatic ? (tab.remote?.automaticShortLived ?? 0) : 0
         state.suggestions = startNew ? [] : (tab.remote?.suggestions ?? [])
+        state.preparationFailures = automatic ? (tab.remote?.preparationFailures ?? 0) : 0
+        let previousAttachment = tab.remote?.attachment
         // A refusal this launch remembers for the run is said again whenever
         // it reopens, with Try again (round 3).
         if let handle, let refusal = refusedClaims[handle] {
@@ -1233,6 +1312,15 @@ public final class RemoteTabController {
             switch result {
             case .failure(let error):
                 guard !(error is CancellationError) else { return }
+                if let handle {
+                    // As for a known session's reattach: the handle is the
+                    // only way back to a Codex run whose id is not known
+                    // yet, so the tab keeps it and is asked about again.
+                    let attachment = (error as? RemoteReattachFailure)?.attachment ?? previousAttachment
+                    self.keepRunAfterFailedAttach(tab, host: host, handle: handle, attachment: attachment,
+                                                  error: error, automatic: automatic)
+                    return
+                }
                 TempleUILog.launch.error("remote pending open refused: \(error.localizedDescription, privacy: .public)")
                 tab.remote = nil
                 tab.launchPreparationError = error.localizedDescription
@@ -1253,10 +1341,19 @@ public final class RemoteTabController {
                 // not a person's open of the session it turned out to be.
                 if automatic {
                     let shortLived = tab.remote?.automaticShortLived ?? 0
+                    let failures = tab.remote?.preparationFailures ?? 0
+                    // The tab's attachment from before this open: the
+                    // `.opening` state this open put in place has none.
+                    let attachment = previousAttachment
                     tab.remote = RemoteTabState(phase: .disconnected)
                     tab.remote?.handle = handle
                     tab.remote?.automatic = true
                     tab.remote?.automaticShortLived = shortLived
+                    // The run's attachment and the retry schedule's place
+                    // carry over: a known-session reattach that fails before
+                    // reserving keeps checking the run as this tab's.
+                    tab.remote?.preparationFailures = failures
+                    if let attachment { tab.remote?.attachment = attachment }
                     self.ensureSurface(for: tab, on: host, resumeAnyway: false, automatic: true)
                     return
                 }

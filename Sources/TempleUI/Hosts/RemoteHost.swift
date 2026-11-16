@@ -90,9 +90,14 @@ final class RemoteHostLauncher: RemoteSessionHost {
     }
 
     func reattach(agent: Agent, sessionID: String, directory: String, handle: String) async throws -> RemoteOpenResult {
-        let outcome = try await sessions.reattach(.init(agent: agent, sessionID: sessionID, mode: .resume, directory: directory,
+        let outcome: RemoteSessions.OpenOutcome
+        do {
+            outcome = try await sessions.reattach(.init(agent: agent, sessionID: sessionID, mode: .resume, directory: directory,
                                                         extraArguments: extraArgs(agent), resumeAnyway: false, startNew: false,
                                                         resumeUnconfirmed: false), handle: handle)
+        } catch let failure as AttachPreparationFailed {
+            throw RemoteReattachFailure(attachment: failure.attachment, message: failure.localizedDescription)
+        }
         await refreshLiveSessions()
         return Self.result(outcome)
     }
@@ -279,7 +284,12 @@ final class RemoteHostLauncher: RemoteSessionHost {
     // MARK: Codex identity
 
     func openPending(handle: String?, directory: String) async throws -> RemotePendingOpenResult {
-        let outcome = try await sessions.openPending(handle: handle, directory: directory, extraArguments: extraArgs(.codex))
+        let outcome: RemoteSessions.PendingOpenOutcome
+        do {
+            outcome = try await sessions.openPending(handle: handle, directory: directory, extraArguments: extraArgs(.codex))
+        } catch let failure as AttachPreparationFailed {
+            throw RemoteReattachFailure(attachment: failure.attachment, message: failure.localizedDescription)
+        }
         await refreshLiveSessions()
         switch outcome {
         case .ended: return .ended
