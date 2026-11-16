@@ -58,31 +58,40 @@ struct HostsSettingsSection: View {
                             .buttonStyle(.temple)
                     }
                 } else {
-                    ForEach(records.prefix(Self.listed)) { record in
-                        HStack(spacing: 10) {
-                            HostStatusDot(tone: HostsManagerSheet.tone(hosts.summaries[record.name]))
-                            Text(record.name)
-                                .font(.system(size: 13))
-                                .lineLimit(1)
-                            Text(record.source == .config ? Caption.sshConfig.text : record.summary)
-                                .font(.system(size: 12))
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                            Spacer(minLength: 0)
+                    // A grouped list, System Settings' shape: one box,
+                    // rows split by hairlines, each opening the manager on
+                    // its host (owner, round 3: a bare list read as bullets).
+                    VStack(spacing: 0) {
+                        ForEach(Array(records.prefix(Self.listed).enumerated()), id: \.element.id) { index, record in
+                            if index > 0 {
+                                Rectangle().fill(Palette.hairline).frame(height: 1).padding(.leading, 32)
+                            }
+                            SettingsHostRow(record: record, tone: HostsManagerSheet.tone(hosts.summaries[record.name])) {
+                                model.showHostsManager(selecting: record.name)
+                            }
                         }
-                        .frame(height: 26)
+                        if records.count > Self.listed {
+                            Rectangle().fill(Palette.hairline).frame(height: 1).padding(.leading, 32)
+                            Button { model.showHostsManager() } label: {
+                                Text("and \(records.count - Self.listed) more")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(.leading, 32)
+                                    .frame(height: 32)
+                                    .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
                     }
-                    if records.count > Self.listed {
-                        Text("and \(records.count - Self.listed) more")
-                            .font(.system(size: 12))
-                            .foregroundStyle(.secondary)
-                            .padding(.leading, 18)
-                            .frame(height: 22)
+                    .background(Palette.surfaceFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 10, style: .continuous).strokeBorder(Palette.hairline))
+                    HStack {
+                        Spacer()
+                        Button("Manage Hosts…") { model.showHostsManager() }
+                            .buttonStyle(.temple)
                     }
-                    Button("Manage Hosts…") { model.showHostsManager() }
-                        .buttonStyle(.temple)
-                        .padding(.top, 10)
+                    .padding(.top, 10)
                 }
             }
             .padding(.vertical, 14)
@@ -670,3 +679,47 @@ private struct CheckRowView: View {
         }
     }
 }
+
+/// One host in Settings' list: its last test's dot, name and address, the
+/// dot in words at the trailing edge, and a chevron: the row opens the
+/// hosts manager on it.
+private struct SettingsHostRow: View {
+    let record: RemoteHostRecord
+    let tone: HostsManagerSheet.Tone
+    let open: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: open) {
+            HStack(spacing: 10) {
+                HostStatusDot(tone: tone)
+                    .frame(width: 12)
+                Text(record.name)
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                    .layoutPriority(1)
+                Text(record.source == .config ? HostsSettingsSection.Caption.sshConfig.text : record.summary)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 8)
+                Text(HostsManagerSheet.toneLabel(tone))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 40)
+            .background(hovering ? Palette.hoverFill : Color.clear)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .help("Open \(record.name) in the hosts manager")
+    }
+}
+

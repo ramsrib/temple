@@ -816,9 +816,11 @@ Changes apply live where applicable.
 - **Appearance:** System, Light, or Dark theme.
 
 - **Hosts:** the machines you can start sessions on
-  ([Sessions on a host](#sessions-on-a-host)). Settings lists them, each
-  with its last test's dot, name and address (five, then "and N more"),
-  over **Manage Hosts…** (with none, "No hosts yet. Add a machine you reach
+  ([Sessions on a host](#sessions-on-a-host)). Settings lists them in one
+  grouped box, a row each: its last test's dot, name, address, the test in
+  words ("Not tested", "Connected", "Couldn't connect") and a chevron; a row
+  opens the manager on that host (five, then "and N more"), with **Manage
+  Hosts…** under the box (with none, "No hosts yet. Add a machine you reach
   with ssh to run sessions there." and **Add Host…**, which opens the
   manager on Add host); Manage Hosts… is also, with a host added, in the Temple
   menu, and in a host project's or host heading's context menu), which opens the **hosts

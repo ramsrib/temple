@@ -73,6 +73,10 @@ struct HostsManagerSheet: View {
         .tint(Palette.accent)
         .onAppear {
             hosts.loadConfigAliases()
+            if let host = model.hostsManagerStartsOn {
+                model.hostsManagerStartsOn = nil
+                selection = host
+            }
             if model.hostsManagerStartsAdding {
                 model.hostsManagerStartsAdding = false
                 addHost = AddHostSheetModel(hosts: hosts)
@@ -145,6 +149,16 @@ struct HostsManagerSheet: View {
 
     /// A host's dot: what Temple last learned about reaching it.
     enum Tone: Equatable { case untested, ok, advisory, failure }
+
+    /// The dot's meaning in a few words, beside it in Settings' list.
+    static func toneLabel(_ tone: Tone) -> String {
+        switch tone {
+        case .untested: "Not tested"
+        case .ok: "Connected"
+        case .advisory: "Connected, with a warning"
+        case .failure: "Couldn't connect"
+        }
+    }
 
     static func tone(_ summary: HostTestSummary?) -> Tone {
         guard let summary else { return .untested }

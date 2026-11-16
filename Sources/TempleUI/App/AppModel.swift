@@ -734,11 +734,14 @@ public final class AppModel: ObservableObject {
     @Published var hostsManagerSessions: RemoteSessionsRequest?
     /// The hosts manager (`HostsManagerSheet`).
     @Published public var hostsManagerPresented = false
-    public func showHostsManager(adding: Bool = false) {
+    public func showHostsManager(adding: Bool = false, selecting host: String? = nil) {
         commandPalettePresented = false
         hostsManagerStartsAdding = adding
+        hostsManagerStartsOn = host
         hostsManagerPresented = true
     }
+    /// A host clicked in Settings' list: the manager opens on it.
+    @Published var hostsManagerStartsOn: String?
     /// Settings' Add Host… with no host yet: the manager opens on Add host.
     @Published var hostsManagerStartsAdding = false
     /// Open or Show Tab in Running sessions: the tab is the point, so a
