@@ -35,6 +35,9 @@ final class FakeRemoteHost: RemoteSessionHost {
     var openError: Error?
     /// Fails `open` only (a fresh run or resume), not `reattach`.
     var freshOpenError: Error?
+    /// An ordinary open that finds the run live, reserves it, then fails
+    /// attaching (a restored tab after a sleep).
+    var openAttachPreparationError: String?
     var openGate: (() async -> Void)?
     /// Holds an exit check until released.
     var exitGate: (() async -> Void)?
@@ -81,6 +84,10 @@ final class FakeRemoteHost: RemoteSessionHost {
         if let freshOpenError { throw freshOpenError }
         if let index = live(sessionID), !resumeAnyway, !startNew {
             runs[index].attachment += 1
+            if let openAttachPreparationError {
+                throw RemoteReattachFailure(handle: runs[index].handle, attachment: runs[index].attachment,
+                                            message: openAttachPreparationError)
+            }
             runs[index].leftRunning = nil
             return .plan(RemoteOpenPlan(handle: runs[index].handle, attachment: runs[index].attachment, creating: false,
                                         command: TerminalCommand(argv: ["ssh", "attach", runs[index].handle], cwd: "/Users/me"),
@@ -113,7 +120,7 @@ final class FakeRemoteHost: RemoteSessionHost {
             runs[index].attachment += 1
             let reserved = runs[index].attachment
             if anotherClientAttachesDuringPreparation { runs[index].attachment += 1 }
-            throw RemoteReattachFailure(attachment: reserved, message: reattachPreparationError)
+            throw RemoteReattachFailure(handle: handle, attachment: reserved, message: reattachPreparationError)
         }
         guard let index = runs.firstIndex(where: { $0.handle == handle && $0.sessionID == sessionID && !$0.ended && !$0.dismissed }) else {
             // A pending run identified meanwhile serves the session too.
@@ -759,6 +766,46 @@ final class RemoteLifecycleTests: XCTestCase {
         XCTAssertLessThanOrEqual(remote.reattaches.count, 4, "the first, then one per delay at most: \(remote.reattaches.count)")
         XCTAssertEqual(tab.remote?.preparationFailures, remote.reattaches.count)
         guard case .unknown? = tab.remote?.phase else { return XCTFail("still Unknown with Reconnect") }
+    }
+
+    /// An ordinary open (a restored tab, the sidebar) that finds the run
+    /// live and fails attaching keeps the tab bound to that run.
+    func testAnOrdinaryOpenThatFailsAttachingToALiveRunKeepsIt() async throws {
+        model.remoteTabs.recheckDelays = [0.05]
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .present
+        factory.created.last?.simulateExit(status: 0)
+        await settle(tab.remote?.phase == .disconnected)
+        // As a relaunch leaves it: a tab with no remote state.
+        tab.remote = nil
+        tab.dropSurface()
+        remote.openAttachPreparationError = "Didn't answer"
+        model.ensureSurface(for: tab)
+        await settle({ if case .unknown? = tab.remote?.phase { return true }; return false }(), "can't tell, bound to the run")
+        XCTAssertEqual(tab.remote?.handle, "h1")
+        XCTAssertEqual(tab.remote?.attachment, remote.runs[0].attachment)
+        XCTAssertNil(tab.launchPreparationError)
+        remote.openAttachPreparationError = nil
+        await settle(tab.hasLiveProcess, "the recheck reattached")
+        XCTAssertEqual(remote.runs.count, 1, "never a second run")
+    }
+
+    /// An attach whose local terminal fails to start leaves the run alone:
+    /// Disconnected, with Reconnect, never "failed to start".
+    func testAnAttachWhoseTerminalFailsToStartShowsReconnect() async throws {
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        remote.liveness = .present
+        factory.created.last?.simulateExit(status: 0)
+        await settle(tab.remote?.phase == .disconnected)
+        factory.configure = { $0.startError = NSError(domain: "pty", code: 1) }
+        model.remoteTabs.reconnect(tab)
+        await settle(self.remote.reattaches.count == 1 && tab.remote?.phase == .disconnected && !tab.hasLiveProcess)
+        XCTAssertFalse(remote.runs[0].ended)
+        factory.configure = { _ in }
+        model.remoteTabs.reconnect(tab)
+        await settle(tab.hasLiveProcess, "Reconnect works")
     }
 
     /// The same failure on a person's Reconnect leaves Reconnect working:

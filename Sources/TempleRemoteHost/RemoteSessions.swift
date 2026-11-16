@@ -553,7 +553,7 @@ public final class RemoteSessions {
                                                     connection: connection, recovering: false)
                 case .storage(let reason):
                     // After the reservation: the caller keeps exactly it.
-                    throw AttachPreparationFailed(attachment: run.attachment, underlying: OpenError.store(reason))
+                    throw AttachPreparationFailed(handle: run.handle, attachment: run.attachment, underlying: OpenError.store(reason))
                 default:
                     // The run's facts as collected, under the attachment
                     // this reservation took: two clients planned together
@@ -586,7 +586,7 @@ public final class RemoteSessions {
             // The run's attachment was already reserved for this attach: the
             // caller takes exactly that one, never whatever the ledger says
             // later (another client may have reserved since).
-            throw AttachPreparationFailed(attachment: run.attachment, underlying: error)
+            throw AttachPreparationFailed(handle: run.handle, attachment: run.attachment, underlying: error)
         }
         return OpenPlan(handle: run.handle, attachment: run.attachment, creating: false,
                         argv: localArgv(connection, LaunchStage.command(stage: plan.stage), handle: run.handle, attachment: run.attachment), agentArgv: agentArgv,
@@ -1349,7 +1349,7 @@ public final class RemoteSessions {
                     return .ended(handle: handle)
                 case .storage(let reason):
                     // After the reservation: the caller keeps exactly it.
-                    throw AttachPreparationFailed(attachment: run.attachment, underlying: OpenError.store(reason))
+                    throw AttachPreparationFailed(handle: run.handle, attachment: run.attachment, underlying: OpenError.store(reason))
                 default:
                     // The run's facts as collected, under the attachment
                     // this reservation took: two clients planned together
@@ -1592,6 +1592,9 @@ public final class RemoteSessions {
 /// (staging the attach over the connection) failed: carries the exact
 /// reservation, so the tab's later checks of the run are its own.
 public struct AttachPreparationFailed: Error, LocalizedError {
+    /// The run reserved: whichever open route chose it (a reattach, or an
+    /// ordinary open or a restored tab that found it live).
+    public let handle: String
     public let attachment: Int
     public let underlying: any Error
     public var errorDescription: String? { underlying.localizedDescription }

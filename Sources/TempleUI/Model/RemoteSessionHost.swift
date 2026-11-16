@@ -1162,8 +1162,11 @@ public protocol RemoteProjectStatePersisting: AnyObject {
 /// A reattach whose attachment was reserved before its preparation failed
 /// (`RemoteHost` translates the remote module's own error into this one).
 public struct RemoteReattachFailure: Error, LocalizedError {
+    public let handle: String
     public let attachment: Int
     public let message: String
-    public init(attachment: Int, message: String) { self.attachment = attachment; self.message = message }
+    public init(handle: String, attachment: Int, message: String) {
+        self.handle = handle; self.attachment = attachment; self.message = message
+    }
     public var errorDescription: String? { message }
 }

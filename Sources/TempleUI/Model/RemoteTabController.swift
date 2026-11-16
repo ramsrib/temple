@@ -218,15 +218,19 @@ public final class RemoteTabController {
             switch result {
             case .failure(let error):
                 guard !(error is CancellationError) else { return }
-                if let reattachHandle, reattachFailed {
-                    // A reattach of a run Temple still tracks (after a sleep,
-                    // the old connection half-down): the tab keeps the run,
-                    // says it can't tell, and is asked about again, on a
-                    // schedule and on wake or a network change. Dropping
-                    // `remote` here left no Reconnect and no retry, and only
-                    // a relaunch got the tab back (2026-11-16).
-                    let attachment = (error as? RemoteReattachFailure)?.attachment ?? previousAttachment
-                    self.keepRunAfterFailedAttach(tab, host: host, handle: reattachHandle, attachment: attachment,
+                // An attach to a run Temple tracks that failed on the way
+                // (after a sleep, the old connection half-down), by any route
+                // that reserved the run (Temple's own reattach, a person's
+                // Reconnect, an ordinary open that found it live): the tab
+                // keeps the run, says it can't tell, and is asked about
+                // again, on a schedule and on wake or a network change.
+                // Dropping `remote` here left no Reconnect and no retry, and
+                // only a relaunch got the tab back (2026-11-16).
+                let attachFailure = error as? RemoteReattachFailure
+                if let runHandle = attachFailure?.handle ?? (reattachFailed ? reattachHandle : nil) {
+                    tab.remote?.handle = runHandle
+                    self.keepRunAfterFailedAttach(tab, host: host, handle: runHandle,
+                                                  attachment: attachFailure?.attachment ?? previousAttachment,
                                                   error: error, automatic: automatic)
                     return
                 }
@@ -292,12 +296,22 @@ public final class RemoteTabController {
             try surface.start(TerminalIdentity.apply(to: plan.command))
         } catch {
             TempleUILog.launch.error("remote spawn failed: \(String(describing: error), privacy: .public)")
-            if plan.creating { operations.run(host: tab.host, .write) { await host.abandon(plan.handle) } }
+            RemoteLog.error("\(host.hostName) \(plan.handle) #\(plan.attachment): the local terminal didn't start: \(error.localizedDescription)")
+            if !plan.creating {
+                // An attach: the run on the host is untouched, only this
+                // Mac's terminal failed. Reconnect, not "failed to start".
+                tab.dropSurface()
+                tab.remote?.phase = .disconnected
+                tab.activity = .exited(status: -1)
+                return
+            }
+            operations.run(host: tab.host, .write) { await host.abandon(plan.handle) }
             tab.remote?.phase = .failedToStart(directory: tab.projectPath)
             tab.commandWasSuspect = true
             tab.activity = .exited(status: -1)
             return
         }
+        RemoteLog.notice("\(host.hostName) \(plan.handle) #\(plan.attachment): \(plan.creating ? "created" : "attached")\(tab.remote?.automatic == true ? " (automatic)" : "")")
         // Only a created pane reports a folder; an attach replays what its
         // creation's pane reported, once persisted.
         tab.launchObservation = SessionTab.LaunchObservation(at: spawnedAt, directory: nil)
@@ -718,6 +732,7 @@ public final class RemoteTabController {
                     self.reattach(tab, host: host)
                     return
                 case .absent:
+                    RemoteLog.notice("\(host.hostName) \(handle): recheck found the run ended; closing the tab")
                     tab.remote?.recheckOperation = nil
                     self.agentFinished(tab, host: host, handle: handle, say: true)
                     return
@@ -727,6 +742,7 @@ public final class RemoteTabController {
                 }
             }
             guard let self, self.gate.valid(ticket) else { return }
+            RemoteLog.notice("\(host.hostName) \(handle): rechecks done, still can't tell; wake, a network change or Reconnect try again")
             ticket.tab?.remote?.recheckOperation = nil
         }
     }
@@ -1312,12 +1328,14 @@ public final class RemoteTabController {
             switch result {
             case .failure(let error):
                 guard !(error is CancellationError) else { return }
-                if let handle {
+                let attachFailure = error as? RemoteReattachFailure
+                if let runHandle = attachFailure?.handle ?? handle {
                     // As for a known session's reattach: the handle is the
                     // only way back to a Codex run whose id is not known
                     // yet, so the tab keeps it and is asked about again.
-                    let attachment = (error as? RemoteReattachFailure)?.attachment ?? previousAttachment
-                    self.keepRunAfterFailedAttach(tab, host: host, handle: handle, attachment: attachment,
+                    tab.remote?.handle = runHandle
+                    self.keepRunAfterFailedAttach(tab, host: host, handle: runHandle,
+                                                  attachment: attachFailure?.attachment ?? previousAttachment,
                                                   error: error, automatic: automatic)
                     return
                 }
