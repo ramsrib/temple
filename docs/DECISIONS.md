@@ -2851,3 +2851,20 @@ handed its preview to the system and redrew the rail on every move (it
 lagged, and missed every drop in any copy of Temple that hadn't declared
 the type). The design came from astra's review of six rounds of fixes to
 the first approach.
+
+**Revised 2026-11-16 (design audit).** Five reviewers audited the app by
+area (docs/designs/design-audit-2026-11.md); the owner chose what to act
+on. A session with no name of its own reads "Untitled Session" everywhere
+(the placeholder and the terminal's "claude: storefront" named nothing).
+History has two tabs, All and Archived, with In Temple and Not in Temple
+in Filter, no counts, Refresh and Open Session by ID in a "…" menu, and a
+mark only on rows that are exceptions. `⌘K` lists a session on `⌃⇥`'s
+one-line row, and `⌘K`, the picker and `⌃⇥` share one selection (an inset
+rounded fill, hover fainter). Open and closed sidebar rows differ in
+weight as well as tone. Settings opens with Appearance. A failed launch's
+command is behind Show Command unless the command is what failed. Kept as
+they were, by the owner: the tab strip beside the sidebar, `⌘P`'s tiles
+(a list read like the search bar), the hosts manager, the shortcuts card
+and the home page. A folder's name is taken from the path's text, never
+through `URL(fileURLWithPath:)`, which asks the disk and was called for
+every row and heading on every redraw.

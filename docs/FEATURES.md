@@ -64,10 +64,15 @@ already pinned, renamed, colored, archived or seen retitle in a tab, plus the
 open tabs; any other session returns the next time it is opened
 ([ADR-023](./DECISIONS.md#adr-023--temple-browses-its-own-sessions-by-default)).
 
+- **A session with no name of its own reads "Untitled Session"**, in the
+  sidebar, tabs, `⌘K`, `⌃⇥` and History: one that has only the placeholder
+  it started with, or the title an agent's terminal carries before it sets
+  one (its command and folder, "claude: storefront"). Renaming it and
+  saving without typing leaves it untitled.
 - Inside each project, **open sessions come first**, in the session sort
-  (not the tab strip's order: the two are separate), at full strength, each
-  with its activity dot; then the closed sessions active in the last week,
-  in the session sort, in gray, each with
+  (not the tab strip's order: the two are separate), at full strength and
+  medium weight, each with its activity dot and its badge in full colour; then the closed sessions active in the last week,
+  in the session sort, in gray at regular weight with a faded badge, each with
   its age on the right ("2h", "1d", "3w") where an open row has its dot
   (hovering a closed row lifts it to full strength). Every row keeps the
   same 32 pt spacing; there is no box or gap between the two. Two tones
@@ -670,8 +675,7 @@ join and archived ones come back
   History). It is never watched. Temple's own rows, archived ones included,
   come from its database and are on the page before any file is read; disk
   rows stream in newest first under a "Reading sessions on disk… 1,240 of
-  3,810" line. The header says what is in the box ("3,812 sessions · 164 in
-  Temple · 173 archived") and when it was taken ("Updated 2 min ago · Refresh ⌘R · Open Session by ID…", the last on This Mac's page; a host's page offers it on its own line about that host). Temple's rows
+  3,810" line. The header carries no counts (they repeated the tabs). When the list was taken, **Refresh** and, on This Mac's page, **Open Session by ID…** are in the toolbar's **…** menu; a host's page offers Open Session by ID on its own line about that host. Temple's rows
   are its database rows (ADR-029), so their titles are the ones the sidebar
   shows; a transcript only fills what a row does not state. Closing the tab
   forgets its search, filters and selection but keeps the rows: reopening
@@ -684,11 +688,11 @@ join and archived ones come back
   can say a session is gone. A read parses only transcripts that changed
   since Temple last read them, across relaunches too (ADR-032).
 - **Rows.** One line per session, grouped under sticky Today / Yesterday /
-  date headers: time, agent badge, displayed title, a condition tag, the
-  activity dot when a tab is open, project and git branch, and a status
-  column. The status column holds the row's relationship or its verb: Temple's
-  rows in play read at full strength and end in the gate mark (its tooltip
-  says how and when it joined); archived rows step back a tone and end in a
+  date headers: time, agent badge, displayed title, a condition tag (not on an archived
+  row, whose tooltip says it), the project at the right, and a status
+  column. The status column holds the row's state or its verb: Temple's
+  rows in play read at full strength and end in nothing, or in the activity
+  dot when a tab is open; archived rows step back a tone and end in a
   quiet **Restore**, whose tooltip says who archived it and why ("You archived
   it on Oct 2.", "No transcript on disk carries this session, so Temple
   archived it…", "Its project raven is archived…"); outside rows step back
@@ -701,9 +705,9 @@ join and archived ones come back
   ([Sessions on a host](#sessions-on-a-host)).
 - **Search and filters** narrow the page in place and keep the day grouping:
   search matches the displayed and original titles, project, branch, the last
-  message, and a session-id prefix. A segmented **All / In Temple / Archived
-  / Not in Temple** control and agent and project popups (counts over every
-  row) compose with it; "Showing 47 of 3,810" appears while anything narrows.
+  message, and a session-id prefix. Two tabs, **All** and **Archived**, and a **Filter** menu (agent, project,
+  and In Temple or Not in Temple; counts over every row) compose with it.
+  A click on the lit All tab drops an In Temple or Not in Temple filter.
   The three narrow scopes partition All: In Temple is what the sidebar and
   `⌘K` show, Archived is in Temple and put away. The project popup on an
   archived project adds "raven is archived · **Restore project**". Any change
