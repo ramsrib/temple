@@ -124,17 +124,39 @@ extension AppModel {
     /// The sidebar's Show: the sheet for that host. A count line is then
     /// acted on, and never comes back for the same flags.
     public func showRemoteSessions(_ host: HostID) {
-        // Only for an enabled host: a notice or menu of one that is gone
-        // opens nothing.
+        guard sessionsShown(host) else { return }
+        remoteSessionsSheet = RemoteSessionsRequest(host: host)
+    }
+
+    /// The Hosts manager's Show running sessions: the same list, in the
+    /// manager's pane rather than a sheet over it. Nil for a host that is
+    /// not enabled.
+    func showRunningSessionsInManager(_ host: HostID) -> RemoteSessionsSheetModel? {
+        guard sessionsShown(host) else { return nil }
+        let request = RemoteSessionsRequest(host: host)
+        hostsManagerSessions = request
+        return sessionsSheetModel(request)
+    }
+
+    /// The manager's listing went (another host selected, the manager
+    /// closed): its answers are refused from now on.
+    func endRunningSessionsInManager() {
+        hostsManagerSessions = nil
+    }
+
+    /// Showing a host's sessions acts on its count notice, once. False for
+    /// a host that is not enabled: a notice or menu of one that is gone
+    /// opens nothing.
+    private func sessionsShown(_ host: HostID) -> Bool {
         guard remoteHost(host) != nil else {
             dropRemoteNotices(host: host)
-            return
+            return false
         }
         if case .count? = remoteNotice?.kind, remoteNotice?.host == host, let launcher = remoteHost(host) {
             advanceRemoteNotice()
             openSessions.remoteTabs.operations.run(host: host, .write) { await launcher.noticeLeftRunning() }
         }
-        remoteSessionsSheet = RemoteSessionsRequest(host: host)
+        return true
     }
 
     /// One line at a time: a notice that arrives while one shows waits its

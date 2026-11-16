@@ -728,6 +728,10 @@ public final class AppModel: ObservableObject {
     var knownRemoteHostNames: Set<String> = []
     /// "Running sessions on <host>", when shown.
     @Published public var remoteSessionsSheet: RemoteSessionsRequest?
+    /// The Hosts manager's Running sessions group, filled in place (round
+    /// 3): live like the sheet while the manager shows it, so its answers
+    /// pass the gate.
+    @Published var hostsManagerSessions: RemoteSessionsRequest?
     /// The hosts manager (`HostsManagerSheet`).
     @Published public var hostsManagerPresented = false
     public func showHostsManager() {
@@ -1071,6 +1075,7 @@ public final class AppModel: ObservableObject {
         openSessions.remoteTabs.runAttachedHandler = { [weak self] host, _ in self?.remoteRunAttached(host: host) }
         openSessions.remoteTabs.gate.sheetIsActive = { [weak self] id in
             self?.remoteSessionsSheet?.id == id || self?.remoteFolderSheet?.id == id
+                || self?.hostsManagerSessions?.id == id
         }
         openSessions.remoteTabs.rowIncarnation = { [weak self] id in self?.overlay.rows[id]?.incarnation }
         openSessions.remoteTabs.rowLastOpened = { [weak self] id in self?.overlay.rows[id]?.lastOpenedAt }

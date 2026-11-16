@@ -49,18 +49,17 @@ struct SessionRow: View {
                     .font(.system(size: 13, weight: isHighlighted ? .medium : .regular))
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    // Two tones, not one: the sessions you have open are the
-                    // ones you are working in, and they read at full strength;
-                    // the browsable history behind them steps back — but only
-                    // a step. Closed rows are most of the rail, and lower they
-                    // went mid-grey in dark mode. The step is weak near white
-                    // in dark mode by nature; there the activity dot and the
-                    // badge at full colour are what say "open".
+                    // Two tones: the sessions you have open are the ones you
+                    // are working in, and they read at full strength; the
+                    // closed ones behind them read clearly gray (round 3: the
+                    // tone, with the trailing dot vs age, is what marks the
+                    // open group now; the outlined box is gone). Hover lifts a
+                    // closed row to primary, the one you're about to open.
                     // A row whose transcript is gone steps back further: it
                     // still opens (and fails, and says why), but should not
                     // look like a session that would resume.
-                    .foregroundStyle(transcriptMissing ? Color.primary.opacity(0.5)
-                                     : openTab != nil || hovering ? Color.primary : Color.primary.opacity(0.82))
+                    .foregroundStyle(transcriptMissing ? Palette.missingRowText
+                                     : openTab != nil || hovering ? Color.primary : Palette.closedRowText)
                 if isPinned {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 8))

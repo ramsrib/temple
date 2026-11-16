@@ -12,29 +12,50 @@ import TempleCore
 /// Layout as for the rest of the app's sheets (AGENTS.md): no `.fixedSize`,
 /// `List` or `Form`.
 struct RemoteSessionsSheet: View {
-    @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @StateObject private var sheet: RemoteSessionsSheetModel
-    /// A Stop of a working agent, waiting for its answer (S12).
-    @State private var confirmingStop: RemoteTrackedSession?
 
     init(sheet: RemoteSessionsSheetModel) { _sheet = StateObject(wrappedValue: sheet) }
 
-    private var host: String { sheet.host }
-
     var body: some View {
         RemoteSheetChrome {
-            RemoteSheetTitle(title: RemoteCopy.sessionsOn(host))
-            content
+            RemoteSheetTitle(title: RemoteCopy.sessionsOn(sheet.host))
+            RemoteSessionsList(sheet: sheet, close: { dismiss() })
             HStack {
                 Spacer()
                 Button("Done") { dismiss() }
                     .keyboardShortcut(.defaultAction)
+                    .buttonStyle(.templePrimary)
             }
             .padding(.top, 8)
         }
         .onAppear { sheet.load() }
         .onDisappear { sheet.dismissed() }
+    }
+
+    static func offersDismiss(_ session: RemoteTrackedSession, dismissed: Set<String>) -> Bool {
+        RemoteSessionsList.offersDismiss(session, dismissed: dismissed)
+    }
+}
+
+/// The running sessions themselves, their rows and actions: the sheet's
+/// body, and the Hosts manager's Running sessions group (round 3), which
+/// fills it in place. `close` is what Show tab and Open do once the tab is
+/// up: the sheet goes, or the manager does.
+struct RemoteSessionsList: View {
+    @EnvironmentObject var model: AppModel
+    @ObservedObject var sheet: RemoteSessionsSheetModel
+    let close: () -> Void
+    var maxHeight: CGFloat = 320
+    /// A Stop of a working agent, waiting for its answer (S12).
+    @State private var confirmingStop: RemoteTrackedSession?
+
+    private var host: String { sheet.host }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            content
+        }
         .alert(confirmingStop.map { stopQuestion($0).title } ?? "",
                isPresented: Binding(get: { confirmingStop != nil }, set: { if !$0 { confirmingStop = nil } })) {
             // Cancel is the default; Stop ends the agent.
@@ -76,7 +97,7 @@ struct RemoteSessionsSheet: View {
                         }
                     }
                 }
-                .frame(maxHeight: 320)
+                .frame(maxHeight: maxHeight)
             }
         } else {
             HStack(spacing: 8) {
@@ -130,13 +151,13 @@ struct RemoteSessionsSheet: View {
                         if inTab {
                             Button(RemoteCopy.showTab) {
                                 sheet.showTab(session)
-                                dismiss()
+                                close()
                                 model.tabShownFromSessionsSheet()
                             }
                         } else {
                             Button(RemoteCopy.openTracked) {
                                 if sheet.open(session, rows: model.sessions) {
-                                    dismiss()
+                                    close()
                                     model.tabShownFromSessionsSheet()
                                 }
                             }

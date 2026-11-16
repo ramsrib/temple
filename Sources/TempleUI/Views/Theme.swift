@@ -97,6 +97,20 @@ enum Palette {
                      dark: NSColor(mark).withAlphaComponent(alpha.dark))
     }
 
+    /// Text on `accent` (a primary button): white on light mode's graphite,
+    /// near-black on dark mode's light gray, where white was unreadable.
+    static let onAccent = Color(light: NSColor(white: 1, alpha: 1), dark: NSColor(white: 0.08, alpha: 1))
+
+    /// A closed session's title in the sidebar: a clear step below the open
+    /// sessions' primary, so open reads as open without a box around them
+    /// (round 3; 0.82 was too faint a step to read). About 4.6:1 on the
+    /// light rail and 6:1 on the dark one.
+    static let closedRowText = mono(light: 0, 0.58, dark: 1, 0.56)
+
+    /// A session whose transcript is gone: below a closed row, since it
+    /// won't resume as one.
+    static let missingRowText = mono(light: 0, 0.32, dark: 1, 0.30)
+
     /// Floating-panel surface (⌘K palette, ⌘P switcher, ⌘/ shortcuts).
     /// Opaque window background: the translucent material read as a muddy
     /// gray unrelated to the rest of the app.
@@ -146,4 +160,62 @@ struct NeutralLinkButtonStyle: ButtonStyle {
 
 extension ButtonStyle where Self == NeutralLinkButtonStyle {
     static var neutralLink: NeutralLinkButtonStyle { NeutralLinkButtonStyle() }
+}
+
+/// A sheet's default action (Done, Add, Save): filled with the app's
+/// graphite accent, never the system blue AppKit gives a default button.
+/// Return still triggers it through `.keyboardShortcut(.defaultAction)`.
+struct TemplePrimaryButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(isEnabled ? Palette.onAccent : Color.secondary)
+            .padding(.horizontal, 14)
+            .frame(minHeight: 28)
+            .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .fill(isEnabled ? Palette.accent : Palette.controlFill))
+            .opacity(configuration.isPressed ? 0.8 : 1)
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+    }
+}
+
+/// Every other button in a Temple sheet: the neutral control fill, a step
+/// deeper under the pointer.
+struct TempleButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        StyledLabel(configuration: configuration, isEnabled: isEnabled)
+    }
+
+    private struct StyledLabel: View {
+        let configuration: Configuration
+        let isEnabled: Bool
+        @State private var hovering = false
+
+        var body: some View {
+            configuration.label
+                .font(.system(size: 13))
+                .foregroundStyle(isEnabled ? Color.primary : Color.secondary)
+                .padding(.horizontal, 12)
+                .frame(minHeight: 28)
+                .background(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(Palette.controlFill)
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(hovering && isEnabled ? Palette.hoverFill : .clear)))
+                .opacity(configuration.isPressed ? 0.7 : 1)
+                .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+                .onHover { hovering = $0 }
+        }
+    }
+}
+
+extension ButtonStyle where Self == TemplePrimaryButtonStyle {
+    static var templePrimary: TemplePrimaryButtonStyle { TemplePrimaryButtonStyle() }
+}
+
+extension ButtonStyle where Self == TempleButtonStyle {
+    static var temple: TempleButtonStyle { TempleButtonStyle() }
 }

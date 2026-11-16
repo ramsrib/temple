@@ -34,44 +34,46 @@ struct HostsManagerSheet: View {
     @State private var removing: Set<String> = []
     /// A Stop them and remove that could not stop everything, by host.
     @State private var removeProblems: [String: AppModel.RemovalFailures] = [:]
+    /// The selected host's running sessions, once asked for: filled in
+    /// place, never on selection alone (a host may ask for a passphrase).
+    @State private var sessions: RemoteSessionsSheetModel?
 
-    static let size = CGSize(width: 680, height: 400)
-    static let listWidth: CGFloat = 220
+    /// Round 3: the 680×400 sheet was crowded. It fits Temple's narrowest
+    /// window (900 × 600).
+    static let size = CGSize(width: 760, height: 500)
+    static let listWidth: CGFloat = 240
 
     private var records: [RemoteHostRecord] { HostsSettingsSection.inUse(hosts.records) }
     private var selected: RemoteHostRecord? {
         records.first { $0.name == selection } ?? records.first
     }
 
+    /// System Settings' shape: the list in a shaded column with the title
+    /// over it, the selected host's details beside it, Done at the bottom
+    /// of the details. No title bar across the top.
     var body: some View {
-        VStack(spacing: 0) {
-            HStack {
-                Text("Hosts")
-                    .font(.system(size: 15, weight: .semibold))
-                Spacer()
-            }
-            .padding(.horizontal, 20)
-            .padding(.top, 18)
-            .padding(.bottom, 12)
-            Divider()
-            HStack(spacing: 0) {
-                hostList
-                    .frame(width: Self.listWidth)
-                Divider()
+        HStack(spacing: 0) {
+            hostList
+                .frame(width: Self.listWidth)
+                .background(Palette.surfaceFill)
+            Rectangle().fill(Palette.hairline).frame(width: 1)
+            VStack(spacing: 0) {
                 detail
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                HStack {
+                    Spacer()
+                    Button("Done") { dismiss() }
+                        .keyboardShortcut(.defaultAction)
+                        .buttonStyle(.templePrimary)
+                }
+                .padding(20)
             }
-            Divider()
-            HStack {
-                Spacer()
-                Button("Done") { dismiss() }
-                    .keyboardShortcut(.defaultAction)
-            }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 12)
         }
         .frame(width: Self.size.width, height: Self.size.height)
+        .tint(Palette.accent)
         .onAppear { hosts.loadConfigAliases() }
+        .onChange(of: selected?.name) { endSessions() }
+        .onDisappear { endSessions() }
         .alert(removal.map { RemoteCopy.removalTitle($0.live.count, host: $0.name) } ?? "",
                isPresented: Binding(get: { removal != nil }, set: { if !$0 { removal = nil } }),
                presenting: removal) { removal in
@@ -91,7 +93,12 @@ struct HostsManagerSheet: View {
     // MARK: List
 
     private var hostList: some View {
-        VStack(spacing: 0) {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Hosts")
+                .font(.system(size: 13, weight: .semibold))
+                .padding(.horizontal, 16)
+                .padding(.top, 20)
+                .padding(.bottom, 6)
             ScrollView {
                 VStack(spacing: 1) {
                     ForEach(records) { record in
@@ -140,23 +147,12 @@ struct HostsManagerSheet: View {
         if let record = selected {
             let caption = HostsSettingsSection.caption(for: record, configAliases: hosts.configAliases)
             ScrollView {
-                VStack(alignment: .leading, spacing: 8) {
+                VStack(alignment: .leading, spacing: 20) {
                     Text(record.name)
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 15, weight: .semibold))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                         .textSelection(.enabled)
-                    if caption == .goneFromConfig {
-                        Text(caption.text)
-                            .font(.system(size: 11))
-                            .foregroundStyle(.orange)
-                    } else {
-                        Text(caption.text)
-                            .font(.system(size: 11, design: .monospaced))
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                    HostStatusLine(text: hosts.statusLine(for: record.name), summary: hosts.summaries[record.name])
-                        .padding(.top, 4)
                     if let problems = removeProblems[record.name], !problems.isEmpty {
                         VStack(alignment: .leading, spacing: 2) {
                             Text(RemoteCopy.notRemoved(record.name))
@@ -168,8 +164,56 @@ struct HostsManagerSheet: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                     }
-                    actions(record)
-                        .padding(.top, 10)
+                    group("Connection") {
+                        // Each action sits on the row of the fact it
+                        // changes or checks.
+                        detailRow("Address") {
+                            if caption == .goneFromConfig {
+                                Text(caption.text)
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.orange)
+                            } else {
+                                Text(record.source == .config ? record.name : record.summary)
+                                    .font(.system(size: 12, design: .monospaced))
+                                    .lineLimit(1)
+                                    .truncationMode(.middle)
+                                    .textSelection(.enabled)
+                            }
+                        } trailing: { EmptyView() }
+                        // Where the host is defined (cold read: "Set up in:
+                        // Temple" read as an installation step).
+                        detailRow("Source") {
+                            Text(record.source == .config ? "~/.ssh/config" : "Added in Temple")
+                                .font(.system(size: 13))
+                        } trailing: {
+                            if record.source == .config {
+                                Button(RemoteCopy.openSSHConfig) { HostsSettingsSection.openSSHConfig() }
+                            } else {
+                                Button("Edit…") { form = HostFormRequest(editing: record) }
+                                    .help("Change this host's address, user, port or keys")
+                            }
+                        }
+                        detailRow("Status") {
+                            HostStatusLine(text: hosts.statusLine(for: record.name), summary: hosts.summaries[record.name])
+                        } trailing: {
+                            Button("Test connection") { startTest(record.name) }
+                        }
+                    }
+                    group("Running sessions") {
+                        if let sessions, sessions.request.host == record.host {
+                            RemoteSessionsList(sheet: sessions, close: { dismiss() }, maxHeight: 220)
+                                .padding(.vertical, 4)
+                        } else {
+                            detailRow(nil) {
+                                Text("Not checked yet")
+                                    .font(.system(size: 12))
+                                    .foregroundStyle(.secondary)
+                            } trailing: {
+                                Button("Show running sessions") { showSessions(record) }
+                                    .help("Ask \(record.name) which sessions Temple started there are still running")
+                            }
+                        }
+                    }
                     if removing.contains(record.name) {
                         HStack(spacing: 6) {
                             ProgressView().controlSize(.mini)
@@ -177,7 +221,9 @@ struct HostsManagerSheet: View {
                         }
                     }
                 }
-                .padding(20)
+                .buttonStyle(.temple)
+                .padding(.horizontal, 24)
+                .padding(.top, 24)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         } else {
@@ -189,26 +235,45 @@ struct HostsManagerSheet: View {
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
                 Button("Add Host…") { addHost = AddHostSheetModel(hosts: hosts) }
+                    .buttonStyle(.temple)
             }
             .padding(30)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
 
-    /// The selected host's actions: one row of ordinary buttons. Remove is
-    /// the − under the list, as in every Mac list with one.
-    private func actions(_ record: RemoteHostRecord) -> some View {
-        HStack(spacing: 8) {
-            Button("Test connection") { startTest(record.name) }
-            Button(RemoteCopy.sessionsOnMenuItem(record.name)) { model.showRemoteSessions(record.host) }
-            if record.source == .config {
-                Button(RemoteCopy.openSSHConfig) { HostsSettingsSection.openSSHConfig() }
-            } else {
-                Button("Edit…") { form = HostFormRequest(editing: record) }
-                    .help("Change this host's address, user, port or keys")
+    /// A labeled group of the details: a quiet label over a shaded box.
+    private func group<Content: View>(_ label: String, @ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text(label)
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 0) {
+                content()
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(Palette.surfaceFill, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         }
-        .controlSize(.regular)
+    }
+
+    /// One line of a group: its label in a fixed column, the value, and the
+    /// action that belongs to it at the trailing edge.
+    private func detailRow<Value: View, Trailing: View>(_ label: String?, @ViewBuilder value: () -> Value,
+                                                        @ViewBuilder trailing: () -> Trailing) -> some View {
+        HStack(alignment: .center, spacing: 12) {
+            if let label {
+                Text(label)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 72, alignment: .leading)
+            }
+            value()
+                .frame(maxWidth: .infinity, alignment: .leading)
+            trailing()
+        }
+        .frame(minHeight: 36)
     }
 
     // MARK: Sheets over this one
@@ -258,6 +323,20 @@ struct HostsManagerSheet: View {
     }
 
     // MARK: Actions
+
+    private func showSessions(_ record: RemoteHostRecord) {
+        endSessions()
+        sessions = model.showRunningSessionsInManager(record.host)
+        sessions?.load()
+    }
+
+    /// Another host selected, or the manager gone: the listing's query is
+    /// cancelled and its answers refused.
+    private func endSessions() {
+        sessions?.dismissed()
+        sessions = nil
+        model.endRunningSessionsInManager()
+    }
 
     private func startTest(_ name: String) {
         test = hosts.startTest(for: name)

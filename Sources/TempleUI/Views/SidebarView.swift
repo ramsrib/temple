@@ -247,8 +247,9 @@ struct SidebarView: View {
                         && shown.contains { !$0.key.host.isLocal }
                     ForEach(Array(shown.enumerated()), id: \.element.id) { index, project in
                         let host = project.key.host
-                        if byMachine, index == 0 || shown[index - 1].key.host != host {
-                            MachineHeading(host: host, expanded: !collapsedHosts.contains(host)) {
+                        let startsHost = byMachine && (index == 0 || shown[index - 1].key.host != host)
+                        if startsHost {
+                            MachineHeading(host: host, expanded: !collapsedHosts.contains(host), isFirst: index == 0) {
                                 withAnimation(.easeInOut(duration: 0.18)) {
                                     if collapsedHosts.contains(host) { collapsedHosts.remove(host) } else { collapsedHosts.insert(host) }
                                 }
@@ -257,7 +258,8 @@ struct SidebarView: View {
                         // A folded host hides its projects whole, as a folded
                         // project hides its rows.
                         if !(byMachine && collapsedHosts.contains(host)) {
-                            ProjectDisclosure(project: project, isFirst: index == 0, showsHost: !byMachine)
+                            ProjectDisclosure(project: project, isFirst: index == 0, showsHost: !byMachine,
+                                              underHost: startsHost)
                                 .transition(.opacity)
                         }
                     }
@@ -829,6 +831,10 @@ private struct ProjectDisclosure: View {
     var isFirst = false
     /// Off under a machine heading, which already names the machine.
     var showsHost = true
+    /// The first project under a host's heading: it hangs off the host
+    /// (a small gap above) rather than standing a group apart.
+    var underHost = false
+    private var topGap: CGFloat { underHost ? 4 : Self.headerGap }
     @State private var expanded = true
     @State private var headerHovering = false
 
@@ -905,10 +911,7 @@ private struct ProjectDisclosure: View {
                 rows
             }
         }
-        // Clipped a few points outside its rows, not at them: the open box's
-        // outline reaches just past its rows (`boxOutset`), and a clip at the
-        // rows cut its top and bottom edges. The fold still happens inside.
-        .clipShape(Rectangle().inset(by: -Self.boxOutset))
+        .clipped()
         // Dev-only (WindowSnapshot): fold/unfold the first project so the
         // animation can be captured frame by frame without a click. Only the
         // first disclosure of a snapshot run subscribes; every other one gets
@@ -923,26 +926,13 @@ private struct ProjectDisclosure: View {
             let layout = self.layout
             let footer = hasFooterRow(hidden: layout.hidden)
             let lastID = (layout.closed.last ?? layout.open.last)?.id
-            if !layout.open.isEmpty {
-                // The open sessions in one box: the project's live zone,
-                // drawn behind the rows so no row moves and the badges and
-                // titles stay on the closed rows' columns (ADR-042). Not a
-                // fill per row: four filled rows read as four selections.
-                VStack(spacing: 0) {
-                    ForEach(layout.open) { session in
-                        row(session, isLast: session.id == lastID, footer: footer, draggable: false)
-                    }
-                }
-                // An outline, not a fill: a filled box around one open
-                // session was the selected row's own shape (the selection
-                // is the fill). It reaches past the rows' pills on every
-                // side, so a selected row inside never shares its edge.
-                .background(alignment: .leading) {
-                    RoundedRectangle(cornerRadius: Self.boxRadius, style: .continuous)
-                        .strokeBorder(Palette.hairline, lineWidth: 1)
-                        .padding(.leading, Self.childInset - Self.boxOutset)
-                        .padding(.vertical, -2)
-                }
+            // The open sessions first, in tab order, at full strength with
+            // their activity dot; the closed ones follow in gray with their
+            // age (SessionRow). Same pitch throughout, no box and no gap
+            // (round 3: the outlined box read "okay-ish"; the tone and the
+            // trailing column say open vs closed on their own).
+            ForEach(layout.open) { session in
+                row(session, isLast: session.id == lastID, footer: footer, draggable: false)
             }
             ForEach(layout.closed) { session in
                 row(session, isLast: session.id == lastID, footer: footer, draggable: true)
@@ -982,11 +972,6 @@ private struct ProjectDisclosure: View {
     private func row(_ session: Session, isLast: Bool, footer: Bool, draggable: Bool) -> some View {
         let base = SessionRow(session: session)
             .padding(.leading, Self.childInset)
-            // Every row, open or closed, leaves the box's outset on the
-            // right: the group clips (its fold animates inside its own
-            // box), so the box can't reach past it, and the dots and ages
-            // stay on one column.
-            .padding(.trailing, Self.boxOutset)
             .background(Color.clear.id(SidebarView.rowScrollID(session.id)))
             .opacity(inHand || model.draggedSession == session.id ? 0.4 : 1)
             .transition(.opacity)
@@ -1014,12 +999,6 @@ private struct ProjectDisclosure: View {
             base
         }
     }
-
-    /// The open box's corners: a step rounder than a row's 7 pt pill, which
-    /// sits inside it.
-    static let boxRadius: CGFloat = 10
-    /// How far the box reaches past the rows' pills on each side.
-    static let boxOutset: CGFloat = 3
 
     // MARK: Drag to reorder
 
@@ -1101,7 +1080,7 @@ private struct ProjectDisclosure: View {
         // dragged down the rail never crosses a dead band where the
         // insertion line blinks off. It also puts the "before this project"
         // line in the gap, where an insertion between groups reads right.
-        .padding(.top, Self.headerGap)
+        .padding(.top, topGap)
         // No hover pill: a filled pill under a rule-style heading fought the
         // rule. Hover shows the `+`; the label's tone lifts a step instead.
         .animation(.easeOut(duration: 0.12), value: headerHovering)
@@ -1117,7 +1096,7 @@ private struct ProjectDisclosure: View {
             NewSessionMenu(project: project.key)
                 .opacity(headerHovering ? 1 : 0)
                 .animation(.easeOut(duration: 0.12), value: headerHovering)
-                .frame(height: Self.headerGap + ProjectHeaderTitle.lineHeight, alignment: .trailing)
+                .frame(height: topGap + ProjectHeaderTitle.lineHeight, alignment: .trailing)
         }
         // The header is the drag handle. Dropping on a header lands the
         // dragged project above it; when this project is collapsed, the lower
@@ -1400,43 +1379,55 @@ private extension View {
 }
 
 
-/// A host's heading when the sidebar is grouped by host: it folds the
-/// host's projects the way a project heading folds its sessions (the same
-/// chevron, the same click), a step above them in weight (sentence case,
-/// primary, a glyph for the kind of machine) where a project heading is a
-/// tracked uppercase label.
+/// A host's heading when the sidebar is grouped by host: a title over its
+/// projects, not another project label (round 3: the two read as peers).
+/// The machine's glyph takes the chevron column, so the host's name starts
+/// on the project names' column and nothing moves right; the fold chevron
+/// sits at the trailing edge, so a host is name-then-control where a
+/// project is control-then-label-then-rule. Every host after the first has
+/// a full-width rule above it, and its first project hangs right under it.
 private struct MachineHeading: View {
     @EnvironmentObject var model: AppModel
     let host: HostID
     let expanded: Bool
+    var isFirst = false
     let toggle: () -> Void
-    @State private var hovering = false
 
     var body: some View {
-        Button(action: toggle) {
-            HStack(spacing: 6) {
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
-                    .frame(width: 12)
-                Image(systemName: host.isLocal ? "laptopcomputer" : "server.rack")
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                Text(host.isLocal ? "This Mac" : host.rawValue)
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(hovering ? .primary : .secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                Spacer(minLength: 0)
+        VStack(spacing: 0) {
+            if !isFirst {
+                Rectangle()
+                    .fill(Palette.hairline)
+                    .frame(height: 1)
+                    .padding(.top, 20)
+                    .padding(.bottom, 4)
             }
-            .padding(.leading, 4)
-            .frame(height: 28)
-            .contentShape(Rectangle())
+            Button(action: toggle) {
+                HStack(spacing: 6) {
+                    Image(systemName: host.isLocal ? "laptopcomputer" : "server.rack")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 12)
+                    Text(host.isLocal ? "This Mac" : host.rawValue)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    Spacer(minLength: 4)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.tertiary)
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                        .frame(width: 12)
+                        .padding(.trailing, 10)
+                }
+                .padding(.leading, 4)
+                .frame(height: 32)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
         }
-        .buttonStyle(.plain)
-        .onHover { hovering = $0 }
-        .padding(.top, 16)
+        .padding(.top, isFirst ? 8 : 0)
         .contextMenu {
             if !host.isLocal {
                 Button(RemoteCopy.sessionsOnMenuItem(host.rawValue)) { model.showRemoteSessions(host) }

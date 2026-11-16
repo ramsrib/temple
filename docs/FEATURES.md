@@ -65,11 +65,12 @@ open tabs; any other session returns the next time it is opened
 ([ADR-023](./DECISIONS.md#adr-023--temple-browses-its-own-sessions-by-default)).
 
 - Inside each project, **open sessions come first**, in the order of their
-  tabs, inside one thin outlined box (the project's live sessions; drawn
-  behind the rows, so every row keeps the same 32 pt spacing and the same
-  columns), each with its activity dot; then the closed sessions active in
-  the last week, in the session sort, each with its age on the right ("2h",
-  "1d", "3w") where an open row has its dot. A project lists every open
+  tabs, at full strength, each with its activity dot; then the closed
+  sessions active in the last week, in the session sort, in gray, each with
+  its age on the right ("2h", "1d", "3w") where an open row has its dot
+  (hovering a closed row lifts it to full strength). Every row keeps the
+  same 32 pt spacing; there is no box or gap between the two. A session
+  whose transcript is gone is lighter still. A project lists every open
   session and fills up to six rows with recent ones; the rest wait behind
   **Show N older**. A project with nothing open and
   nothing recent shows its heading and **Show N older**
@@ -89,7 +90,10 @@ open tabs; any other session returns the next time it is opened
   stay on top, newest first). **Show Only Sessions Open in Tabs** hides closed
   sessions and projects with nothing open (a search still finds
   everything). With a host enabled, **Group by Host** puts each machine
-  under a heading ("This Mac" first, then each host) that folds and
+  under a heading ("This Mac" first, then each host): the machine's name in
+  semibold, its glyph where the project chevrons sit (so nothing moves
+  right), its fold chevron at the right edge, a full-width rule above each
+  host after the first, and its first project right under it. It folds and
   unfolds its projects like a project heading, the projects under it
   without their `@host` tag. Choices are remembered; dragging a project
   heading switches the project sort to Custom, dragging a session the
@@ -238,12 +242,12 @@ The sidebar and tab bar form a two-part navigation model:
   jump to the oldest tab), so alternating the two chords ping-pongs between two
   tabs; `⇧` steers direction only mid-walk, while `⌃` holds the switcher open.
   From the home page the bounce returns to the tab you left. Like `⌘P` it is a
-  centred panel of cards, not a list: each card shows the agent, the title on
-  up to two lines, and the project (and machine) it would take you to, with
-  "Release ⌃ to switch" under them; five cards a row. The trail spans
-  projects; landing elsewhere switches the strip. The tab you are leaving is
-  marked *current*, a dot flags tabs whose agent is running or waiting, and a
-  colour mark is a slim bar on the card's edge. The positional routes
+  panel centred in the window, 480 pt wide with no search field: one line a
+  tab, the agent's badge, the title, then the project (and machine) on the
+  right, with "Release ⌃ to switch" under them; up to nine lines, then it
+  scrolls. The trail spans projects; landing elsewhere switches the strip.
+  The tab you are leaving says "this tab", a dot flags tabs whose agent is
+  running or waiting, and a colour mark is a slim bar on the line's edge. The positional routes
   are the browser's: `⌘⇧[` / `⌘⇧]` step to the previous / next chip in the
   strip, History and Settings included (wrapping); `⌘1`–`⌘8` pick a session
   tab in the active project, and `⌘9` its last session tab.
@@ -813,18 +817,22 @@ Changes apply live where applicable.
   ([Sessions on a host](#sessions-on-a-host)). Settings says how many there
   are and offers **Manage Hosts…** (with a host added, also in the Temple
   menu, and in a host project's or host heading's context menu), which opens the **hosts
-  manager**, a sheet in the shape of Internet Accounts: every host Temple
-  has, by name, in a list on the left, each with a dot for its last test
+  manager**, a 760 × 500 sheet in the shape of System Settings: "Hosts" over
+  a shaded list on the left of every host Temple has, by name, each with a dot for its last test
   (green connected, orange with a warning, red couldn't connect, hollow not
   tested) and where it came from; **+** and **−** under the list add and
   remove (− says `~/.ssh/config` is not changed). The selected host's
-  details are on the right: its name, the address for a host added by
-  address or "from ~/.ssh/config" for one of the config's aliases (in
-  orange, "No longer in ~/.ssh/config: ssh may not reach it by this name.
-  Add it back to the file, or remove the host." when the config stopped
-  naming it), its status line, and **Test connection**, **Running sessions
-  on <host>…**, then **Open ~/.ssh/config** for a config alias or **Edit…**
-  for a host added by address. With none, "No hosts yet" and **Add
+  details are on the right: its name, then a **Connection** group with
+  each action on the row it belongs to: **Address** (in orange, "No longer
+  in ~/.ssh/config: ssh may not reach it by this name. Add it back to the
+  file, or remove the host." when the config stopped naming it), **Source**
+  ("Added in Temple" with **Edit…**, or "~/.ssh/config" with **Open
+  ~/.ssh/config**) and **Status** (its status line, with **Test
+  connection**). Under it a **Running sessions** group says "Not checked
+  yet" until **Show running sessions** asks the host, then lists them in
+  place, with the same rows and actions as the Running sessions sheet:
+  selecting a host never connects to it. Done and the other buttons use
+  Temple's graphite, not the system blue. With none, "No hosts yet" and **Add
   Host…**. **+** opens a small sheet with one
   **Host** field ("alias from ~/.ssh/config, or user@address"). Under it,
   "Click a host to add it at once." heads the config's aliases not added yet
