@@ -356,9 +356,13 @@ private struct ProjectSwitcher: View {
                 Image(systemName: "folder")
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                Text(active.map(model.projectName) ?? "Projects")
-                    .font(.system(size: 12, weight: .medium))
-                    .lineLimit(1)
+                if let active {
+                    ProjectNameLabel(key: active, font: .system(size: 12, weight: .medium))
+                } else {
+                    Text("Projects")
+                        .font(.system(size: 12, weight: .medium))
+                        .lineLimit(1)
+                }
                 Image(systemName: "chevron.up.chevron.down")
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(.tertiary)
@@ -474,9 +478,8 @@ private struct ProjectSwitcherRow: View {
                     .frame(width: 10)
 
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(model.projectName(path))
-                        .font(.system(size: 13, weight: isCurrent ? .medium : .regular))
-                        .lineLimit(1)
+                    ProjectNameLabel(key: path, font: .system(size: 13, weight: isCurrent ? .medium : .regular),
+                                     hostFont: .system(size: 11))
                     Text(parent)
                         .font(.system(size: 10.5))
                         .foregroundStyle(.tertiary)

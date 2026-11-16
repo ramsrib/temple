@@ -165,13 +165,14 @@ struct HistoryTabView: View {
             }
             if let host = history.page.host {
                 peerLine(host)
-            } else {
-                // This Mac: the same way in as a host's page, beside the
-                // "Not here? Look on …" line when a search found little.
+            } else if let hosts = bridgeHosts {
+                // This Mac: "Not here? Look on …" when a search found
+                // little. Open Session by ID… is in the header, beside
+                // Refresh: on a line of its own it sat orphaned under the
+                // filters.
                 HStack(spacing: 8) {
-                    if let hosts = bridgeHosts { bridgeLine(hosts) }
+                    bridgeLine(hosts)
                     Spacer(minLength: 0)
-                    openByIDLink(.local)
                 }
                 .padding(.top, 8)
             }
@@ -225,6 +226,12 @@ struct HistoryTabView: View {
                     .fontWeight(.semibold)
                     .foregroundStyle(.primary)
                 Text("⌘R").foregroundStyle(.tertiary)
+                // A host's page offers it in its own line, about that host.
+                if history.page.host == nil {
+                    Text("·")
+                    openByIDLink(.local)
+                        .font(.system(size: 11))
+                }
             }
             .font(.system(size: 11))
             .foregroundStyle(.secondary)

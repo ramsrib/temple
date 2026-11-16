@@ -14,6 +14,23 @@ enum RelativeTime {
     static func string(from date: Date) -> String {
         formatter.localizedString(for: date, relativeTo: Date())
     }
+
+    /// A row's age in a narrow trailing column: "now", "12m", "3h", "2d",
+    /// "5w", "4mo", "2y". Units, not words, the way Mail and Messages
+    /// show times in a list.
+    static func compact(from date: Date, now: Date = Date()) -> String {
+        let seconds = max(0, now.timeIntervalSince(date))
+        let minute = 60.0, hour = 3_600.0, day = 86_400.0
+        switch seconds {
+        case ..<minute: return "now"
+        case ..<hour: return "\(Int(seconds / minute))m"
+        case ..<day: return "\(Int(seconds / hour))h"
+        case ..<(7 * day): return "\(Int(seconds / day))d"
+        case ..<(30 * day): return "\(Int(seconds / (7 * day)))w"
+        case ..<(365 * day): return "\(Int(seconds / (30 * day)))mo"
+        default: return "\(Int(seconds / (365 * day)))y"
+        }
+    }
 }
 
 func copyToPasteboard(_ string: String) {

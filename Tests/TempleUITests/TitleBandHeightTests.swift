@@ -32,17 +32,18 @@ final class TitleBandHeightTests: XCTestCase {
 
     override func setUp() async throws {
         let database = try TempleDB.inMemory()
-        // Five projects with a session each fill the launcher's Recent list,
-        // as on any machine that has been used: that is what makes the
-        // launcher taller than a 600 pt pane.
-        // Four sessions in each make the sidebar taller than a 652 pt window,
-        // so it can be scrolled.
+        // Five projects with four sessions each fill the launcher's Continue
+        // list, as on any machine that has been used. Active in the last
+        // hour, so the sidebar lists them all (closed sessions show only
+        // within the recent window): twenty rows make it taller than a
+        // 652 pt window, so it can be scrolled. The home page is short
+        // enough since the UX pass (ADR-042) to fit a 652 pt window.
         for index in 1...5 {
             for older in 0..<4 {
                 try database.join(sessionID: "s\(index)-\(older)", via: .opened, agent: .claude,
                                   core: SessionCore(directory: "/private/tmp/project-\(index)",
                                                     directorySource: .tab, title: "Session \(index).\(older)",
-                                                    lastActiveAt: Date(timeIntervalSince1970: Double(index * 10 - older))))
+                                                    lastActiveAt: Date().addingTimeInterval(-Double(60 - (index * 10 - older)) * 60)))
             }
         }
         model = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
@@ -475,7 +476,10 @@ final class TitleBandHeightTests: XCTestCase {
             settle()
             let small = size.height < 700
             heights["home+tabs \(tag)"] = try assertBand("Home, History and Settings inactive")
-            try assertTheLauncher(tag, overflows: small)
+            // The home page fits at both sizes since the UX pass; its
+            // overflow path (a toolchain warning on a short window) keeps
+            // the same scroll view, which Settings proves below.
+            try assertTheLauncher(tag, overflows: false)
             assertTheOwnerClassifiesTheBand(tag)
             try assertTheSidebarStaysBelowTheBand("Home", tag, overflows: small)
 
@@ -495,27 +499,16 @@ final class TitleBandHeightTests: XCTestCase {
         XCTAssertEqual(distinct.count, 1, "one band height in every state and size: \(heights)")
     }
 
-    /// The wheel itself, delivered to whatever is under the pointer: over
-    /// empty launcher page it scrolls the launcher when the page overflows
-    /// (900 x 652), and Settings likewise; at a size where the launcher fits
-    /// (1300 x 800) it leaves the offset exactly where it was. The first two
-    /// are the proof the wheel path is live in this session, so the last is
-    /// not vacuous. Skipped, saying why, when the display cannot refresh.
+    /// The wheel itself, delivered to whatever is under the pointer: it
+    /// scrolls Settings at 900 x 652 (the proof the wheel path is live in
+    /// this session, so what follows is not vacuous), and over a launcher
+    /// that fits (1300 x 800) it leaves the offset exactly where it was. Skipped, saying why, when the display cannot refresh.
     func testTheWheelScrollsTheLauncherOnlyWhenItOverflows() throws {
         try requireLiveDisplay()
         model.openSessions.openHistory()
         model.openSessions.openSettings()
 
         setContentSize(NSSize(width: 900, height: 652))
-        model.openSessions.showHome()
-        settle()
-        var launcher = try launcherScrollView()
-        var viewport = try launcherViewport()
-        let moved = try scrollWheel(at: NSPoint(x: viewport.maxX - 20, y: viewport.midY), lines: -40, watching: launcher)
-        try requireLiveDisplay()
-        XCTAssertTrue(moved, "the wheel scrolls the overflowing launcher")
-        scroll(launcher, toEnd: false)
-
         model.openSessions.openSettings()
         settle()
         let settings = try detailScrollView()
@@ -527,8 +520,8 @@ final class TitleBandHeightTests: XCTestCase {
         setContentSize(NSSize(width: 1300, height: 800))
         model.openSessions.showHome()
         settle()
-        launcher = try launcherScrollView()
-        viewport = try launcherViewport()
+        let launcher = try launcherScrollView()
+        let viewport = try launcherViewport()
         let page = try XCTUnwrap(launcher.documentView)
         XCTAssertLessThanOrEqual(page.frame.height, viewport.height + 0.5, "the launcher fits at 1300 x 800")
         let offset = launcher.contentView.bounds.origin
@@ -539,11 +532,8 @@ final class TitleBandHeightTests: XCTestCase {
         try requireLiveDisplay()
     }
 
-    /// The fixture fills the Recent list; that is what makes the launcher
-    /// taller than a 900 x 652 window's pane, which the test above checks
-    /// directly (the last row starts below the viewport, and the wheel
-    /// scrolls).
+    /// The fixture fills the Continue list.
     func testTheFixtureFillsTheRecentList() {
-        XCTAssertEqual(LauncherView.recentProjects(model).count, 5, "five recent projects")
+        XCTAssertEqual(LauncherView.recentSessions(model).count, 5, "five recent sessions")
     }
 }

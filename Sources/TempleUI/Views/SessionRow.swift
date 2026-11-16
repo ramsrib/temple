@@ -67,9 +67,18 @@ struct SessionRow: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer(minLength: 4)
-                // Only open tabs carry a dot (running/idle/attention/exited).
+                // The trailing column says what state the row is in: an open
+                // tab's dot (running/idle/attention/exited), or for a closed
+                // session how long ago it was last active, so yesterday's
+                // reads apart from last month's.
                 if let activity {
                     ActivityDot(state: activity)
+                        .help(activity.openTabHelp)
+                } else {
+                    Text(RelativeTime.compact(from: session.sortDate))
+                        .font(.system(size: 11).monospacedDigit())
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
                 }
             }
             // The 32pt frame below sets the pitch; the pill runs the row's

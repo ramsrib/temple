@@ -22,31 +22,37 @@ import TempleTerminalAPI
 /// Layout rules as for the rest of Settings (AGENTS.md, the split view's
 /// titlebar inset): no `.fixedSize`, `.allowsHitTesting`, `layoutPriority`,
 /// `List` or `Form`. The sheets are their own windows.
+/// Settings' Hosts section: how many hosts Temple has, and Manage Hosts…,
+/// which opens the hosts manager (`HostsManagerSheet`). The list itself used
+/// to live here, four bordered buttons a host wrapping differently per name;
+/// hosts are a working thing, not a preference, so they got their own panel
+/// (docs/designs/ux-pass-2026-11.md section 5). Always shown: with no host
+/// enabled this is still the one remote surface, and the way to add one.
+///
+/// Layout rules as for the rest of Settings (AGENTS.md, the split view's
+/// titlebar inset): no `.fixedSize`, `.allowsHitTesting`, `layoutPriority`,
+/// `List` or `Form`.
 struct HostsSettingsSection: View {
     @EnvironmentObject var model: AppModel
     @ObservedObject var hosts: RemoteHostsModel
     /// Codex's arguments as set above: whether they carry `--no-daemon`.
     var codexArguments: [String] = []
 
-    @State private var form: HostFormRequest?
-    @State private var addHost: AddHostSheetModel?
-    /// The form Add host ended with: it opens once that sheet is gone.
-    @State private var formAfterAddHost: HostFormRequest?
-    @State private var test: ConnectionTest?
-    /// "Save and test": the test opens once the form's sheet is gone.
-    @State private var testAfterForm: String?
-    /// Remove found sessions still running on the host: the alert.
-    @State private var removal: RemoteRemoval?
-    /// Hosts whose Remove is asking the host, or stopping its sessions.
-    @State private var removing: Set<String> = []
-    /// A Stop them and remove that could not stop everything, by host.
-    @State private var removeProblems: [String: AppModel.RemovalFailures] = [:]
-
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionRule("Hosts")
-            HostsRow(RemoteCopy.hostsLabel) { addedHosts }
-            hairline
+            HostsRow(RemoteCopy.hostsLabel) {
+                HStack(alignment: .firstTextBaseline, spacing: 12) {
+                    Text(Self.summary(hosts.records.count))
+                        .font(.system(size: 13))
+                        .foregroundStyle(.secondary)
+                    Button("Manage Hosts…") { model.showHostsManager() }
+                        .controlSize(.small)
+                    Spacer(minLength: 0)
+                }
+                .padding(.top, 3)
+            }
+            Rectangle().fill(Palette.hairline).frame(height: 1)
             Text(Self.flagsAsCode(Self.argumentsNote))
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
@@ -59,53 +65,13 @@ struct HostsSettingsSection: View {
                 .padding(.top, 4)
         }
         .padding(.top, 26)
-        .onAppear { hosts.loadConfigAliases() }
-        .alert(removal.map { RemoteCopy.removalTitle($0.live.count, host: $0.name) } ?? "",
-               isPresented: Binding(get: { removal != nil }, set: { if !$0 { removal = nil } }),
-               presenting: removal) { removal in
-            Button(RemoteCopy.removalLeave(removal.live.count)) {
-                model.removeHostLeavingSessions(removal)
-                self.removal = nil
-            }
-            .keyboardShortcut(.defaultAction)
-            Button(RemoteCopy.removalStop(removal.live.count)) { stopAndRemove(removal) }
-            Button("Cancel", role: .cancel) { self.removal = nil }
-        } message: { removal in
-            Text(RemoteCopy.removalMessage(removal.live.count, fromConfig: removal.fromConfig))
-        }
-        .background {
-            // One sheet per anchor: SwiftUI keeps one presentation per view.
-            Color.clear
-                .sheet(item: $form, onDismiss: openPendingTest) { request in
-                    HostFormSheet(request: request, existing: Set(hosts.records.map(\.name)),
-                                  configAliases: Set(hosts.configAliases ?? [])) { record, thenTest in
-                        hosts.save(record, editing: request.editing?.name)
-                        testAfterForm = thenTest ? record.name : nil
-                    }
-                    .remoteSheet(model)
-                }
-            Color.clear
-                .sheet(item: $addHost, onDismiss: openPendingForm) { sheet in
-                    AddHostSheet(sheet: sheet) { outcome in
-                        switch outcome {
-                        case .details(let prefill): formAfterAddHost = HostFormRequest(editing: nil, prefill: prefill)
-                        case .editConfig: Self.openSSHConfig()
-                        case .added, .cancelled: break
-                        }
-                    }
-                    .remoteSheet(model)
-                }
-            Color.clear
-                .sheet(item: $test) { test in
-                    // The app's effective appearance, read again whenever the
-                    // sheet's colour scheme changes: dark in dark.
-                    ConnectionTestSheet(test: test, surfaceFactory: model.surfaceFactory,
-                                        appearance: model.currentAppearance(),
-                                        onTestAgain: { startTest(test.record.name) },
-                                        onClose: { self.test = nil })
-                        .onDisappear { hosts.endTest(test) }
-                        .remoteSheet(model)
-                }
+    }
+
+    static func summary(_ count: Int) -> String {
+        switch count {
+        case 0: inUseEmpty
+        case 1: "1 host"
+        default: "\(count) hosts"
         }
     }
 
@@ -172,71 +138,6 @@ struct HostsSettingsSection: View {
         }
     }
 
-    @ViewBuilder
-    private var addedHosts: some View {
-        let inUse = Self.inUse(hosts.records)
-        VStack(alignment: .leading, spacing: 14) {
-            if inUse.isEmpty {
-                Text(Self.inUseEmpty)
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(.top, 5)
-            }
-            ForEach(inUse) { record in hostRow(record) }
-            HostLink("Add host…", systemImage: "plus") { addHost = AddHostSheetModel(hosts: hosts) }
-                .padding(.top, inUse.isEmpty ? 0 : 2)
-        }
-        .padding(.top, 5)
-    }
-
-    private func hostRow(_ record: RemoteHostRecord) -> some View {
-        let caption = Self.caption(for: record, configAliases: hosts.configAliases)
-        return VStack(alignment: .leading, spacing: 4) {
-            // The links on a line of their own, under the name: "Running
-            // sessions on <host>…" names the host in full, and the words
-            // never shrink to fit beside it (no measuring view here: the
-            // titlebar inset trap, AGENTS.md).
-            nameAndCaption(record, caption)
-            links(record)
-                .padding(.top, 1)
-            if caption == .goneFromConfig {
-                Text(caption.text)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.orange)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            HostStatusLine(text: hosts.statusLine(for: record.name), summary: hosts.summaries[record.name])
-            if let problems = removeProblems[record.name], !problems.isEmpty {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(RemoteCopy.notRemoved(record.name))
-                    // Every session the alert counted, each with its outcome.
-                    ForEach(Array(problems.lines.enumerated()), id: \.offset) { _, line in Text(line) }
-                    Text(RemoteCopy.removeAgain(record.name, count: problems.lines.count)).padding(.top, 2)
-                }
-                .font(.system(size: 11))
-                .foregroundStyle(.orange)
-                .textSelection(.enabled)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-        }
-    }
-
-    private func nameAndCaption(_ record: RemoteHostRecord, _ caption: Caption) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 10) {
-            Text(record.name)
-                .font(.system(size: 13, weight: .medium))
-            if caption != .goneFromConfig {
-                Text(caption.text)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-            }
-            Spacer(minLength: 0)
-        }
-    }
-
     /// What a row offers, in order: the same four for both kinds of host,
     /// but the file's own editor for a config host where one added by
     /// address has Edit.
@@ -258,75 +159,6 @@ struct HostsSettingsSection: View {
         [.test, .runningSessions, record.source == .config ? .openConfig : .edit, .remove]
     }
 
-    private func links(_ record: RemoteHostRecord) -> some View {
-        // Small bordered buttons, as the tab band's actions: a row of plain
-        // medium-weight links read as one bold line, not as four actions.
-        WrappingRow(spacing: 8) {
-            ForEach(Self.actions(for: record), id: \.self) { action in
-                if action == .remove, removing.contains(record.name) {
-                    ProgressView().controlSize(.mini)
-                } else {
-                    Button(action.title(record.name), role: action == .remove ? .destructive : nil) {
-                        perform(action, record)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.small)
-                    .help(action == .remove ? RemoteCopy.removeHostHelp(fromConfig: record.source == .config) : "")
-                }
-            }
-        }
-        .lineLimit(1)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private func perform(_ action: HostAction, _ record: RemoteHostRecord) {
-        switch action {
-        case .test: startTest(record.name)
-        case .runningSessions: model.showRemoteSessions(record.host)
-        case .openConfig: Self.openSSHConfig()
-        case .edit: form = HostFormRequest(editing: record)
-        case .remove: remove(record)
-        }
-    }
-
-    // MARK: Actions
-
-    private func startTest(_ name: String) {
-        test = hosts.startTest(for: name)
-    }
-
-    /// Remove asks the host first; with nothing of Temple's running there
-    /// (or no answer), the host goes at once.
-    private func remove(_ record: RemoteHostRecord) {
-        removeProblems[record.name] = nil
-        removing.insert(record.name)
-        model.requestRemoveHost(record.name) { found in
-            removing.remove(record.name)
-            removal = found
-        }
-    }
-
-    private func stopAndRemove(_ removal: RemoteRemoval) {
-        self.removal = nil
-        removing.insert(removal.name)
-        model.stopSessionsAndRemoveHost(removal) { failures in
-            removing.remove(removal.name)
-            removeProblems[removal.name] = failures.isEmpty ? nil : failures
-        }
-    }
-
-    private func openPendingForm() {
-        guard let request = formAfterAddHost else { return }
-        formAfterAddHost = nil
-        form = request
-    }
-
-    private func openPendingTest() {
-        guard let name = testAfterForm else { return }
-        testAfterForm = nil
-        startTest(name)
-    }
-
     /// The user's own editor for the file; Finder if nothing opens it.
     static func openSSHConfig() {
         let url = URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent(".ssh/config")
@@ -339,9 +171,6 @@ struct HostsSettingsSection: View {
                                 configuration: NSWorkspace.OpenConfiguration())
     }
 
-    private var hairline: some View {
-        Rectangle().fill(Palette.hairline).frame(height: 1)
-    }
 }
 
 /// What the Add host / Edit sheet is for.

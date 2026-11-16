@@ -64,15 +64,36 @@ already pinned, renamed, colored, archived or seen retitle in a tab, plus the
 open tabs; any other session returns the next time it is opened
 ([ADR-023](./DECISIONS.md#adr-023--temple-browses-its-own-sessions-by-default)).
 
-- Projects and sessions are ordered by recency at launch, then frozen for that
-  app run so activity cannot move a row under the pointer. Newly discovered
-  entries prepend without reshuffling existing entries.
+- Inside each project, **open sessions come first**, in the order of their
+  tabs, with their activity dot; then, after a small gap, the closed sessions
+  active within the recent window (a week by default), newest first, each
+  with its age on the right ("2h", "1d", "3w") where an open row has its dot.
+  A project lists every open session and fills up to six rows with recent
+  ones; the rest wait behind **Show N older**. A project with nothing open and
+  nothing recent shows its heading and **Show N older**
+  ([ADR-042](./DECISIONS.md#adr-042--the-sidebar-shows-what-is-open-then-what-is-recent)).
+- The order is live: a tab opening or closing moves its row into or out of
+  the open group, and activity reorders projects and sessions a moment
+  later. **Nothing moves while the pointer is over the sidebar**: moves wait
+  and land when it leaves (Mail holds new messages the same way). Until
+  0.8.5 the order was frozen at launch for the whole run.
+- **View Options** (the filter button beside search in the sidebar's title
+  bar) sorts projects by **Recent Activity**, **Manual Order** (the order you
+  dragged) or **Name**; **Show** picks **Open Only** or **Open and Last
+  Day / Last Week / Last Month** (what "recent" means; a search still finds
+  everything); and, with a host enabled, **Group by Host** puts each machine
+  under a heading ("This Mac" first, then each host), its projects under it
+  without their `@host` tag. Choices are remembered; dragging a project
+  heading switches the sort to Manual Order. Someone who dragged projects
+  before View Options existed starts on Manual Order. The dot on an open row
+  says so on hover ("Open in a tab · working").
 - Each project is a section: an uppercase, letter-spaced label trailed by a
   hairline rule — the launcher's own section language — led by a chevron that
   folds the group. A folded group hides its rows inside its own box; nothing
   crosses the header. The `+` that starts a session in that project appears on
   hover at the rule's end. Session rows sit under the label at 32pt: agent
-  badge, title, and the activity dot when the session has an open tab. Open
+  badge, title, and the activity dot when the session has an open tab or its
+  age when it has none. Open
   sessions read at full strength; the browsable history behind them steps
   back a tone, and its badges are faded until hovered.
 - Projects reorder by drag: the header is the handle. A label set like the
@@ -80,9 +101,10 @@ open tabs; any other session returns the next time it is opened
   project's header lands above it; dropping anywhere in its body lands below it,
   and an insertion line shows where. A collapsed project has no body, so the
   lower half of its header means below it. The order persists. A manual order
-  wins over recency; projects nobody has placed stay above the placed ones, so a
+  wins over recency (in Manual Order); projects nobody has placed stay above the placed ones, so a
   new project still surfaces at the top rather than under the eight-project cap.
-- The initial view shows up to eight projects and six sessions per project.
+- The initial view shows up to eight projects and, per project, its open
+  sessions and recent ones up to six rows.
   A row set like a project header, **N MORE PROJECTS**, stands where the
   rest of the projects would be; clicking it reveals them in place, and
   **SHOW FEWER PROJECTS** at the end of the list folds them back. Within a
@@ -196,7 +218,9 @@ The sidebar and tab bar form a two-part navigation model:
   open in, most recently used first, and release `⌘` to land — so one tap returns
   you to the project you were just in. The project you are leaving is marked
   *current*. Landing on a project returns you to the session you last used there.
-  `⌥⌘[` / `⌥⌘]` cycle without showing the switcher. Sessions get a search palette
+  `⌥⌘[` / `⌥⌘]` cycle without showing the switcher. A project on another
+  machine shows the machine (`@host`) on a line of its own under the name,
+  so neither is cut to fit the other. Sessions get a search palette
   (`⌘K`); projects get a switcher, because you hold a handful of them in your head
   and search a hundred sessions.
 - `⌃⇥` is the same gesture one level down: hold `⌃` and tap `⇥` to walk the open
@@ -204,10 +228,13 @@ The sidebar and tab bar form a two-part navigation model:
   to the tab you were just on. A fresh tap of `⌃⇧⇥` is the same bounce (not a
   jump to the oldest tab), so alternating the two chords ping-pongs between two
   tabs; `⇧` steers direction only mid-walk, while `⌃` holds the switcher open.
-  From the home page the bounce returns to the tab you left. The trail spans
-  projects, and each row names the project it would take you to; landing
-  elsewhere switches the strip. The tab you are leaving is marked *current*, and
-  a dot flags tabs whose agent is running or waiting. The positional routes
+  From the home page the bounce returns to the tab you left. Like `⌘P` it is a
+  centred panel of cards, not a list: each card shows the agent, the title on
+  up to two lines, and the project (and machine) it would take you to, with
+  "Release ⌃ to switch" under them; five cards a row. The trail spans
+  projects; landing elsewhere switches the strip. The tab you are leaving is
+  marked *current*, a dot flags tabs whose agent is running or waiting, and a
+  colour mark is a slim bar on the card's edge. The positional routes
   are the browser's: `⌘⇧[` / `⌘⇧]` step to the previous / next chip in the
   strip, History and Settings included (wrapping); `⌘1`–`⌘8` pick a session
   tab in the active project, and `⌘9` its last session tab.
@@ -325,15 +352,16 @@ for a prompt.
 Temple runs Claude Code and Codex on another machine you reach with ssh, in a
 tab that works like a local one
 ([ADR-036](./DECISIONS.md#adr-036--sessions-on-another-machine-through-the-users-own-ssh)).
-Hosts are set up in Settings ▸ Hosts. Until one is, nothing here appears
-anywhere else in Temple: no host rows in `⌘N` or the launcher, no shortcuts
-note, no sidebar notices; local tabs behave exactly as they would without
+Hosts are set up in the hosts manager (**Manage Hosts…**, in the Temple menu
+and in Settings ▸ Hosts). Until one is, nothing here appears
+anywhere else in Temple: no host rows in `⌘N`, no Group by Host, no
+shortcuts note, no sidebar notices; local tabs behave exactly as they would without
 it. What follows appears for an enabled host only.
 
 - **Starting one.** `⌘N` lists **Choose folder on <host>…** under **Choose
-  folder…** for each host, the launcher has one row per host naming the
-  agent it starts ("New Claude Code session on <host>…", the default
-  agent), and a host project's `+`, `⌘T` and `⌥⌘T` start there. The folder sheet takes a path on the host (`~/…`
+  folder…** for each host (the home page's **New session in another
+  project or on another host…** opens it), and a host project's `+`,
+  `⌘T` and `⌥⌘T` start there. The folder sheet takes a path on the host (`~/…`
   works), checks it there and shows where it resolved; under the field,
   "Recent folders on this host. Click one to start there." lists the host's
   earlier folders. When the host does not answer, it offers **Test
@@ -560,25 +588,30 @@ it. What follows appears for an enabled host only.
 ## Launcher / home page
 
 `⌘⇧H` shows the home page without closing existing tabs. Its masthead presents
-Temple and the tagline “Where agents answer the call.”
+Temple and the tagline “Where agents answer the call.” Under it are the two
+things you come to it for, and nothing else
+([ADR-042](./DECISIONS.md#adr-042--the-sidebar-shows-what-is-open-then-what-is-recent)).
 
-The **Get Started** section provides a New session row for each agent, named
-in full (New Claude Code session, New Codex session) with the default agent
-first, as the `+` menu orders them, showing `⌘T` and `⌥⌘T` while a project is
-active (the keys' condition); then New
-session in folder…, Command palette, Keyboard shortcuts, and Settings. An agent
-row uses the last-used project, or asks for a folder if none exists; the folder
-row uses the default agent.
+**Start** has a New session row for each agent, named in full (New Claude
+Code session, New Codex session), default agent first as the `+` menu orders
+them, each saying where it starts ("in acme-api", with `@host` for a project
+on another machine): the active project, else the last-used one. With no
+project yet the rows end in "…" and ask for a folder. They show `⌘T` and
+`⌥⌘T` while a project is active (the keys' condition). A third row, **New
+session in another project…** (**…or on another host…** with a host
+enabled, `⌘N`), opens the `⌘N` picker, which lists every project, Choose
+folder…, and each host's folders.
 
-**Recent Projects** shows the sidebar's first five projects — the same manual
-order if one has been set (the heading then reads **Projects**), launch-frozen
-recency otherwise — with relative activity time on hover. **Get started** also
-carries **Archived sessions** (`⌘⇧Y`), History in its Archived scope: the
-sidebar lists nothing archived, so this is a visible way back, and it is always
-there. Choosing a project starts a brand-new
-session there with the default agent; it does not reopen an existing session.
-The home page is the general creation surface—there is no new-session modal or
-prompt composer.
+**Continue** lists your five most recent sessions that aren't open in a tab
+and can be resumed, each with its project (and machine) and age; choosing
+one resumes it.
+
+At the foot, one line of key hints opens the rest of Temple by click or by
+key: **⌘K Search Sessions**, **⌘Y History**, **⌘/ Keyboard Shortcuts**,
+**⌘, Settings**.
+Archived sessions are History's Archived scope (`⌘⇧Y`), and switching
+projects is `⌘P`. The home page is the general creation surface—there is no
+new-session modal or prompt composer.
 
 ## Command palette, history & search
 
@@ -618,7 +651,7 @@ join and archived ones come back
   come from its database and are on the page before any file is read; disk
   rows stream in newest first under a "Reading sessions on disk… 1,240 of
   3,810" line. The header says what is in the box ("3,812 sessions · 164 in
-  Temple · 173 archived") and when it was taken ("Updated 2 min ago · Refresh"). Temple's rows
+  Temple · 173 archived") and when it was taken ("Updated 2 min ago · Refresh ⌘R · Open Session by ID…", the last on This Mac's page; a host's page offers it on its own line about that host). Temple's rows
   are its database rows (ADR-029), so their titles are the ones the sidebar
   shows; a transcript only fills what a row does not state. Closing the tab
   forgets its search, filters and selection but keeps the rows: reopening
@@ -768,17 +801,22 @@ Changes apply live where applicable.
 - **Appearance:** System, Light, or Dark theme.
 
 - **Hosts:** the machines you can start sessions on
-  ([Sessions on a host](#sessions-on-a-host)). **Added hosts** lists every
-  host Temple has, by name, wherever it came from: beside the name, the
-  address for a host added by address, "from ~/.ssh/config" for one of the
-  config's aliases (and, in orange under it, "No longer in ~/.ssh/config:
-  ssh may not reach it by this name. Add it back to the file, or remove the
-  host." when the config stopped naming it). Under the name, on a line of
-  their own so no label is cut short: **Test connection**, **Running
-  sessions on <host>…**, then **Open ~/.ssh/config** for a config alias or
-  **Edit** for a host added by address, and **Remove** (its tag says
-  `~/.ssh/config` is not changed), with the host's status line under them;
-  with none, "No hosts yet." **Add host…** opens a small sheet with one
+  ([Sessions on a host](#sessions-on-a-host)). Settings says how many there
+  are and offers **Manage Hosts…** (with a host added, also in the Temple
+  menu, and in a host project's or host heading's context menu), which opens the **hosts
+  manager**, a sheet in the shape of Internet Accounts: every host Temple
+  has, by name, in a list on the left, each with a dot for its last test
+  (green connected, orange with a warning, red couldn't connect, hollow not
+  tested) and where it came from; **+** and **−** under the list add and
+  remove (− says `~/.ssh/config` is not changed). The selected host's
+  details are on the right: its name, the address for a host added by
+  address or "from ~/.ssh/config" for one of the config's aliases (in
+  orange, "No longer in ~/.ssh/config: ssh may not reach it by this name.
+  Add it back to the file, or remove the host." when the config stopped
+  naming it), its status line, and **Test connection**, **Running sessions
+  on <host>…**, then **Open ~/.ssh/config** for a config alias or **Edit…**
+  for a host added by address. With none, "No hosts yet" and **Add
+  Host…**. **+** opens a small sheet with one
   **Host** field ("alias from ~/.ssh/config, or user@address"). Under it,
   "Click a host to add it at once." heads the config's aliases not added yet
   (`Host` entries, one level of `Include`; patterns and `Match` blocks are
@@ -810,16 +848,16 @@ Changes apply live where applicable.
   sentence; until a test runs it says "Not tested since Temple started."
   (results are kept for this run only). A host that was never tested can
   still start sessions; only a test that ran and found a CLI unusable, or
-  tmux missing or too old, rules it out. The card is always there, with no
-  host yet too (it is how one is added); its notes say that the arguments
+  tmux missing or too old, rules it out. The Settings section is always
+  there, with no host yet too (it is how one is added); its notes say that the arguments
   above apply on hosts, and whether Codex's arguments include `--no-daemon`
   (which lets Temple tell new Codex sessions there apart without asking).
-  `~/.ssh/config` is read when the card is shown and again when Add host…
+  `~/.ssh/config` is read when the hosts manager opens and again when Add host…
   opens, never before. Opening the sheet runs nothing (not even `ssh -G`,
   which would run a config's `Match exec` commands).
 
 Agent arguments apply to both new and resumed sessions, on hosts too
-(`--dangerously-skip-permissions` included, as the Hosts card says). Command paths are
+(`--dangerously-skip-permissions` included, as Settings ▸ Hosts says). Command paths are
 auto-detected and overridable; argument fields are clearable to launch without
 extra flags.
 
@@ -884,7 +922,7 @@ New Window, each new-session item beside its `⌥` other-agent variant; **Edit**
 Previous, disabled when no terminal is showing; **View** owns Toggle Sidebar
 at `⌘B` plus the palette, Session History, Refresh History (`⌘R`, on the
 History tab; Check for Claude Code and Codex Again on Settings; plain Refresh, disabled, elsewhere), Archived Sessions, home, and shortcuts card; a **Project** menu mirrors the switcher and project
-cycling; **Window** carries Show Previous / Next Tab; **Settings…** sits in the app menu. Menu items call the same actions
+cycling; **Window** carries Show Previous / Next Tab; **Settings…** and **Manage Hosts…** sit in the app menu. Menu items call the same actions
 as the shortcuts below — the in-app key monitor remains the keyboard's source
 of truth.
 

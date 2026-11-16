@@ -97,6 +97,14 @@ public struct TempleCommands: Commands {
                 Label("Settings…", systemImage: "gearshape")
             }
             .keyboardShortcut(",")
+            // The hosts Temple reaches: test, remove, add another. Only with
+            // one enabled: until then Settings' Hosts section is the one
+            // remote surface (ADR-036), and how the first is added.
+            if !model.remoteHostIDs.isEmpty {
+                Button { model.showHostsManager() } label: {
+                    Label("Manage Hosts…", systemImage: "server.rack")
+                }
+            }
         }
 
         // View: our sidebar toggle replaces the default (⌃⌘S) so the menu

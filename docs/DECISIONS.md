@@ -2778,3 +2778,58 @@ session per id, so both copies can't be in Temple); encoding the host into
 the id (every transcript and CLI boundary would translate); keeping a
 unique id with a second table of copies (two places to keep in step for
 every write).
+
+## ADR-042 — The sidebar shows what is open, then what is recent
+**Date:** 2026-11-15 · **Status:** Accepted; amends ADR-017 (manual project order is one sort among three) and ADR-036 (hosts are managed in their own sheet)
+
+The owner's UX pass (docs/designs/ux-pass-2026-11.md) found that the
+sidebar could not answer "which sessions are open" or "what did I close
+yesterday": each project listed six sessions in an order frozen at launch,
+open and closed mixed, closed rows a tone dimmer that dark mode all but
+erased, and no age anywhere. The switchers, the home page and Settings'
+Hosts list had problems of their own, decided with it.
+
+**Decisions.**
+
+- **Open first, then recent, then the rest.** A project lists its open
+  sessions in tab order, then (after an 8 pt gap, no label) closed sessions
+  active within the recent window, newest first, up to six rows in all;
+  Show N more reveals the rest by activity. A closed row shows its age
+  where an open row shows its dot.
+- **Live order, held under the pointer.** The launch freeze is gone as a
+  rule for the whole run. A tab opening or closing, or activity (gathered,
+  1.5 s), takes the order again, except while the pointer is over the
+  rail or a project is being dragged: then the move waits and lands when
+  it leaves. A session first seen while the order is held goes where it
+  belongs (a new session lands on top), so the hold never hides a new row.
+- **View Options** sort projects (Recent Activity, Manual Order, Name),
+  show Open Only or Open and the last day, week or month (one choice, so
+  "recent" is defined where it is picked; a search still finds everything),
+  and with a host enabled Group by Host. Window chrome, so `UIStateStore`, one key
+  each, written only when chosen. With no sort stored, someone who has a
+  dragged order starts on Custom Order: the shipped default reading their
+  data, never a value written for them. Dragging a heading switches to
+  Manual Order. The labels went through a cold read (docs/copy-review.md):
+  "Group By: Project / Machine" (both group by project), "Recent Means" and
+  "Custom Order" were replaced, and "host" is the one word for a machine.
+- **A project is named, and its machine tagged, separately.**
+  `ProjectNameLabel` puts `@host` beside or under the name, each
+  truncating on its own and the host first; `ProjectKey.displayName` is for
+  sentences only. One string cut from the middle lost both halves.
+- **The two hold-a-key switchers are one family.** ⌃⇥ is a centred panel
+  of cards like ⌘P, not a ⌘K twin; colour marks are a slim bar, never a
+  wash.
+- **The home page is Start and Continue.** Start rows say where they start
+  and one row opens the ⌘N picker for every other project and machine (no
+  row per host); Continue lists recent sessions to resume. Other screens
+  are a line of key hints.
+- **Hosts have a manager of their own,** a sheet (list, details, + and −)
+  opened from Settings, the app menu and host headings. A sheet, not a
+  window: Temple is single-window and closing its window quits. With no
+  host enabled, Settings' Hosts section is still the one remote surface.
+
+**Rejected.** Labels over each project's groups ("Open", "Recent": clutter
+at this density, and the dots and ages already say it); a fill on open
+rows (tried before, four open rows read as four selections); live order
+with no hold (rows move under the click); a separate Hosts window (the
+quit-on-close logic is written for one window).

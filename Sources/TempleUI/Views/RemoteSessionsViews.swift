@@ -131,10 +131,14 @@ struct RemoteSessionsSheet: View {
                             Button(RemoteCopy.showTab) {
                                 sheet.showTab(session)
                                 dismiss()
+                                model.tabShownFromSessionsSheet()
                             }
                         } else {
                             Button(RemoteCopy.openTracked) {
-                                if sheet.open(session, rows: model.sessions) { dismiss() }
+                                if sheet.open(session, rows: model.sessions) {
+                                    dismiss()
+                                    model.tabShownFromSessionsSheet()
+                                }
                             }
                             .help(RemoteCopy.openTrackedHelp)
                         }

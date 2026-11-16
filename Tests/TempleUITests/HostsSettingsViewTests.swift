@@ -55,26 +55,31 @@ final class HostsSettingsViewTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(seconds))
     }
 
-    /// No flag: the Hosts card is there with no host enabled (the one
-    /// remote surface then, and the way to add one), and the ssh config is
-    /// read only once it is shown, never before.
-    func testTheHostsCardIsAlwaysShownAndReadsTheConfigOnlyWhenShown() throws {
+    /// No flag: Settings' Hosts section is there with no host enabled (the
+    /// one remote surface then, and the way to add one) and reads no ssh
+    /// config; the hosts manager reads it once it is shown, never before.
+    func testTheHostsSectionIsAlwaysShownAndTheManagerReadsTheConfigOnlyWhenShown() throws {
         let reads = ReadCounter()
         let (empty, _) = try app { reads.bump(); return ["box"] }
         XCTAssertEqual(reads.count, 0, "building the model reads no ssh config")
         XCTAssertNil(empty.remoteHosts.configAliases)
         let emptyWindow = render(SettingsView(settings: empty.settings).environmentObject(empty))
         spin()
-        XCTAssertEqual(reads.count, 1, "with no host, the card is shown and reads ~/.ssh/config on appearing")
+        XCTAssertEqual(reads.count, 0, "Settings shows the section and reads nothing")
+        let emptyManager = render(HostsManagerSheet(hosts: empty.remoteHosts).environmentObject(empty),
+                                  size: HostsManagerSheet.size)
+        spin()
+        XCTAssertEqual(reads.count, 1, "with no host, the manager reads ~/.ssh/config on appearing")
         XCTAssertEqual(empty.remoteHosts.configAliases, ["box"])
-        XCTAssertEqual(empty.hostRegistry.entries.map(\.source.host), [.local], "showing the card registers nothing")
+        XCTAssertEqual(empty.hostRegistry.entries.map(\.source.host), [.local], "showing it registers nothing")
+        emptyManager.close()
         emptyWindow.close()
 
         let (lit, _) = try app(records: [.config("box"),
             RemoteHostRecord(name: "added", source: .temple, address: "10.0.0.2", user: "me")]) { reads.bump(); return ["box", "jetson-mentes"] }
-        let window = render(SettingsView(settings: lit.settings).environmentObject(lit))
+        let window = render(HostsManagerSheet(hosts: lit.remoteHosts).environmentObject(lit), size: HostsManagerSheet.size)
         spin()
-        XCTAssertEqual(reads.count, 2, "the card read ~/.ssh/config once, on appearing")
+        XCTAssertEqual(reads.count, 2, "the manager read ~/.ssh/config once, on appearing")
         XCTAssertEqual(lit.remoteHosts.configAliases, ["box", "jetson-mentes"])
         window.close()
     }

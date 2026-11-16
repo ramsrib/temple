@@ -32,6 +32,17 @@ public enum ActivityState: Sendable, Equatable {
         }
     }
 
+    /// The sidebar dot's tooltip: the row is open in a tab, and what its
+    /// agent is doing.
+    var openTabHelp: String {
+        switch self {
+        case .running: "Open in a tab · working"
+        case .idle: "Open in a tab"
+        case .needsAttention: "Open in a tab · waiting for you"
+        case .exited: "Open in a tab · the agent has exited"
+        }
+    }
+
     var isExited: Bool {
         if case .exited = self { return true }
         return false

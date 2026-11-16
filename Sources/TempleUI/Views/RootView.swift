@@ -85,11 +85,16 @@ public struct RootView: View {
                 case "open-by-id":
                     model.openSessionByID(host: model.remoteHostIDs.first ?? .local)
                 case "settings": model.openSessions.openSettings()
+                case "hosts": model.showHostsManager()
                 // Keys pressed in Settings' fields, delivered in-process, to
                 // prove the page's own key handling fires (SettingsKeysProbe).
                 case "settings-keys": SettingsKeysProbe.run(model: model)
                 case "archived": model.showArchived()
                 case "shortcuts": if !model.shortcutsPresented { model.toggleShortcuts() }
+                // The hold-a-key switchers, held: no ⌃ or ⌘ release arrives,
+                // so they stay up for the shot (and nothing is committed).
+                case "tab-switcher": model.advanceTabSwitcher(by: 1)
+                case "project-switcher": model.advanceProjectSwitcher(by: 1, heldCommand: true)
                 // The ⌘N picker, and the same with its last row selected
                 // ("Choose folder…" with no host): its selection is the
                 // view's own state, reached only by keys, so ↓ is delivered
@@ -169,8 +174,16 @@ public struct RootView: View {
                      : RemoteCopy.stillWorkingMessage(tab.host.rawValue))
             }
         }
-        .sheet(item: $model.remoteSessionsSheet) { request in
+        // While the hosts manager is up it presents Running sessions over
+        // itself; one window holds one sheet at a time.
+        .sheet(item: Binding(get: { model.hostsManagerPresented ? nil : model.remoteSessionsSheet },
+                             set: { model.remoteSessionsSheet = $0 })) { request in
             RemoteSessionsSheet(sheet: model.sessionsSheetModel(request))
+                .environmentObject(model)
+                .remoteSheet(model)
+        }
+        .sheet(isPresented: $model.hostsManagerPresented) {
+            HostsManagerSheet(hosts: model.remoteHosts)
                 .environmentObject(model)
                 .remoteSheet(model)
         }
@@ -242,21 +255,18 @@ public struct RootView: View {
         .transition(.opacity)
     }
 
-    /// ⌃⇥ switcher: a momentary HUD you hold, but visually a ⌘K sibling —
-    /// same width, same top anchor — so it never feels like a mode change.
+    /// ⌃⇥ switcher: centred like ⌘P and the app switcher. Both are HUDs you
+    /// hold, and look like it; ⌘K, which you type into, is the one anchored
+    /// high in the window.
     private var tabSwitcherOverlay: some View {
-        GeometryReader { geo in
-            ZStack(alignment: .top) {
-                OverlayBackdrop { model.cancelTabSwitcher() }
-                    .ignoresSafeArea()
-                PanelHost {
-                    TabSwitcherHUD()
-                        .environmentObject(model)
-                }
-                .fixedSize()
-                .frame(maxWidth: .infinity)
-                .padding(.top, geo.size.height * 0.35)
+        ZStack {
+            OverlayBackdrop { model.cancelTabSwitcher() }
+                .ignoresSafeArea()
+            PanelHost {
+                TabSwitcherHUD()
+                    .environmentObject(model)
             }
+            .fixedSize()
         }
         .transition(.opacity)
     }
@@ -572,6 +582,7 @@ struct KeyCatcher: NSViewRepresentable {
             // Only remote's sheets (each marked `remoteSheet`): every other
             // key path is as it was before remote.
             if model.remoteFolderSheet != nil || model.remoteSessionsSheet != nil || model.openByIDSheet != nil
+                || model.hostsManagerPresented
                 || !model.openRemoteSheets.isEmpty { return false }
 
             // History's import sheet and its failure alert own the keyboard

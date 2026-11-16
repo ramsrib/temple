@@ -290,9 +290,14 @@ private struct PaletteResultRow: View {
                 Text(model.displayTitle(session))
                     .font(.system(size: 13))
                     .lineLimit(1)
-                Text(session.project?.displayName ?? (openable ? "No project" : "No folder on record · opens in History"))
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
+                if let project = session.project {
+                    ProjectNameLabel(key: project, font: .system(size: 11), hostFont: .system(size: 11),
+                                     nameStyle: AnyShapeStyle(.secondary))
+                } else {
+                    Text(openable ? "No project" : "No folder on record · opens in History")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
             }
             .opacity(openable ? 1 : 0.55)
             Spacer()

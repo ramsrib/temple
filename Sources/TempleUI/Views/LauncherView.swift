@@ -2,36 +2,43 @@ import SwiftUI
 import AppKit
 import TempleCore
 
-/// The empty-state / ⌘⇧H launcher (ADR-008/012, U4): a quiet, typographic home —
-/// wordmark + tagline, a "Get started" action list (agent choice = which "New …"
-/// row you pick), and a "Recent projects" list. Monochrome, list-driven; no
-/// cards, segmented controls, or prominent buttons. Spawn-terminal MVP — a row
-/// click opens a fresh terminal (no prompt input).
+/// The empty-state / ⌘⇧H home page (ADR-008/012, docs/designs/ux-pass-2026-11.md
+/// section 4): a quiet, typographic page with the two things you come to it
+/// for. **Start**: a new session, saying where it will start, and one row for
+/// anywhere else (the ⌘N picker). **Continue**: your most recent sessions
+/// that are not open, to resume. The other screens (⌘K, History, shortcuts,
+/// Settings) are a line of key hints at the foot, taught but not competing:
+/// a list of thirteen rows, six of them signposts and one per host, buried
+/// the two that start work.
 struct LauncherView: View {
     @EnvironmentObject var model: AppModel
-    /// The recent list is ordered by activity, which AppModel does not
-    /// publish after the rank freeze (B9): it redraws itself when it changes.
+    /// The Continue list is ordered by activity, which AppModel does not
+    /// publish (B9): it redraws itself when it changes.
     @StateObject private var recency = RecencyRefresh()
 
     private static let recentLimit = 5
 
-    private var recentProjects: [SessionRowProject] { Self.recentProjects(model) }
+    private var recentSessions: [Session] { Self.recentSessions(model) }
 
-    /// Recent member projects, ordered by Temple row activity.
-    static func recentProjects(_ model: AppModel) -> [SessionRowProject] {
-        Array(model.visibleRowProjects.prefix(recentLimit))
+    /// The sessions to continue: resumable, not open in a tab, most recent
+    /// activity first.
+    static func recentSessions(_ model: AppModel) -> [Session] {
+        Array(model.visibleRows
+            .filter { $0.canResume && model.openSessions.openTab(for: $0.id) == nil }
+            .sorted { $0.sortDate == $1.sortDate ? $0.id < $1.id : $0.sortDate > $1.sortDate }
+            .prefix(recentLimit))
     }
 
-    /// One recent row as drawn, as far as activity can change it.
+    /// One Continue row as drawn, as far as activity can change it.
     struct RecentLine: Hashable {
-        let key: ProjectKey
+        let key: SessionKey
         let time: String
     }
 
-    /// What the recent list shows that activity can change: which projects,
-    /// in which order, and each one's time.
+    /// What the Continue list shows that activity can change: which
+    /// sessions, in which order, and each one's age.
     static func recentPresentation(_ model: AppModel) -> [RecentLine] {
-        recentProjects(model).map { RecentLine(key: $0.key, time: RelativeTime.string(from: $0.lastActivity)) }
+        recentSessions(model).map { RecentLine(key: $0.id, time: RelativeTime.compact(from: $0.sortDate)) }
     }
 
     /// The gap between the title band and the masthead when the launcher
@@ -74,10 +81,11 @@ struct LauncherView: View {
         VStack(alignment: .leading, spacing: 30) {
             masthead
             toolchainWarnings
-            getStarted
-            if !recentProjects.isEmpty {
+            start
+            if !recentSessions.isEmpty {
                 recent.background(LayoutMarker(id: Self.recentMarker))
             }
+            keyHints
         }
         .onAppear {
             recency.watch(model.overlay) { [weak model] in
@@ -158,83 +166,69 @@ struct LauncherView: View {
     static let mastheadMarker = NSUserInterfaceItemIdentifier("launcher.masthead")
     static let recentMarker = NSUserInterfaceItemIdentifier("launcher.recent")
 
-    // MARK: Get started
+    // MARK: Start
 
-    private var getStarted: some View {
+    private var start: some View {
         VStack(alignment: .leading, spacing: 2) {
-            SectionRule("Get started")
+            SectionRule("Start")
 
             // As the + menu orders them: the default agent first with ⌘T,
             // the other with ⌥⌘T. Both by the agent's name ("Claude Code",
             // never the bare "Claude", which is the assistant and its apps).
-            // The hints only where they are true, as in the + menu: a row
-            // starts in the active project or else the last-used one, while
-            // ⌘T and ⌥⌘T need an active project (without one ⌘T stays here
-            // and ⌥⌘T asks where).
+            // Each says where it starts: the active project, else the
+            // last-used one; with neither it asks for a folder. The hints
+            // only where they are true: ⌘T and ⌥⌘T need an active project.
+            let project = model.launcherDefaultProjectKey
             ForEach(launcherAgents, id: \.self) { agent in
-                LauncherRow(icon: .agent(agent), title: "New \(agent.displayName) session",
+                LauncherRow(icon: .agent(agent),
+                            title: "New \(agent.displayName) session" + (project == nil ? "…" : ""),
+                            detail: project.map { "in " + $0.name },
+                            detailTag: project.flatMap(ProjectNameLabel.hostTag),
                             shortcut: model.openSessions.activeProjectKey == nil ? nil
                                 : agent == model.settings.defaultAgent ? "⌘T" : "⌥⌘T") {
                     newSession(agent)
                 }
             }
-            LauncherRow(icon: .symbol("folder.badge.plus"), title: "New session in folder…") {
-                openFolder()
-            }
-            ForEach(model.remoteLaunchHosts, id: \.self) { host in
-                // One row per host, naming the agent it starts (the
-                // default); Codex there: the project's + menu, or ⌘N.
-                LauncherRow(icon: .symbol("network"),
-                            title: RemoteCopy.newSessionOn(host.rawValue, agent: model.settings.defaultAgent)) {
-                    model.chooseRemoteFolder(host: host)
+            // Every other project, a folder, and every host's folders: the
+            // ⌘N picker lists them all, so one row stands for them, however
+            // many hosts there are.
+            if project != nil {
+                LauncherRow(icon: .symbol("folder.badge.plus"),
+                            title: model.remoteLaunchHosts.isEmpty
+                                ? "New session in another project…"
+                                : "New session in another project or on another host…",
+                            shortcut: "⌘N") {
+                    model.toggleNewSessionPicker()
                 }
-            }
-            LauncherRow(icon: .symbol("command"), title: "Command palette", shortcut: "⌘K") {
-                model.toggleCommandPalette()
-            }
-            LauncherRow(icon: .symbol("clock.arrow.circlepath"), title: "Session history", shortcut: "⌘Y") {
-                model.showHistory()
-            }
-            // History's Archived scope (ADR-031). Always here, so the list is
-            // the same list every launch (a row that comes and goes is a row
-            // you can't learn), and the scope's empty state does the teaching.
-            LauncherRow(icon: .symbol("archivebox"), title: "Archived sessions", shortcut: "⌘⇧Y") {
-                model.showArchived()
-            }
-            // Only when there is somewhere to switch TO: with fewer than two
-            // projects open the switcher has nothing to show, and a row that does
-            // nothing when clicked is worse than no row.
-            if model.switchableProjectKeys.count > 1 {
-                LauncherRow(icon: .symbol("folder"), title: "Switch project", shortcut: "⌘P") {
-                    model.advanceProjectSwitcher(by: 1, heldCommand: false)
-                }
-            }
-            LauncherRow(icon: .symbol("keyboard"), title: "Keyboard shortcuts", shortcut: "⌘/") {
-                model.toggleShortcuts()
-            }
-            LauncherRow(icon: .symbol("gearshape"), title: "Settings", shortcut: "⌘,") {
-                model.openSessions.openSettings()
             }
         }
     }
 
-    // MARK: Recent projects
+    // MARK: Continue
 
     private var recent: some View {
         VStack(alignment: .leading, spacing: 2) {
-            // The list follows the sidebar — one order, two surfaces — so once
-            // the user has arranged that order, "Recent" would be a lie.
-            SectionRule(model.hasManualProjectOrder ? "Projects" : "Recent projects")
-
-            ForEach(recentProjects) { project in
-                LauncherRow(icon: .symbol("folder"),
-                            title: project.name,
-                            trailing: RelativeTime.string(from: project.lastActivity),
-                            trailingOnHover: true) {
-                    model.openSessions.newSession(agent: model.settings.defaultAgent, project: project.key)
+            SectionRule("Continue")
+            ForEach(recentSessions) { session in
+                ContinueRow(session: session, title: model.displayTitle(session)) {
+                    model.openSessions.openSession(session)
                 }
             }
         }
+    }
+
+    // MARK: Key hints
+
+    /// The rest of Temple, one key each: a line to learn the keys from, not
+    /// a list to scan past.
+    private var keyHints: some View {
+        HStack(spacing: 18) {
+            KeyHint(key: "⌘K", label: "Search Sessions") { model.toggleCommandPalette() }
+            KeyHint(key: "⌘Y", label: "History") { model.showHistory() }
+            KeyHint(key: "⌘/", label: "Keyboard Shortcuts") { model.toggleShortcuts() }
+            KeyHint(key: "⌘,", label: "Settings") { model.openSessions.openSettings() }
+        }
+        .padding(.leading, 8)
     }
 
     // MARK: Actions
@@ -253,12 +247,6 @@ struct LauncherView: View {
             }
         }
     }
-
-    private func openFolder() {
-        chooseProjectFolder { project in
-            model.openSessions.newSessionDefaultAgent(project: project)
-        }
-    }
 }
 
 // MARK: - Row & section building blocks
@@ -273,11 +261,12 @@ private struct LauncherRow: View {
 
     let icon: Icon
     let title: String
+    /// Where the row acts, after the title in a quieter tone ("in storefront"),
+    /// and the machine's tag when it is another machine.
+    var detail: String? = nil
+    var detailTag: String? = nil
     var shortcut: String? = nil
     var trailing: String? = nil
-    /// Item D: when true, `trailing` (e.g. a project's relative time) is hidden
-    /// until the row is hovered — matching the sidebar's on-hover timestamps.
-    var trailingOnHover: Bool = false
     let action: () -> Void
 
     @State private var rawHovering = false
@@ -291,10 +280,21 @@ private struct LauncherRow: View {
             HStack(spacing: 12) {
                 iconView
                     .frame(width: 18, alignment: .center)
-                Text(title)
+                // One text, so "in storefront" sits a word space after the
+                // title rather than a column gap.
+                (Text(title).foregroundStyle(.primary)
+                    + Text(detail.map { " " + $0 } ?? "").foregroundStyle(.secondary))
                     .font(.system(size: 14.5))
-                    .foregroundStyle(.primary)
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                if let detailTag {
+                    Text(detailTag)
+                        .font(.system(size: 12))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                        .frame(maxWidth: 160, alignment: .leading)
+                }
                 Spacer(minLength: 12)
                 if let shortcut {
                     Text(shortcut)
@@ -304,7 +304,6 @@ private struct LauncherRow: View {
                     Text(trailing)
                         .font(.system(size: 11.5))
                         .foregroundStyle(.tertiary)
-                        .opacity(trailingOnHover && !hovering ? 0 : 1)
                 }
             }
             .padding(.horizontal, 8)
@@ -327,6 +326,92 @@ private struct LauncherRow: View {
         case .agent(let agent):
             AgentBadge(agent: agent, size: 15)
         }
+    }
+}
+
+/// A session to resume: its agent, its title, then where it ran (project,
+/// and the machine when it is another one) and how long ago.
+private struct ContinueRow: View {
+    let session: Session
+    let title: String
+    let action: () -> Void
+
+    @State private var rawHovering = false
+    @Environment(\.overlayActive) private var overlayActive
+    private var hovering: Bool { rawHovering && !overlayActive }
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 12) {
+                Group {
+                    if let agent = session.agent {
+                        AgentBadge(agent: agent, size: 15)
+                    } else {
+                        Image(systemName: "terminal").font(.system(size: 14)).foregroundStyle(.secondary)
+                    }
+                }
+                .frame(width: 18, alignment: .center)
+                Text(title)
+                    .font(.system(size: 14.5))
+                    .lineLimit(1)
+                Spacer(minLength: 12)
+                if let project = session.project {
+                    // Plain frames, no layout priority: this page is the
+                    // detail pane, where a measuring modifier can cost the
+                    // sidebar its titlebar inset (AGENTS.md).
+                    HStack(spacing: 5) {
+                        Text(project.name)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                            .frame(maxWidth: 150, alignment: .trailing)
+                        if let tag = ProjectNameLabel.hostTag(project) {
+                            Text(tag)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                                .frame(maxWidth: 120, alignment: .leading)
+                        }
+                    }
+                }
+                Text(RelativeTime.compact(from: session.sortDate))
+                    .font(.system(size: 11.5).monospacedDigit())
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 30, alignment: .trailing)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .background(hovering ? Palette.hoverFill : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { rawHovering = $0 }
+        .help("Resume this session")
+    }
+}
+
+/// One key hint at the page's foot: the chord, then what it opens. A
+/// button, so it works by click as well as by key.
+private struct KeyHint: View {
+    let key: String
+    let label: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 5) {
+                Text(key).foregroundStyle(.tertiary)
+                Text(label).foregroundStyle(hovering ? .primary : .secondary)
+            }
+            .font(.system(size: 12))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
     }
 }
 

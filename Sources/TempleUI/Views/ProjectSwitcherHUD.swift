@@ -19,10 +19,20 @@ struct ProjectSwitcherHUD: View {
     /// land but not where you would be leaving.
     private var current: ProjectKey? { model.openSessions.activeProjectKey }
 
+    /// Whether any tile is on another machine: then every tile carries a
+    /// machine line (blank on this Mac) so the row's baselines stay level;
+    /// with none, no tile has one and the row looks as it always did.
+    private var anyRemote: Bool { projects.contains { !$0.host.isLocal } }
+
+    /// Wide enough for a typical project name whole; a longer one, or a
+    /// machine name, truncates from the middle on its own line.
+    static let tileWidth: CGFloat = 120
+
     var body: some View {
+        let anyRemote = self.anyRemote
         HStack(spacing: 4) {
             ForEach(projects, id: \.self) { path in
-                tile(path, selected: path == model.projectSwitcherKeySelection)
+                tile(path, selected: path == model.projectSwitcherKeySelection, hostLine: anyRemote)
             }
         }
         .padding(14)
@@ -30,7 +40,7 @@ struct ProjectSwitcherHUD: View {
         .fixedSize()
     }
 
-    private func tile(_ path: ProjectKey, selected: Bool) -> some View {
+    private func tile(_ path: ProjectKey, selected: Bool, hostLine: Bool) -> some View {
         let tabs = model.openSessions.tabs.filter { $0.kind == .session && $0.projectKey == path }
         let states = tabs.map(\.activity)
         let activity: ActivityState? = states.contains(.needsAttention) ? .needsAttention
@@ -50,11 +60,23 @@ struct ProjectSwitcherHUD: View {
                 }
             }
 
-            Text(model.projectName(path))
-                .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
-                .foregroundStyle(selected ? .primary : .secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
+            // The name and the machine on lines of their own: one string
+            // cut from the middle lost both ("mentes…ersonal").
+            VStack(spacing: 2) {
+                Text(path.name)
+                    .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if hostLine {
+                    Text(ProjectNameLabel.hostTag(path) ?? " ")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .padding(.horizontal, 6)
 
             // One caption line for every tile, so the row's baselines stay level.
             Text(isCurrent ? "current" : "\(tabs.count) session\(tabs.count == 1 ? "" : "s")")
@@ -63,7 +85,7 @@ struct ProjectSwitcherHUD: View {
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
         }
-        .frame(width: 96)
+        .frame(width: Self.tileWidth)
         .padding(.vertical, 10)
         .background(selected ? Palette.selectionFill : Color.clear,
                     in: RoundedRectangle(cornerRadius: 12))

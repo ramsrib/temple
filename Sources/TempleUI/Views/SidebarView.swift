@@ -99,6 +99,7 @@ struct SidebarView: View {
                     Image(systemName: "magnifyingglass")
                 }
                 .help("Search sessions")
+                SidebarViewOptionsMenu()
                 Button {
                     withAnimation { model.toggleSidebar() }
                 } label: {
@@ -236,8 +237,16 @@ struct SidebarView: View {
                     }
                     let capped = model.capped(allProjects)
                     let shown = showAllProjects ? allProjects : capped
-                    ForEach(shown) { project in
-                        ProjectDisclosure(project: project, isFirst: project.id == shown.first?.id)
+                    // Grouped by machine, each machine's projects sit under
+                    // its own heading; with every project on this Mac there
+                    // is nothing to group and no heading.
+                    let byMachine = model.sidebarOptions.grouping == .machine
+                        && shown.contains { !$0.key.host.isLocal }
+                    ForEach(Array(shown.enumerated()), id: \.element.id) { index, project in
+                        if byMachine, index == 0 || shown[index - 1].key.host != project.key.host {
+                            MachineHeading(host: project.key.host)
+                        }
+                        ProjectDisclosure(project: project, isFirst: index == 0, showsHost: !byMachine)
                     }
                     // The number folded away is what the cap left out MINUS the
                     // active project `capped` appends past it: the old label
@@ -277,6 +286,8 @@ struct SidebarView: View {
             // document you navigate by scroll position.
             .scrollIndicators(.never)
             .clipped()
+            // Nothing in the list moves while the pointer is over it.
+            .onHover { model.sidebarPointerInside = $0 }
             .background(SidebarScrollers())
             .accessibilityElement(children: .contain)
             .accessibilityLabel("Sessions")
@@ -803,23 +814,36 @@ private struct ProjectDisclosure: View {
     let project: SessionRowProject
     /// Only the dev-only fold hook reads this.
     var isFirst = false
+    /// Off under a machine heading, which already names the machine.
+    var showsHost = true
     @State private var expanded = true
     @State private var headerHovering = false
 
     /// How many sessions this project currently shows. Grows a batch at a time —
     /// a project with 50+ sessions would otherwise dump all of them into the
     /// sidebar on one click, with no way back.
-    @State private var limit = collapsedLimit
+    /// Rows revealed past the first few by Show more, ten at a time.
+    @State private var extra = 0
 
-    private static let collapsedLimit = 6
+    private static let collapsedLimit = SidebarOptions.rowsBeforeShowMore
     private static let batch = 10
 
-    private var shownSessions: [Session] {
-        Array(project.sessions.prefix(limit))
-    }
-
-    private var hiddenCount: Int {
-        max(0, project.sessions.count - limit)
+    /// What the project lists: its open group whole, then (with no search)
+    /// the closed sessions active within the recent window, up to six rows
+    /// in all; Show more reveals the rest by activity. A search lists every
+    /// match, six first, as before.
+    private var layout: (shown: [Session], openCount: Int, hidden: Int) {
+        let sessions = project.sessions
+        let openCount = sessions.prefix { model.inSidebarOpenGroup($0.id) }.count
+        if !model.searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+            let shown = Array(sessions.prefix(Self.collapsedLimit + extra))
+            return (shown, min(openCount, shown.count), sessions.count - shown.count)
+        }
+        let rest = sessions.dropFirst(openCount)
+        let recent = rest.prefix { model.inSidebarRecent($0) }.count
+        let base = min(recent, max(0, Self.collapsedLimit - openCount))
+        let shownRest = rest.prefix(base + extra)
+        return (Array(sessions.prefix(openCount)) + shownRest, openCount, rest.count - shownRest.count)
     }
 
     /// Session rows indent one shallow step: the badge starts under the
@@ -828,6 +852,8 @@ private struct ProjectDisclosure: View {
     /// sits one badge width inside the heading. Manual header + rows because
     /// DisclosureGroup's child outline indent is fixed and much deeper.
     static let childInset: CGFloat = 12
+    /// Between a project's open sessions and the closed ones under them.
+    static let openGroupGap: CGFloat = 8
 
     /// The project label's column: the header's 4pt padding, its 12pt chevron
     /// column and the 6pt gap. The Pinned label and the rail-level "Show N
@@ -842,7 +868,7 @@ private struct ProjectDisclosure: View {
     }
     @State private var headerHeight: CGFloat = 22
 
-    private var hasFooterRow: Bool { hiddenCount > 0 || limit > Self.collapsedLimit }
+    private func hasFooterRow(hidden: Int) -> Bool { hidden > 0 || extra > 0 }
 
     /// This project is the one being dragged: the whole group fades, not just
     /// its header — the thing in hand is the project.
@@ -874,29 +900,37 @@ private struct ProjectDisclosure: View {
 
     @ViewBuilder
     private var rows: some View {
-            ForEach(Array(shownSessions.enumerated()), id: \.element.id) { offset, session in
+            let layout = self.layout
+            let footer = hasFooterRow(hidden: layout.hidden)
+            ForEach(Array(layout.shown.enumerated()), id: \.element.id) { offset, session in
                 SessionRow(session: session)
                     .padding(.leading, Self.childInset)
+                    // The open group stands apart from the closed sessions
+                    // under it by a gap, not a label: the dots above and the
+                    // ages below already say which is which.
+                    .padding(.top, offset == layout.openCount && offset > 0 ? Self.openGroupGap : 0)
                     .background(Color.clear.id(SidebarView.rowScrollID(session.id)))
                     .opacity(inHand ? 0.4 : 1)
                     .transition(.opacity)
                     .onDrop(of: [Self.dragType], delegate: dropDelegate(row: session.sessionID, edge: .bottom))
                     .overlay(alignment: .bottom) {
-                        if dropIndicator == .bottom, !hasFooterRow, offset == shownSessions.count - 1 {
+                        if dropIndicator == .bottom, !footer, offset == layout.shown.count - 1 {
                             dropLine
                         }
                     }
             }
-            if hasFooterRow {
+            if footer {
                 HStack(spacing: 10) {
-                    if hiddenCount > 0 {
+                    if layout.hidden > 0 {
                         // The count is the whole label: it says how deep the
                         // project goes, so a click on a 53-session project is
-                        // no surprise. Each click reveals one batch.
-                        sidebarExpander("Show \(hiddenCount) more") { limit += Self.batch }
+                        // no surprise. "Older": what is folded is ordered by
+                        // activity under what shows (a search's matches
+                        // likewise). Each click reveals one batch.
+                        sidebarExpander("Show \(layout.hidden) older") { extra += Self.batch }
                     }
-                    if limit > Self.collapsedLimit {
-                        sidebarExpander("Show fewer") { limit = Self.collapsedLimit }
+                    if extra > 0 {
+                        sidebarExpander("Show fewer") { extra = 0 }
                     }
                 }
                 // Starts on the session title column, under the row text — a
@@ -963,6 +997,7 @@ private struct ProjectDisclosure: View {
             Button(RemoteCopy.sessionsOnMenuItem(project.key.host.rawValue)) {
                 model.showRemoteSessions(project.key.host)
             }
+            Button("Manage Hosts…") { model.showHostsManager() }
         }
         Divider()
         if hasOpenTabs {
@@ -1057,7 +1092,8 @@ private struct ProjectDisclosure: View {
     /// project on a host says the host on the same line, after the name:
     /// one line for every heading, local or not.
     private var headerLabel: some View {
-        let title = ProjectHeaderTitle(project.key)
+        let title = showsHost ? ProjectHeaderTitle(project.key)
+            : ProjectHeaderTitle(name: project.key.name.uppercased(), host: nil)
         return ProjectHeadingLine(title: title, expanded: expanded, hovering: headerHovering)
         // A project on a host says where it is: `host:/absolute/path`. A
         // project on this Mac has no tooltip, as before remote.
@@ -1285,5 +1321,101 @@ private extension View {
     @ViewBuilder
     func helpIfAny(_ text: String) -> some View {
         if text.isEmpty { self } else { help(text) }
+    }
+}
+
+
+/// A machine's heading when the sidebar is grouped by machine: a step above
+/// the projects under it (sentence case, primary, a glyph for the kind of
+/// machine), where a project heading is a tracked uppercase label.
+private struct MachineHeading: View {
+    @EnvironmentObject var model: AppModel
+    let host: HostID
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: host.isLocal ? "laptopcomputer" : "server.rack")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .frame(width: 16)
+            Text(host.isLocal ? "This Mac" : host.rawValue)
+                .font(.system(size: 12, weight: .semibold))
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 0)
+        }
+        .padding(.leading, 4)
+        .frame(height: 28)
+        .padding(.top, 16)
+        .contentShape(Rectangle())
+        .contextMenu {
+            if !host.isLocal {
+                Button(RemoteCopy.sessionsOnMenuItem(host.rawValue)) { model.showRemoteSessions(host) }
+            }
+            Button("Manage Hosts…") { model.showHostsManager() }
+        }
+        .accessibilityAddTraits(.isHeader)
+    }
+}
+
+/// The rail's View Options: how projects are sorted and grouped, what each
+/// one lists, and how far back "recent" goes. The filter glyph Mail and
+/// Notes use for the same job.
+struct SidebarViewOptionsMenu: View {
+    @EnvironmentObject var model: AppModel
+
+    /// Show and the recent window in one choice: "Open and Last Week" says
+    /// what "recent" is where it is chosen (a cold read stumbled on a
+    /// separate "Recent Means" section).
+    private enum Shown: Hashable {
+        case openOnly
+        case openAnd(SidebarOptions.RecentWindow)
+    }
+
+    private var shown: Binding<Shown> {
+        Binding(get: {
+            model.sidebarOptions.show == .openOnly ? .openOnly : .openAnd(model.sidebarOptions.recentWindow)
+        }, set: { choice in
+            switch choice {
+            case .openOnly:
+                model.setSidebarShow(.openOnly)
+            case .openAnd(let window):
+                model.setSidebarShow(.openAndRecent)
+                model.setSidebarRecentWindow(window)
+            }
+        })
+    }
+
+    var body: some View {
+        Menu {
+            Picker("Sort Projects By", selection: binding(\.sort, model.setSidebarSort)) {
+                ForEach(SidebarOptions.Sort.allCases, id: \.self) { Text($0.title).tag($0) }
+            }
+            .pickerStyle(.inline)
+            Picker("Show", selection: shown) {
+                Text("Open Only").tag(Shown.openOnly)
+                ForEach(SidebarOptions.RecentWindow.allCases, id: \.self) { window in
+                    Text("Open and \(window.title)").tag(Shown.openAnd(window))
+                }
+            }
+            .pickerStyle(.inline)
+            // Hosts are remote UI: with no host enabled there is one
+            // machine and nothing to group (ADR-036).
+            if !model.remoteHostIDs.isEmpty {
+                Divider()
+                Toggle("Group by Host", isOn: Binding(
+                    get: { model.sidebarOptions.grouping == .machine },
+                    set: { model.setSidebarGrouping($0 ? .machine : .project) }))
+            }
+        } label: {
+            Image(systemName: "line.3.horizontal.decrease")
+        }
+        .menuIndicator(.hidden)
+        .help("View options: sort, group and filter the sidebar")
+    }
+
+    private func binding<Value>(_ path: KeyPath<SidebarOptions, Value>,
+                                _ set: @escaping (Value) -> Void) -> Binding<Value> {
+        Binding(get: { model.sidebarOptions[keyPath: path] }, set: { set($0) })
     }
 }

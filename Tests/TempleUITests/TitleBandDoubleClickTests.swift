@@ -241,7 +241,9 @@ final class TitleBandDoubleClickTests: XCTestCase {
     private func emptyXs() -> [CGFloat] {
         let lights = window.standardWindowButton(.zoomButton)!
         let lightsEnd = lights.convert(lights.bounds, to: nil).maxX
-        var xs = Array(stride(from: lightsEnd + 16, through: divider - 100, by: 30))
+        // The rail's three buttons (search, View Options, the sidebar
+        // toggle) take the band's last ~110 pt before the divider.
+        var xs = Array(stride(from: lightsEnd + 16, through: divider - 130, by: 30))
         let controls = stripControls.map { $0.insetBy(dx: -10, dy: 0) }
         xs += stride(from: divider + 12, through: window.frame.width - 12, by: 70)
             .filter { x in !controls.contains { $0.minX <= x && x <= $0.maxX } }
@@ -257,9 +259,19 @@ final class TitleBandDoubleClickTests: XCTestCase {
         let xs = emptyXs()
         XCTAssertTrue(xs.contains { $0 < divider }, "\(state): no sidebar points", file: file, line: line)
         XCTAssertTrue(xs.contains { $0 > divider }, "\(state): no detail points", file: file, line: line)
+        // Every point is clicked at the size its x was taken at: each zoom
+        // toggles the window between two frames, so without this, whether a
+        // later point was still inside the window turned on how many points
+        // came before it (one more rail button moved the count, and the
+        // test with it).
+        let frame = window.frame
         for x in xs {
             let point = NSPoint(x: x, y: bandMidY)
             XCTAssertEqual(zooms(at: point), 1, label(state, point), file: file, line: line)
+            if window.frame != frame {
+                window.setFrame(frame, display: true)
+                pump(0.1)
+            }
         }
     }
 

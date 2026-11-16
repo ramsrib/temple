@@ -322,13 +322,13 @@ final class RowConsumerTests: XCTestCase {
         // subscriber (AppModel included) has taken the change.
         let launcher = RecencyRefresh()
         launcher.watch(app.overlay) { AnyHashable(LauncherView.recentPresentation(app)) }
-        XCTAssertEqual(LauncherView.recentProjects(app).map(\.path), ["/a", "/b"])
+        XCTAssertEqual(LauncherView.recentSessions(app).map(\.sessionID), ["a", "b"])
         let cost = PresentationCost(app)
 
         app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 100))
         await nextPresentationTurn()
         XCTAssertEqual(launcher.revision, 1, "the recent list reordered: it redraws")
-        XCTAssertEqual(LauncherView.recentProjects(app).map(\.path), ["/b", "/a"])
+        XCTAssertEqual(LauncherView.recentSessions(app).map(\.sessionID), ["b", "a"])
         app.overlay.touch("b", host: .local, at: Date(timeIntervalSince1970: 101))
         await nextPresentationTurn()
         XCTAssertEqual(launcher.revision, 1, "same order, same times: no redraw")
