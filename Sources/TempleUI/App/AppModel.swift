@@ -101,7 +101,8 @@ public final class AppModel: ObservableObject {
         builtSessions = next
         builtRowProjects = projects
         // A hint stands in only until the row's title fact is filled.
-        let titled = titleHints.keys.filter { overlay.rows[$0]?.title != nil }
+        // (A title that names nothing is not one: `Session.ownTitle`.)
+        let titled = titleHints.keys.filter { id in overlay.rows[id].map { Session(state: $0).ownTitle != nil } ?? false }
         for id in titled { titleHints[id] = nil }
         extendRowRanks()
         // A fill can bring activity with it (a title and a date at once):
@@ -254,6 +255,11 @@ public final class AppModel: ObservableObject {
     /// A person's rename: their own act, so a Name sort takes the new name
     /// at once, hold or not (a title the transcript fills waits for it).
     public func renameSession(_ id: SessionKey, to name: String) {
+        // The editor opens on what the row shows. For a session with no name
+        // that is "Untitled Session", and saving it unchanged must not make
+        // those words its name, hiding every title the agent gives it later.
+        if overlay.rows[id]?.customName == nil,
+           name.trimmingCharacters(in: .whitespacesAndNewlines) == Session.untitled { return }
         overlay.rename(id, to: name)
         if let row = overlay.rows[id] {
             let session = presentedByID[id] ?? Session(state: row)
@@ -1149,7 +1155,7 @@ public final class AppModel: ObservableObject {
         }
         openSessions.titleHintHandler = { [weak self] id, title in
             // `id` is the session (its id on its host).
-            guard let self, self.overlay.rows[id]?.title == nil else { return }
+            guard let self, self.overlay.rows[id].map({ Session(state: $0).ownTitle == nil }) ?? true else { return }
             self.titleHints[id] = title
         }
         // A resume failure uses this member's completed resolution. A newly
@@ -1395,7 +1401,9 @@ public final class AppModel: ObservableObject {
     func sessionTabTitle(_ tab: SessionTab) -> String {
         if let key = tab.sessionKey, let row = presentedByID[key],
            let title = row.state.customName ?? row.ownTitle { return title }
-        return tab.title
+        // Everywhere a tab is named (chips, ⌃⇥, notifications, the command
+        // line): a tab title that names nothing reads as the rows do.
+        return tab.agent.isPlaceholderTitle(tab.title, directory: tab.projectPath) ? Session.untitled : tab.title
     }
 
     // MARK: Remote hosts
@@ -1675,8 +1683,7 @@ public final class AppModel: ObservableObject {
     /// title plain, since the tab's band carries that question.
     public func tabDisplayTitle(_ tab: SessionTab) -> String {
         if let utility = tab.kind.utilityTitle { return utility }
-        var title = sessionTabTitle(tab)
-        if tab.agent.isPlaceholderTitle(title, directory: tab.projectPath) { title = Session.untitled }
+        let title = sessionTabTitle(tab)
         if tab.remote?.phase == .endedPending { return "\(title) (ended)" }
         if tab.remote != nil, tab.inputSubmitted { return title }
         return tab.isProvisional ? "\(title) (starting…)" : title
@@ -1685,7 +1692,7 @@ public final class AppModel: ObservableObject {
     public func projectName(_ key: ProjectKey) -> String { key.displayName }
 
     public func projectName(_ path: String) -> String {
-        path.isEmpty ? "—" : URL(fileURLWithPath: path).lastPathComponent
+        path.isEmpty ? "—" : (path as NSString).lastPathComponent
     }
 
     /// Projects for the sidebar (in-memory search over the cached non-noise

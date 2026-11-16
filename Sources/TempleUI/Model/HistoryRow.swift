@@ -251,7 +251,9 @@ final class HistoryRowBuilder {
             member = Session(state: state, resolution: attached.resolution)
         }
         let id = catalog.map(HistoryKey.init) ?? member.map(HistoryKey.init) ?? peer!.key
-        let title = member?.displayTitle ?? catalog?.catalogTitle ?? peer!.displayTitle
+        // A catalog row's placeholder reads as a member's does.
+        let catalogTitle = catalog.map { $0.agent.isPlaceholderTitle($0.catalogTitle, directory: $0.catalogDirectory) ? Session.untitled : $0.catalogTitle }
+        let title = member?.displayTitle ?? catalogTitle ?? peer!.displayTitle
         let updatedAt = catalog?.modifiedAt ?? member?.sortDate ?? peer?.lastActiveAt ?? .distantPast
         let undated = updatedAt == .distantPast
         let day = undated ? Date.distantPast : calendar.startOfDay(for: updatedAt)

@@ -1307,7 +1307,7 @@ public final class HistoryModel: ObservableObject {
     }
 
     static func projectName(_ path: String) -> String {
-        path.isEmpty ? "—" : URL(fileURLWithPath: path).lastPathComponent
+        path.isEmpty ? "—" : (path as NSString).lastPathComponent
     }
 
     /// The sheet's Import. Joins each as `.imported`, clears the selection,

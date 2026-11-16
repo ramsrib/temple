@@ -217,7 +217,9 @@ struct HistoryTabView: View {
     @ViewBuilder
     private var toolbar: some View {
         let hosted = !history.enabledHosts().isEmpty
-        if tier == .narrow {
+        // A host's page has the machine menu and wider tabs: under 1000 pt
+        // one row doesn't hold them (676 pt of controls in 644).
+        if tier == .narrow || (hosted && tier == .compact) {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
                     if hosted { pageMenu }
@@ -304,7 +306,10 @@ struct HistoryTabView: View {
                                                set: { history.pickScope($0) }),
                             options: [HistoryScope.all, .archived],
                             optionTitle: { [page = history.page] in $0.label(on: page) },
-                            width: history.page.host != nil ? 210 : 170)
+                            width: history.page.host != nil ? 210 : 170,
+                            // The lit tab clicked again: All drops In Temple or Not in
+                            // Temple, Archived the "Archived just now" chip.
+                            onReselect: { history.pickScope($0) })
     }
 
     /// Whose sessions the page shows: this Mac's (History as it always
@@ -969,7 +974,10 @@ private struct HistoryPageRow: View, Equatable {
             }
         }
         .onHover { rawHovering = $0 }
-        .help(session.rowTooltip)
+        // An archived row's tag is not drawn; what it said is here.
+        .help(session.isArchived && session.conditionTag != nil
+              ? [session.rowTooltip, session.tagTooltip ?? ""].filter { !$0.isEmpty }.joined(separator: "\n")
+              : session.rowTooltip)
         .contextMenu { contextMenu }
     }
 

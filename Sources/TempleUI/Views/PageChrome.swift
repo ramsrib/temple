@@ -154,6 +154,9 @@ struct FlatSegmentedPicker<Value: Hashable>: View {
     let options: [Value]
     let optionTitle: (Value) -> String
     var width: CGFloat? = nil
+    /// A click on the segment already lit. Nothing by default (see `select`);
+    /// History's All clears a filter that narrows it.
+    var onReselect: ((Value) -> Void)? = nil
 
     @Environment(\.colorScheme) private var colorScheme
 
@@ -161,7 +164,9 @@ struct FlatSegmentedPicker<Value: Hashable>: View {
         HStack(spacing: 2) {
             ForEach(options, id: \.self) { option in
                 let selected = option == selection
-                Button { Self.select(option, in: $selection) } label: {
+                Button {
+                    if selected, let onReselect { onReselect(option) } else { Self.select(option, in: $selection) }
+                } label: {
                     Text(optionTitle(option))
                         .font(.system(size: 12.5, weight: selected ? .medium : .regular))
                         .lineLimit(1)

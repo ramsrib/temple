@@ -33,7 +33,11 @@ public enum Agent: String, Codable, CaseIterable, Sendable {
     public func isPlaceholderTitle(_ title: String, directory: String?) -> Bool {
         if title == newSessionTitle { return true }
         guard let directory, !directory.isEmpty else { return false }
-        let folder = URL(fileURLWithPath: directory).lastPathComponent
+        // The path's text only. `URL(fileURLWithPath:)` asks the disk whether
+        // the path is a folder (an lstat), and this runs for every row on
+        // every redraw: it made each step of a switcher take hundreds of
+        // disk calls on the main thread.
+        let folder = (directory as NSString).lastPathComponent
         return title.caseInsensitiveCompare("\(binaryName): \(folder)") == .orderedSame
     }
 

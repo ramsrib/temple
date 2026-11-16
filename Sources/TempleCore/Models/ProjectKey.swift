@@ -10,6 +10,10 @@ public struct ProjectKey: Hashable, Codable, Sendable {
         self.path = path
     }
 
-    public var name: String { URL(fileURLWithPath: path).lastPathComponent }
+    /// The folder's name, from the path's text. Not `URL(fileURLWithPath:)`:
+    /// that asks the disk whether the path is a folder (an lstat), this is
+    /// read by every project heading and label on every redraw, and a
+    /// host's path is not on this Mac's disk to ask about.
+    public var name: String { (path as NSString).lastPathComponent }
     public var displayName: String { host.isLocal ? name : "\(name) @\(host.rawValue)" }
 }
