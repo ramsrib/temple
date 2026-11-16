@@ -11,6 +11,8 @@ struct SessionRow: View {
 
     @State private var renaming = false
     @State private var draftName = ""
+    /// What the rename field opened with: only a draft that differs is saved.
+    @State private var draftSeed = ""
     /// "Stop on <host>" for a working agent, waiting for its answer (S12).
     @State private var confirmingStop = false
     @State private var rawHovering = false
@@ -133,7 +135,7 @@ struct SessionRow: View {
             // shows, and saving "Untitled Session" (or the agent's title)
             // as typed would make it the session's name for good.
             Button("Save") {
-                if draftName != model.displayTitle(session) { model.renameSession(session.id, to: draftName) }
+                if draftName != draftSeed { model.renameSession(session.id, to: draftName) }
             }
             Button("Cancel", role: .cancel) {}
         }
@@ -188,6 +190,7 @@ struct SessionRow: View {
         Divider()
         Button("Rename session") {
             draftName = model.displayTitle(session)
+            draftSeed = draftName
             renaming = true
         }
         Button(isPinned ? "Unpin" : "Pin") { model.overlay.togglePin(session.id) }

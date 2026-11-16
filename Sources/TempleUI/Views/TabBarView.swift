@@ -518,6 +518,9 @@ private struct TabChip: View {
     @State private var closeHovering = false
     @State private var editing = false
     @State private var draft = ""
+    /// What the rename field opened with: only a draft that differs is saved,
+    /// whatever the agent retitles the tab to meanwhile.
+    @State private var draftSeed = ""
     @FocusState private var editFocused: Bool
 
     /// Every session chip is exactly this wide (browser-style). The title is
@@ -645,6 +648,7 @@ private struct TabChip: View {
     private func beginRename() {
         guard tab.kind == .session, !editing, tab.sessionID != nil else { return }
         draft = displayTitle
+        draftSeed = draft
         editing = true
         FieldFocus.claim { editFocused = true }
     }
@@ -652,7 +656,7 @@ private struct TabChip: View {
     private func commitRename() {
         guard editing, let key = tab.sessionKey else { return }
         // Only a changed draft is a rename (see SessionRow's Save).
-        if draft != displayTitle { model.renameSession(key, to: draft) }
+        if draft != draftSeed { model.renameSession(key, to: draft) }
         editing = false
         model.openSessions.focusActiveTerminal()
     }
