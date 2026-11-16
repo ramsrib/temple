@@ -296,6 +296,36 @@ final class SidebarOrderTests: XCTestCase {
         XCTAssertEqual(model.sidebarOptions.sessionSort, .recentActivity, "nothing was placed")
     }
 
+    /// The first drag makes the sort Custom, and only the dragged row
+    /// moves: the rows of the other group and of other projects stay as
+    /// they were shown (they fell back to activity order).
+    func testBecomingCustomKeepsEveryOtherRowWhereItWasShown() {
+        let model = makeModel(titled() + [
+            Fixture.row("y", project: "/p/z", title: "Yankee", updated: 20),
+            Fixture.row("x", project: "/p/z", title: "Xray", updated: 10),
+            Fixture.row("e", project: "/p/a", title: "Echo", updated: 5),
+            Fixture.row("d", project: "/p/a", title: "Delta", updated: 4),
+        ])
+        model.setSidebarSessionSort(.name)
+        open(model, "c")
+        open(model, "a")
+        pump()
+        XCTAssertEqual(ids(model, "/p/a"), ["a", "c", "b", "d", "e"])
+        XCTAssertEqual(ids(model, "/p/z"), ["x", "y"])
+        model.moveSession(SessionKey(id: "e", host: .local), before: SessionKey(id: "b", host: .local))
+        XCTAssertEqual(model.sidebarOptions.sessionSort, .custom)
+        XCTAssertEqual(ids(model, "/p/a"), ["a", "c", "e", "b", "d"], "the open rows kept their shown order")
+        XCTAssertEqual(ids(model, "/p/z"), ["x", "y"], "another project kept its shown order")
+    }
+
+    /// A row dropped where it already is writes nothing and keeps the sort.
+    func testADropInPlaceChangesNothing() {
+        let model = makeModel(rows())
+        model.moveSession(SessionKey(id: "a1", host: .local), before: SessionKey(id: "a2", host: .local))
+        XCTAssertEqual(ids(model, "/p/a"), ["a1", "a2", "a3"])
+        XCTAssertEqual(model.sidebarOptions.sessionSort, .recentActivity)
+    }
+
     /// Where a dragged row lands: rounded to the nearest slot, clamped to
     /// its group; the row stays under the pointer inside the group's span.
     func testReorderMathFollowsThePointerAndStaysInTheGroup() {

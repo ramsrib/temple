@@ -89,6 +89,10 @@ struct HostsManagerSheet: View {
             }
         }
         .onChange(of: selected?.name) { endSessions() }
+        // The host was edited: its listing was asked of the old connection.
+        .onChange(of: model.hostsManagerSessions?.id) { _, id in
+            if id == nil, sessions != nil { endSessions() }
+        }
         .onDisappear { endSessions() }
         .alert(removal.map { RemoteCopy.removalTitle($0.live.count, host: $0.name) } ?? "",
                isPresented: Binding(get: { removal != nil }, set: { if !$0 { removal = nil } }),

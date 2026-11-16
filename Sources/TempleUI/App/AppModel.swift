@@ -216,11 +216,25 @@ public final class AppModel: ObservableObject {
         let group = sidebarOpenGroup()
         let open = group.isOpen(id)
         guard group.isOpen(target) == open else { return }
-        var ids = shown.sessions.filter { group.isOpen($0.id) == open }.map(\.sessionID)
+        let shownGroup = shown.sessions.filter { group.isOpen($0.id) == open }.map(\.sessionID)
+        var ids = shownGroup
         guard let from = ids.firstIndex(of: id.id) else { return }
         ids.remove(at: from)
         guard let to = ids.firstIndex(of: target.id).map(slot) else { return }
         ids.insert(id.id, at: min(to, ids.count))
+        // Already there: nothing is written and the sort stays.
+        guard ids != shownGroup else { return }
+        if sidebarOptions.sessionSort != .custom {
+            // Becoming Custom: what is on screen becomes the order for
+            // every project and both groups, so the one row dragged is the
+            // only thing that moves (a group never seeded fell back to its
+            // old custom order, or to activity).
+            for other in sidebarProjects(matching: "", includeClosed: true) {
+                let openIDs = other.sessions.filter { group.isOpen($0.id) }.map(\.sessionID)
+                let closedIDs = other.sessions.filter { !group.isOpen($0.id) }.map(\.sessionID)
+                sessionOrder[other.key] = Self.merge(visibleOrder: openIDs + closedIDs, into: sessionOrder[other.key] ?? [])
+            }
+        }
         // Sessions the list doesn't show now (archived) keep their slots.
         sessionOrder[project] = Self.merge(visibleOrder: ids, into: sessionOrder[project] ?? [])
         saveSessionOrder()
@@ -1405,6 +1419,8 @@ public final class AppModel: ObservableObject {
             // any sheet asked for it (no remote UI without an enabled host).
             dropRemoteNotices(host: host)
             if remoteSessionsSheet?.host == host { remoteSessionsSheet = nil }
+            // The manager's inline listing was asked of the old connection.
+            if hostsManagerSessions?.host == host { endRunningSessionsInManager() }
             if remoteFolderSheet?.host == host { remoteFolderSheet = nil }
             if openByIDSheet?.host == host { openByIDSheet = nil }
             // What History read from it is not the host any more.

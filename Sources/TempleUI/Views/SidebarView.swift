@@ -912,6 +912,12 @@ private struct ProjectDisclosure: View {
             }
         }
         .clipped()
+        // A drag in hand when the app goes inactive or this project leaves
+        // the list ends there, saving nothing.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            endReorder()
+        }
+        .onDisappear { endReorder() }
         // Dev-only (WindowSnapshot): fold/unfold the first project so the
         // animation can be captured frame by frame without a click. Only the
         // first disclosure of a snapshot run subscribes; every other one gets
@@ -1021,7 +1027,7 @@ private struct ProjectDisclosure: View {
         var cancelled = false
     }
     @State private var reorder: Reorder?
-    @State private var reorderEscape: Any?
+    @State private var reorderWatch: Any?
 
     /// The rows of one group, in the drag's proposed order while one of them
     /// is in hand.
@@ -1040,21 +1046,13 @@ private struct ProjectDisclosure: View {
                     let ids = group.map(\.id)
                     reorder = Reorder(id: session.id, original: ids, proposed: ids, offset: 0)
                     model.sessionReorderActive = true
-                    watchEscape()
+                    watchReorder()
                 }
-                guard var current = reorder, current.id == session.id, !current.cancelled,
-                      let from = current.original.firstIndex(of: session.id) else { return }
-                let to = SessionReorderMath.slot(from: from, count: current.original.count,
-                                                 translation: value.translation.height, rowHeight: Self.rowHeight)
-                var proposed = current.original
-                proposed.remove(at: from)
-                proposed.insert(session.id, at: to)
-                current.proposed = proposed
-                current.offset = SessionReorderMath.offset(from: from, to: to, count: current.original.count,
-                                                           translation: value.translation.height, rowHeight: Self.rowHeight)
-                reorder = current
+                propose(session, group: group, value)
             }
-            .onEnded { _ in
+            .onEnded { value in
+                // From where it was let go, not the last move seen.
+                propose(session, group: group, value)
                 guard let done = reorder, done.id == session.id else { return }
                 if !done.cancelled, done.proposed != done.original,
                    let at = done.proposed.firstIndex(of: done.id) {
@@ -1070,19 +1068,67 @@ private struct ProjectDisclosure: View {
             }
     }
 
-    /// The row settles into its slot; the gesture's watchers go.
-    private func endReorder() {
-        withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) { reorder = nil }
-        model.sessionReorderActive = false
-        if let monitor = reorderEscape { NSEvent.removeMonitor(monitor) }
-        reorderEscape = nil
+    /// Where the row in hand would land for this pointer position. Off the
+    /// sidebar sideways it would land nowhere: the row goes back, and a
+    /// release there changes nothing (it comes out again if the pointer
+    /// returns). A group that changed under the drag (a session opened,
+    /// closed or archived) ends it: the slots it was counting are gone.
+    private func propose(_ session: Session, group: [Session], _ value: DragGesture.Value) {
+        guard var current = reorder, current.id == session.id, !current.cancelled,
+              let from = current.original.firstIndex(of: session.id) else { return }
+        guard Set(group.map(\.id)) == Set(current.original) else {
+            current.cancelled = true
+            current.proposed = current.original
+            current.offset = 0
+            reorder = current
+            return
+        }
+        guard abs(value.translation.width) <= Self.reorderReach else {
+            current.proposed = current.original
+            current.offset = 0
+            withAnimation(.easeInOut(duration: 0.16)) { reorder = current }
+            return
+        }
+        let to = SessionReorderMath.slot(from: from, count: current.original.count,
+                                         translation: value.translation.height, rowHeight: Self.rowHeight)
+        var proposed = current.original
+        proposed.remove(at: from)
+        proposed.insert(session.id, at: to)
+        current.proposed = proposed
+        current.offset = SessionReorderMath.offset(from: from, to: to, count: current.original.count,
+                                                   translation: value.translation.height, rowHeight: Self.rowHeight)
+        reorder = current
     }
 
-    /// Escape puts the row back, for this gesture only; the key still goes
-    /// on to whatever has focus once nothing is in hand.
-    private func watchEscape() {
-        if let monitor = reorderEscape { NSEvent.removeMonitor(monitor) }
-        reorderEscape = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
+    /// How far sideways the pointer can stray and still be reordering: past
+    /// it the pointer is off the list or well on its way (the sidebar is
+    /// 240 to 360 pt wide).
+    static let reorderReach: CGFloat = 160
+
+    /// The row settles into its slot; the gesture's watchers go. Safe to
+    /// call twice: every way a drag can end comes here.
+    private func endReorder() {
+        if reorder != nil {
+            withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) { reorder = nil }
+            model.sessionReorderActive = false
+        }
+        if let monitor = reorderWatch { NSEvent.removeMonitor(monitor) }
+        reorderWatch = nil
+    }
+
+    /// For this gesture only. Escape puts the row back (the key still goes
+    /// on to whatever has focus once nothing is in hand). And a gesture the
+    /// system cancels never reaches onEnded (the tab strip's lesson): the
+    /// row would stay lifted, the sidebar's order held and Escape swallowed
+    /// for good. Every drag ends with a mouse-up here or the app going
+    /// inactive, so both end whatever onEnded didn't, saving nothing.
+    private func watchReorder() {
+        if let monitor = reorderWatch { NSEvent.removeMonitor(monitor) }
+        reorderWatch = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .leftMouseUp]) { event in
+            if event.type == .leftMouseUp {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { endReorder() }
+                return event
+            }
             guard event.keyCode == 53, reorder != nil else { return event }
             reorder?.cancelled = true
             reorder?.proposed = reorder?.original ?? []

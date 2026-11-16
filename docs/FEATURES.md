@@ -91,7 +91,7 @@ open tabs; any other session returns the next time it is opened
   from its transcript) or **Custom** (drag a session up or down: the row
   lifts and follows the pointer, the others slide aside to open its place,
   and it settles there on release; open sessions move among the open ones
-  and closed among the closed, and the tabs keep their order; Escape puts it
+  and closed among the closed, and the tabs keep their order; Escape, or letting go off the sidebar, puts it
   back; sessions you never placed
   stay on top, newest first). **Hide Closed Sessions** hides closed
   sessions and projects with nothing open (a search still finds
