@@ -915,7 +915,9 @@ private struct HistoryPageRow: View, Equatable {
                         // outside row: the state reads before the tag does.
                         .foregroundStyle(inTemple && !session.transcriptMissing
                                          ? Color.primary : Color.primary.opacity(0.72))
-                    if let tag = session.conditionTag {
+                    // Not on an archived row: there the tag was on every
+                    // line, and the row's tooltip and Restore say the same.
+                    if let tag = session.conditionTag, !session.isArchived {
                         Text(tag.label)
                             .font(.system(size: 11))
                             // Secondary, a step down: tertiary was too faint in dark.
@@ -941,13 +943,10 @@ private struct HistoryPageRow: View, Equatable {
                                 .help("Archived in Temple on \(peer.host.displayName). That doesn't change anything here.")
                         }
                     }
-                    if let activity = inputs.activity {
-                        ActivityDot(state: activity)
-                    }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 if let metaWidth {
-                    meta.frame(width: metaWidth, alignment: .leading)
+                    meta.frame(width: metaWidth, alignment: .trailing)
                 }
             }
             .contentShape(Rectangle())
@@ -957,7 +956,7 @@ private struct HistoryPageRow: View, Equatable {
             }
             .simultaneousGesture(TapGesture(count: 2).onEnded { history.primaryAction(session, undoManager: undoManager) })
             status(lit: inputs.selected || hovering)
-                .frame(width: 84, alignment: .trailing)
+                .frame(width: 56, alignment: .trailing)
         }
         .padding(.horizontal, HistoryTabView.rowInset)
         .frame(height: HistoryTabView.rowHeight)
@@ -974,17 +973,13 @@ private struct HistoryPageRow: View, Equatable {
         .contextMenu { contextMenu }
     }
 
+    /// Where the session lives, at the right as in ⌘K and ⌃⇥. The branch
+    /// went (design audit, 2026-11): a fourth gray on the line, and not
+    /// what a session is looked up by.
     private var meta: some View {
-        HStack(spacing: 0) {
-            Text(session.projectName)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            if let branch = session.gitBranch, !branch.isEmpty {
-                Text(" · \(branch)")
-                    .font(.system(size: 10.5, design: .monospaced))
-                    .foregroundStyle(.tertiary)
-            }
-        }
+        Text(session.projectName)
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
         .lineLimit(1)
         .truncationMode(.tail)
         // A fixed width (`metaWidth`), not frame(maxWidth:) and not a layout
@@ -1012,8 +1007,12 @@ private struct HistoryPageRow: View, Equatable {
         case .inTemple:
             // The ordinary case carries no mark (design audit, 2026-11): on
             // nearly every row it said nothing. Only the exceptions end in
-            // something: Restore, Import, the faint mark of a conflict.
-            EmptyView()
+            // something: Restore, Import, the faint mark of a conflict. A
+            // session open in a tab ends in its state, at the row's right
+            // edge as in the sidebar (it sat mid-row, after the title).
+            if let activity = inputs.activity {
+                ActivityDot(state: activity)
+            }
         case .conflict(let conflict):
             // Its id is Temple's on another host or as another agent: shown
             // as the catalog has it, and not importable from here. The mark,
