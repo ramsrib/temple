@@ -890,6 +890,9 @@ private struct ProjectDisclosure: View {
         model.projectDropSlot?.key == project.key ? model.projectDropSlot?.edge : nil
     }
     @State private var headerHeight: CGFloat = 22
+    /// The rows' width, for a dragged session's chip: the row's own size,
+    /// so picking one up doesn't jump.
+    @State private var rowsWidth: CGFloat = 240
 
     private func hasFooterRow(hidden: Int) -> Bool { hidden > 0 || extra > 0 }
 
@@ -911,6 +914,10 @@ private struct ProjectDisclosure: View {
                 rows
             }
         }
+        .background(GeometryReader { geo in
+            Color.clear.onAppear { rowsWidth = geo.size.width }
+                .onChange(of: geo.size.width) { _, width in rowsWidth = width }
+        })
         .clipped()
         // Dev-only (WindowSnapshot): fold/unfold the first project so the
         // animation can be captured frame by frame without a click. Only the
@@ -962,10 +969,11 @@ private struct ProjectDisclosure: View {
                 .opacity(inHand ? 0.4 : 1)
                 .transition(.opacity)
                 // A session dropped here goes last among the closed ones.
-                .onDrop(of: [Self.dragType, Self.sessionDragType],
+                .onDrop(of: [Self.dragType],
                         delegate: RowDropDelegate(model: model, project: dropDelegate(row: "footer", edge: .bottom),
                                                   session: layout.closed.last.map {
-                                                      SessionDropDelegate(model: model, target: $0.id, fixedEdge: .bottom)
+                                                      SessionDropDelegate(model: model, target: $0.id, targetProject: project.key,
+                                                                          fixedEdge: .bottom)
                                                   }))
                 .overlay(alignment: .bottom) {
                     if dropIndicator == .bottom { dropLine }
@@ -983,14 +991,14 @@ private struct ProjectDisclosure: View {
         // above or below it; on an open row (they follow their tabs), first
         // among the closed ones.
         let sessionDrop: SessionDropDelegate? = draggable
-            ? SessionDropDelegate(model: model, target: session.id)
-            : firstClosed.map { SessionDropDelegate(model: model, target: $0, fixedEdge: .top) }
+            ? SessionDropDelegate(model: model, target: session.id, targetProject: project.key)
+            : firstClosed.map { SessionDropDelegate(model: model, target: $0, targetProject: project.key, fixedEdge: .top) }
         let base = SessionRow(session: session)
             .padding(.leading, Self.childInset)
             .background(Color.clear.id(SidebarView.rowScrollID(session.id)))
             .opacity(inHand || model.draggedSession == session.id ? 0.4 : 1)
             .transition(.opacity)
-            .onDrop(of: [Self.dragType, Self.sessionDragType],
+            .onDrop(of: [Self.dragType],
                     delegate: RowDropDelegate(model: model, project: dropDelegate(row: session.sessionID, edge: .bottom),
                                               session: sessionDrop))
             .overlay(alignment: .bottom) {
@@ -998,7 +1006,7 @@ private struct ProjectDisclosure: View {
             }
         if draggable {
             base
-                .onDrag {
+                .onDrag({
                     model.beginSessionDrag(session.id)
                     let provider = NSItemProvider()
                     provider.registerDataRepresentation(forTypeIdentifier: Self.sessionDragType.identifier,
@@ -1007,7 +1015,28 @@ private struct ProjectDisclosure: View {
                         return nil
                     }
                     return provider
-                }
+                }, preview: {
+                    // The row itself, lifted: same size, same columns, on a
+                    // solid card. The default preview was the row's text,
+                    // translucent ("dragging text, not a session"), and a
+                    // smaller chip jumped as it appeared (owner, round 3).
+                    HStack(spacing: 8) {
+                        if let agent = session.agent { AgentBadge(agent: agent, size: 13) }
+                        Text(model.displayTitle(session))
+                            .font(.system(size: 13))
+                            .foregroundStyle(.primary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 4)
+                        Text(RelativeTime.compact(from: session.sortDate))
+                            .font(.system(size: 11).monospacedDigit())
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, 10)
+                    .frame(width: max(120, rowsWidth - Self.childInset), height: 32)
+                    .background(Palette.panelBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
+                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Palette.hairline))
+                })
                 .overlay(alignment: model.sessionDropSlot?.edge == .top ? .top : .bottom) {
                     if model.sessionDropSlot?.target == session.id { dropLine }
                 }
@@ -1021,8 +1050,14 @@ private struct ProjectDisclosure: View {
     /// The drag payload is a private, in-process type — never plain text — so a
     /// drop that misses the rail cannot paste a path into a live terminal.
     static let dragType = UTType(exportedAs: "com.sriramb.temple.project-order")
-    /// A session row in hand, to reorder within its project; in-process only.
-    static let sessionDragType = UTType(exportedAs: "com.sriramb.temple.session-order")
+    /// A session row in hand, to reorder within its project: the same
+    /// private type. A drop target only sees a drag whose type macOS knows,
+    /// and it knows a type from an installed app's Info.plist; a type of
+    /// its own reached no row in the demo, or in any copy of Temple that
+    /// didn't declare it (owner, round 3: "no drop targets"). Which drag is
+    /// in hand is the model's (`draggedSession`, `draggedProjectKey`), and
+    /// each delegate refuses the other's.
+    static let sessionDragType = dragType
     /// The gap above a heading, inside its hit shape and drop target.
     static let headerGap: CGFloat = 12
 
@@ -1518,13 +1553,28 @@ private struct RowDropDelegate: DropDelegate {
         if sessionDrag { session?.dropExited(info: info) } else { project.dropExited(info: info) }
     }
     func performDrop(info: DropInfo) -> Bool {
-        sessionDrag ? (session?.performDrop(info: info) ?? false) : project.performDrop(info: info)
+        let isSession = sessionDrag
+        let ok = isSession ? (session?.performDrop(info: info) ?? false) : project.performDrop(info: info)
+        DragDebug.log("perform \(isSession ? "session" : "project") -> \(ok)")
+        return ok
+    }
+}
+
+/// `TEMPLE_DEBUG_DRAG=1`: the sidebar's drop steps on stderr, to see where a
+/// drag that a person makes stops (a drop can't be driven in-process).
+enum DragDebug {
+    static let on = ProcessInfo.processInfo.environment["TEMPLE_DEBUG_DRAG"] == "1"
+    static func log(_ line: @autoclosure () -> String) {
+        guard on else { return }
+        FileHandle.standardError.write(Data("[drag] \(line())\n".utf8))
     }
 }
 
 private struct SessionDropDelegate: DropDelegate {
     let model: AppModel
     let target: SessionKey
+    /// The project the target row is in (its disclosure's).
+    let targetProject: ProjectKey
     /// Where a drop lands whatever half of the row it is over: the footer
     /// puts a session last, an open row first among the closed ones.
     var fixedEdge: Edge?
@@ -1533,8 +1583,7 @@ private struct SessionDropDelegate: DropDelegate {
 
     private var sameProject: Bool {
         guard let dragged = model.draggedSession, dragged != target else { return false }
-        let rows = model.sessions
-        return rows.first { $0.id == dragged }?.project == rows.first { $0.id == target }?.project
+        return model.draggedSessionProject == targetProject
     }
 
     func validateDrop(info: DropInfo) -> Bool {

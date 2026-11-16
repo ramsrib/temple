@@ -225,12 +225,18 @@ public final class AppModel: ObservableObject {
 
     /// The session a row is being dragged for, from grab to drop.
     @Published public private(set) var draggedSession: SessionKey?
+    /// The dragged session's project, looked up once when the drag begins:
+    /// every row the pointer crosses asks whether it is in the same project,
+    /// many times a second (a scan of every session per ask made the drag
+    /// lag, owner round 3).
+    private(set) var draggedSessionProject: ProjectKey?
     private var sessionDragWatch: Timer?
     /// As a project drag: watched from the source side, so a drag released
     /// over the terminal or cancelled with Escape still ends it.
     public func beginSessionDrag(_ id: SessionKey) {
         endSessionDrag()
         draggedSession = id
+        draggedSessionProject = presentedByID[id]?.project
         let watch = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
                 guard let self, NSEvent.pressedMouseButtons == 0 else { return }
@@ -250,6 +256,7 @@ public final class AppModel: ObservableObject {
         sessionDragWatch?.invalidate()
         sessionDragWatch = nil
         draggedSession = nil
+        draggedSessionProject = nil
         if sessionDropSlot != nil { sessionDropSlot = nil }
         if sidebarRefreshPending, !sidebarPointerInside { requestSidebarRefresh() }
     }
