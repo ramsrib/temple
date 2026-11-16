@@ -1456,7 +1456,7 @@ struct SidebarViewOptionsMenu: View {
             }
             .pickerStyle(.inline)
             Divider()
-            Toggle("Show Only Sessions Open in Tabs", isOn: Binding(
+            Toggle("Hide Closed Sessions", isOn: Binding(
                 get: { model.sidebarOptions.openOnly }, set: { model.setSidebarOpenOnly($0) }))
             // Hosts are remote UI: with no host enabled there is one
             // machine and nothing to group (ADR-036).

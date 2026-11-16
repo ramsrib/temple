@@ -88,7 +88,7 @@ open tabs; any other session returns the next time it is opened
   **Recent Activity**, **Name**, **Date Started** (when the session began,
   from its transcript) or **Custom** (drag a closed session onto another in
   the same project to put it above or below; sessions you never placed
-  stay on top, newest first). **Show Only Sessions Open in Tabs** hides closed
+  stay on top, newest first). **Hide Closed Sessions** hides closed
   sessions and projects with nothing open (a search still finds
   everything). With a host enabled, **Group by Host** (on unless you turn
   it off; it shows once a project is on a host) puts each machine

@@ -89,6 +89,8 @@ public struct RootView: View {
                 // Keys pressed in Settings' fields, delivered in-process, to
                 // prove the page's own key handling fires (SettingsKeysProbe).
                 case "settings-keys": SettingsKeysProbe.run(model: model)
+                // A press-and-drag on a sidebar session row, in-process.
+                case "drag-session": SessionDragProbe.run(model: model)
                 case "archived": model.showArchived()
                 case "shortcuts": if !model.shortcutsPresented { model.toggleShortcuts() }
                 // The hold-a-key switchers, held: no ⌃ or ⌘ release arrives,
