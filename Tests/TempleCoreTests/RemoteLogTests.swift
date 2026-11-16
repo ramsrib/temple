@@ -27,6 +27,29 @@ final class RemoteLogTests: XCTestCase {
         }
     }
 
+    /// ssh's first stderr line can be a failing ProxyCommand's, and that
+    /// can carry a credential: a URL's password or query, a token.
+    func testCredentialsInAnErrorAreCut() {
+        let cases = [
+            ("proxy: GET https://jane:hunter2@proxy.example.com/connect failed",
+             "proxy: GET https://<redacted>@proxy.example.com/connect failed"),
+            ("proxy: https://gw.example.com/tunnel?token=abc123&host=box refused",
+             "proxy: https://gw.example.com/tunnel?<redacted> refused"),
+            ("401 Unauthorized (Authorization: Bearer eyJhbGciOi.x-y_z)", "401 Unauthorized (Authorization: Bearer <redacted>)"),
+            ("cloudflared: TUNNEL_TOKEN=sekrit not accepted", "cloudflared: TUNNEL_TOKEN=<redacted> not accepted"),
+            ("helper --api-key sk-12345 exited 1", "helper --api-key <redacted> exited 1"),
+            ("api_key: sk-12345", "api_key: <redacted>"),
+            ("helper: TOKEN='sekrit' rejected", "helper: TOKEN=<redacted> rejected"),
+            ("helper --password \"two words\" exited 1", "helper --password <redacted> exited 1"),
+            ("{\"api_key\":\"sekrit\",\"host\":\"box\"}", "{\"api_key\":<redacted>,\"host\":\"box\"}"),
+        ]
+        for (text, expected) in cases { XCTAssertEqual(RemoteLog.redacted(text), expected) }
+        for text in ["Too many authentication failures", "Permission denied (publickey,password).",
+                     "box h1: reattach failed (2 in a row): connection refused", "Host key verification failed."] {
+            XCTAssertEqual(RemoteLog.redacted(text), text)
+        }
+    }
+
     func testTheFileGetsRedactedLines() throws {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("remote-log-\(UUID().uuidString).log")
         defer { try? FileManager.default.removeItem(at: url); RemoteLog.fileURL = nil }

@@ -52,12 +52,38 @@ public enum RemoteLog {
         // the general pattern below stops at a space.
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         if !home.isEmpty, home != "/" { text = text.replacingOccurrences(of: home, with: "~") }
+        // Secrets first, while the URLs and assignments that carry them are
+        // whole: ssh's first stderr line can be a failing ProxyCommand's,
+        // naming a URL with a password or a token in it.
+        for (pattern, template) in secrets {
+            let range = NSRange(text.startIndex..., in: text)
+            text = pattern.stringByReplacingMatches(in: text, range: range, withTemplate: template)
+        }
         for pattern in [quotedPath, barePath] {
             let range = NSRange(text.startIndex..., in: text)
             text = pattern.stringByReplacingMatches(in: text, range: range, withTemplate: "<path>")
         }
         return text
     }
+
+    /// What can carry a credential in an error's words: a URL's user and
+    /// password, a URL's query, a `Bearer` token, and a value assigned to a
+    /// name that says it is one (`token=`, `api_key: `, `--password `).
+    /// Best effort, as any pattern is; the host and handle never match.
+    private static let secrets: [(NSRegularExpression, String)] = [
+        (try! NSRegularExpression(pattern: #"([A-Za-z][A-Za-z0-9+.-]*://)[^\s/@'"]+@"#), "$1<redacted>@"),
+        (try! NSRegularExpression(pattern: #"([A-Za-z][A-Za-z0-9+.-]*://[^\s?'"]*)\?[^\s'"]*"#), "$1?<redacted>"),
+        (try! NSRegularExpression(pattern: #"(?i)\b(bearer|basic)\s+[A-Za-z0-9._~+/=-]+"#), "$1 <redacted>"),
+        // `name=value`, `name: value`, JSON's `"name": "value"`, and a
+        // command line's `--name value`, the value bare or quoted; never a
+        // plain word after the name ("authentication failed" stays).
+        (try! NSRegularExpression(
+            pattern: #"(?i)\b([\w-]*(?:token|secret|passw(?:or)?d|api[_-]?key|access[_-]?key|auth|credential|signature)[\w-]*['"]?)(\s*[=:]\s*)(?!<redacted>|(?:bearer|basic)\s)(?:"[^"]*"|'[^']*'|[^\s'",;}]+)"#),
+         "$1$2<redacted>"),
+        (try! NSRegularExpression(
+            pattern: #"(?i)(--[\w-]*(?:token|secret|passw(?:or)?d|api[_-]?key|access[_-]?key|auth|credential|signature)[\w-]*)(\s+)(?!-)(?:"[^"]*"|'[^']*'|[^\s'",;]+)"#),
+         "$1$2<redacted>"),
+    ]
 
     /// A quoted path, spaces included: `'/Users/Jane Doe/.ssh/id'`,
     /// `"~/My Keys/id"`. The quotes stay; what is inside goes.

@@ -3514,3 +3514,24 @@ holes, all fixed:
 client exit with ssh's own status, each verdict, reattach, recheck,
 give-up and refused result, by host and handle: never terminal contents,
 commands or credentials.
+
+astra's shape review and sol's final review added:
+
+- **Every route that reserved a run keeps it.** The failure carries the
+  run's handle and the attachment reserved (`AttachPreparationFailed` →
+  `RemoteReattachFailure`), so an ordinary open or a restored tab that found
+  the session live and failed attaching stays bound to it, not only a
+  reattach. An attach whose local terminal fails to start leaves the run
+  alone and shows Disconnected.
+- **The schedule is spent by checks, not by failures.** `recheckSpent`
+  counts admitted recheck verdicts; a failed attach continues from there,
+  so recovery stays within `recheckDelays` (about half an hour) however
+  many attaches fail on the way. A wake or network change starts it over.
+- **A tab that never attached this launch** (a restored pending chip,
+  attachment 0) is checked under the run's current count, or every
+  verdict would be refused as another client's.
+- **A pending run that is gone** (`reservePending` → `.gone`) is refused as
+  before (`RemoteRunNotTracked`), never kept and rechecked.
+- **Redaction** also cuts URL user info and queries, Bearer/Basic tokens and
+  values assigned to secret-looking names: ssh's first stderr line can be a
+  failing ProxyCommand's.

@@ -405,6 +405,11 @@ public struct RemoteTabState: Equatable {
     /// last left off, so a host that keeps answering "present" while
     /// every attach fails is not retried at the first delay forever.
     var preparationFailures = 0
+    /// How many checks of the recheck schedule this run of failures has
+    /// spent: a failed attach takes the schedule up from here, so
+    /// recovery stays bounded by the schedule (about half an hour) however
+    /// many attaches fail on the way. A wake or network change starts it over.
+    var recheckSpent = 0
     /// The owned schedule asking the host again while it cannot tell.
     var recheckOperation: UUID?
 
@@ -469,13 +474,17 @@ public enum RemoteCopy {
     /// Reconnecting to a run that is still tracked failed on the way (the
     /// connection half-down after a sleep, a staging step refused): the
     /// tab stays bound to the run, and Temple tries again.
-    /// Says when to wait and when to act: Temple's checks run for about
-    /// half an hour (`recheckDelays`), Reconnect tries at once. The detail
+    /// Says when to wait and when to act: Temple checks on a schedule
+    /// (`recheckDelays`, about half an hour, a number the owner asked to
+    /// keep out of the band), wake and network changes start it again, the
+    /// band's Reconnect Now tries at once (cold read, 2026-11-16: "the last
+    /// try" read as either reconnecting or checking, and nothing said what
+    /// happens after the half hour). The detail
     /// is an error's own sentence, set in lower case inside the parentheses.
     public static func reconnectFailed(_ detail: String) -> String {
         var text = trimmed(detail)
         if let first = text.first, text.dropFirst().first?.isLowercase ?? true { text = first.lowercased() + text.dropFirst() }
-        return "the last try failed (\(text)). Temple keeps trying for about half an hour; Reconnect tries now"
+        return "reconnecting failed (\(text)). Temple tries again on its own, and whenever the Mac wakes or the network comes back"
     }
 
     public static func cannotEnter(_ directory: String, host: String) -> String {
@@ -488,6 +497,9 @@ public enum RemoteCopy {
         "Stops only this tab's connection attempt. An agent that already started on the host keeps running."
 
     /// B3's answers: each opens a confirmation first.
+    /// The Unknown band's button: Temple may be retrying on its own
+    /// meanwhile, so the label says this one is now (owner, 2026-11-16).
+    public static let reconnectNowButton = "Reconnect Now"
     public static let resumeAnywayButton = "Resume anyway\u{2026}"
     public static let startNewPendingButton = "Start a new session\u{2026}"
 
@@ -1168,5 +1180,13 @@ public struct RemoteReattachFailure: Error, LocalizedError {
     public init(handle: String, attachment: Int, message: String) {
         self.handle = handle; self.attachment = attachment; self.message = message
     }
+    public var errorDescription: String? { message }
+}
+
+/// A pending run's reopen that found no run (dismissed, no longer tracked):
+/// a refusal with nothing to retry, never kept as a failed attach.
+public struct RemoteRunNotTracked: Error, LocalizedError {
+    public let message: String
+    public init(message: String) { self.message = message }
     public var errorDescription: String? { message }
 }

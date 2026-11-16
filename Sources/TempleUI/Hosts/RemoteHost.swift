@@ -297,6 +297,8 @@ final class RemoteHostLauncher: RemoteSessionHost {
             outcome = try await sessions.openPending(handle: handle, directory: directory, extraArguments: extraArgs(.codex))
         } catch let failure as AttachPreparationFailed {
             throw RemoteReattachFailure(handle: failure.handle, attachment: failure.attachment, message: failure.localizedDescription)
+        } catch let gone as PendingRunGone {
+            throw RemoteRunNotTracked(message: gone.localizedDescription)
         }
         await refreshLiveSessions()
         switch outcome {

@@ -1336,7 +1336,7 @@ public final class RemoteSessions {
         }
         switch reservation {
         case .gone:
-            throw OpenError.refused("Temple no longer tracks this session on \(record.name).")
+            throw PendingRunGone(host: record.name)
         case .identified(let id):
             return .identified(handle: handle, sessionID: id)
         case .ended:
@@ -1598,4 +1598,11 @@ public struct AttachPreparationFailed: Error, LocalizedError {
     public let attachment: Int
     public let underlying: any Error
     public var errorDescription: String? { underlying.localizedDescription }
+}
+
+/// A pending run's reopen found no run to reopen (dismissed, or no longer
+/// tracked): unlike a failed attach, nothing is left to retry.
+public struct PendingRunGone: Error, LocalizedError {
+    public let host: String
+    public var errorDescription: String? { "Temple no longer tracks this session on \(host)." }
 }

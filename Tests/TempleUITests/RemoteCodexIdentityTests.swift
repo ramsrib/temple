@@ -105,6 +105,63 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(joins.map(\.via), [.created], "the join, and no person's open")
     }
 
+    /// After a sleep, Temple's own reattach of a pending run can fail on the
+    /// way (the connection half-down): the tab keeps its run, can't tell,
+    /// and is back in it once the host answers again.
+    func testAPendingTabWhoseReattachFailsKeepsItsRunAndRecovers() async throws {
+        let tab = await newCodex()
+        try await Task.sleep(for: .milliseconds(400))
+        model.remoteTabs.recheckDelays = [0.05, 0.05, 0.05]
+        remote.openError = HostLaunchError.preparation("ssh: connect to host box port 22: Network is unreachable")
+        remote.liveness = .present
+        remote.clientExitStatus = 255
+        (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 0)
+        await settle({ if case .unknown = tab.remote?.phase { return true }; return false }(), "the failed reattach can't tell")
+        XCTAssertEqual(tab.remote?.handle, "p1", "the run stays the tab's")
+        XCTAssertEqual(tab.remote?.connectionFailed, true, "eligible for wake and network-change recovery")
+        remote.openError = nil
+        await settle(tab.hasLiveProcess, "a recheck finds the run and reattaches")
+        XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "attach", "p1"])
+        XCTAssertNil(tab.sessionID)
+    }
+
+    /// A restored pending chip has never attached this launch (attachment
+    /// 0): if its first reopen fails before reserving, its checks go under
+    /// the run's own count, so the host's "present" is this tab's and it
+    /// reattaches on its own (sol, final review).
+    func testARestoredPendingChipWhoseFirstReopenFailsRecoversOnItsOwn() async throws {
+        remote.pending = [.init(handle: "p7", directory: "/home/u/project", attachment: 3)]
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.count == 1)
+        let chip = try XCTUnwrap(model.tabs.first { $0.remote?.handle == "p7" })
+        model.remoteTabs.recheckDelays = [0.05, 0.05, 0.05]
+        remote.openError = HostLaunchError.preparation("ssh: connect to host box port 22: Network is unreachable")
+        remote.liveness = .present
+        model.activate(chip)
+        await settle({ if case .unknown = chip.remote?.phase { return true }; return false }(), "the failed reopen can't tell")
+        XCTAssertEqual(chip.remote?.attachment, 3, "the run's own count")
+        remote.openError = nil
+        await settle(chip.hasLiveProcess, "a recheck's present is admitted and the chip reattaches")
+        XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "attach", "p7"])
+    }
+
+    /// A pending run that is gone (dismissed elsewhere) has nothing to
+    /// retry: its reopen is refused, as before, and nothing is rechecked.
+    func testAPendingRunThatIsGoneIsRefusedNotRetried() async throws {
+        let tab = await newCodex()
+        try await Task.sleep(for: .milliseconds(400))
+        model.remoteTabs.recheckDelays = [0.02, 0.02, 0.02]
+        remote.pending[0].dismissed = true
+        remote.liveness = .present
+        remote.clientExitStatus = 255
+        (tab.surface as? FakeTerminalSurface)?.simulateExit(status: 0)
+        await settle(tab.launchPreparationError != nil, "the reopen is refused")
+        XCTAssertNil(tab.remote)
+        let checks = remote.exitChecks
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertEqual(remote.exitChecks, checks, "no recheck of a run that is gone")
+    }
+
     func testAPendingTabKeepsItsTitleThroughTmuxsEmptyOne() async throws {
         model.remoteTabs.startupEvidenceDeadline = 0.2
         let tab = await newCodex()

@@ -194,9 +194,12 @@ final class FakeRemoteHost: RemoteSessionHost {
     }
 
     private(set) var exitChecks = 0
+    /// What the next exit checks answer, in order (then `liveness`).
+    var livenessAnswers: [RemoteLiveness] = []
     func exitCheck(_ handle: String) async -> RemoteLiveness {
         exitChecks += 1
         if let exitGate { await exitGate() }
+        let liveness = livenessAnswers.isEmpty ? self.liveness : livenessAnswers.removeFirst()
         if liveness == .absent, let index = runs.firstIndex(where: { $0.handle == handle }) { runs[index].ended = true }
         if liveness == .absent, let index = pending.firstIndex(where: { $0.handle == handle }) { pending[index].ended = true }
         return liveness
@@ -298,7 +301,7 @@ final class FakeRemoteHost: RemoteSessionHost {
                                         displayArgv: ["codex"]))
         }
         guard let index = pending.firstIndex(where: { $0.handle == handle && !$0.dismissed }) else {
-            throw HostLaunchError.preparation("Temple no longer tracks this session on \(hostName).")
+            throw RemoteRunNotTracked(message: "Temple no longer tracks this session on \(hostName).")
         }
         if let id = pending[index].sessionID { return .identified(id, directory: pending[index].directory) }
         if pending[index].ended { return .ended }
@@ -765,6 +768,27 @@ final class RemoteLifecycleTests: XCTestCase {
         try await Task.sleep(for: .milliseconds(500))
         XCTAssertLessThanOrEqual(remote.reattaches.count, 4, "the first, then one per delay at most: \(remote.reattaches.count)")
         XCTAssertEqual(tab.remote?.preparationFailures, remote.reattaches.count)
+        guard case .unknown? = tab.remote?.phase else { return XCTFail("still Unknown with Reconnect") }
+    }
+
+    /// The schedule is spent by checks, not by failed attaches: a run that
+    /// answers "can't tell" a few times, then "present" to an attach that
+    /// fails again, goes on with what is left of the schedule, never
+    /// starts it over (sol, final review).
+    func testAFailedAttachAfterRechecksContinuesTheScheduleNotRestartsIt() async throws {
+        model.remoteTabs.recheckDelays = [0.03, 0.03, 0.03, 0.03]
+        let tab = await openRow()
+        try await Task.sleep(for: .milliseconds(600))
+        let checksBefore = remote.exitChecks
+        remote.clientExitStatus = 255
+        remote.reattachPreparationError = "Didn't answer"
+        // The exit's verdict, then three rechecks: two can't tell, one present.
+        remote.livenessAnswers = [.present, .unknown(reason: "no answer"), .unknown(reason: "no answer"), .present]
+        remote.liveness = .unknown(reason: "no answer")
+        factory.created.last?.simulateExit(status: 0)
+        try await Task.sleep(for: .milliseconds(700))
+        XCTAssertEqual(remote.reattaches.count, 2, "the exit's reattach and the recheck's")
+        XCTAssertEqual(remote.exitChecks - checksBefore, 1 + 4, "the exit's check, then the schedule once: \(remote.exitChecks - checksBefore)")
         guard case .unknown? = tab.remote?.phase else { return XCTFail("still Unknown with Reconnect") }
     }
 

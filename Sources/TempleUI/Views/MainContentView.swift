@@ -363,7 +363,7 @@ private struct SessionTerminalView: View {
         case .unknown(let reason):
             VStack(spacing: 0) {
                 notice(symbol: "questionmark.circle", text: RemoteCopy.unknown(host, agent: tab.agent, reason: reason)) {
-                    Button("Reconnect") { model.openSessions.remoteTabs.reconnect(tab) }
+                    Button(RemoteCopy.reconnectNowButton) { model.openSessions.remoteTabs.reconnect(tab) }
                     if tab.sessionID != nil {
                         Button(RemoteCopy.resumeAnywayButton) { confirmation = .resumeAnyway }
                     } else if tab.agent == .codex {
