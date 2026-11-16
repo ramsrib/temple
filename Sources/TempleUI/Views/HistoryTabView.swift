@@ -208,7 +208,7 @@ struct HistoryTabView: View {
         }
         // No counts (design audit, 2026-11): they repeated the tabs, and the
         // list says how much there is.
-        return "Every session on disk"
+        return "Every Claude Code and Codex session on this Mac"
     }
 
     /// Search, the two tabs, Filter and More (design audit, 2026-11: seven
@@ -449,7 +449,7 @@ struct HistoryTabView: View {
         Menu {
             Section("Agent") { agentPicker }
             Section("Project") { projectPicker }
-            Section("Temple") { membershipPicker }
+            Section("Sessions") { membershipPicker }
         } label: {
             Text(Self.filterLabel(agent: history.agentFilter, project: history.projectKeyFilter,
                                   membership: membershipFilter?.label(on: history.page)))
@@ -467,7 +467,7 @@ struct HistoryTabView: View {
     private var membershipPicker: some View {
         Picker("", selection: Binding(get: { membershipFilter },
                                       set: { history.pickScope($0 ?? .all) })) {
-            Text("Any").tag(HistoryScope?.none)
+            Text("Any session").tag(HistoryScope?.none)
             ForEach([HistoryScope.inTemple, .notInTemple]) { scope in
                 Text(scope.label(on: history.page)).tag(HistoryScope?.some(scope))
             }

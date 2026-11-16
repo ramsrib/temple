@@ -72,7 +72,7 @@ struct ProjectSwitcherHUD: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
-            Text(isCurrent ? "this project" : "\(tabs.count) session\(tabs.count == 1 ? "" : "s")")
+            Text(isCurrent ? "this project" : "\(tabs.count) open")
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
