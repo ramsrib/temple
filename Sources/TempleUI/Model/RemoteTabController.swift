@@ -1032,7 +1032,7 @@ public final class RemoteTabController {
     /// A session's name as a notice gives it: its row's title in quotes,
     /// or "the new Codex session in temple".
     func sessionName(_ tab: SessionTab) -> String {
-        let title = tab.sessionKey.flatMap { model.sessionRow($0)?.displayTitle }
+        let title = tab.sessionKey.flatMap { model.sessionRow($0)?.namedTitle }
         return RemoteCopy.sessionName(title: title, agent: tab.agent, directory: tab.projectPath)
     }
 
@@ -1084,7 +1084,7 @@ public final class RemoteTabController {
     /// and a stop that did not happen is said once, naming the row.
     private func stopByRow(sessionID: String, host: RemoteSessionHost, hostID: HostID) {
         let row = model.sessionRow(SessionKey(id: sessionID, host: hostID))
-        let name = RemoteCopy.sessionName(title: row?.displayTitle, agent: row?.agent ?? .claude,
+        let name = RemoteCopy.sessionName(title: row?.namedTitle, agent: row?.agent ?? .claude,
                                           directory: row?.directory ?? "")
         let ticket = gate.ticket(host: hostID)
         // One stop from the moment it is asked for, the run's lookup

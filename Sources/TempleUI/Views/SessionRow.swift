@@ -129,7 +129,12 @@ struct SessionRow: View {
         .contextMenu { contextMenu }
         .alert("Rename session", isPresented: $renaming) {
             TextField("Name", text: $draftName)
-            Button("Save") { model.renameSession(session.id, to: draftName) }
+            // Saved only if it was changed: the field opens on what the row
+            // shows, and saving "Untitled Session" (or the agent's title)
+            // as typed would make it the session's name for good.
+            Button("Save") {
+                if draftName != model.displayTitle(session) { model.renameSession(session.id, to: draftName) }
+            }
             Button("Cancel", role: .cancel) {}
         }
         .alert(stopQuestion.title,

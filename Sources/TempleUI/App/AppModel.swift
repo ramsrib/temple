@@ -255,11 +255,6 @@ public final class AppModel: ObservableObject {
     /// A person's rename: their own act, so a Name sort takes the new name
     /// at once, hold or not (a title the transcript fills waits for it).
     public func renameSession(_ id: SessionKey, to name: String) {
-        // The editor opens on what the row shows. For a session with no name
-        // that is "Untitled Session", and saving it unchanged must not make
-        // those words its name, hiding every title the agent gives it later.
-        if overlay.rows[id]?.customName == nil,
-           name.trimmingCharacters(in: .whitespacesAndNewlines) == Session.untitled { return }
         overlay.rename(id, to: name)
         if let row = overlay.rows[id] {
             let session = presentedByID[id] ?? Session(state: row)

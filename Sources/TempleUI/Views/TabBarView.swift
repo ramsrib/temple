@@ -651,7 +651,8 @@ private struct TabChip: View {
 
     private func commitRename() {
         guard editing, let key = tab.sessionKey else { return }
-        model.renameSession(key, to: draft)
+        // Only a changed draft is a rename (see SessionRow's Save).
+        if draft != displayTitle { model.renameSession(key, to: draft) }
         editing = false
         model.openSessions.focusActiveTerminal()
     }

@@ -29,6 +29,10 @@ public struct Session: Identifiable, Hashable, Sendable {
         if let agent, agent.isPlaceholderTitle(title, directory: directory) { return nil }
         return title
     }
+    /// The name a person gave it, else its own title: nil when it has
+    /// neither. For callers that say something else about a nameless
+    /// session (a notice's "the new Codex session in temple").
+    public var namedTitle: String? { state.customName ?? ownTitle }
     public var displayTitle: String {
         state.customName ?? ownTitle ?? Self.untitled
     }

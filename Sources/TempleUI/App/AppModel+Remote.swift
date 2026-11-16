@@ -191,7 +191,7 @@ extension AppModel {
     /// A session's name as the remote bands say it.
     private func remoteSessionName(_ sessionID: String, host: HostID) -> String {
         let session = presentedByID[SessionKey(id: sessionID, host: host)]
-        return RemoteCopy.sessionName(title: session?.displayTitle, agent: session?.agent ?? .claude,
+        return RemoteCopy.sessionName(title: session?.namedTitle, agent: session?.agent ?? .claude,
                                       directory: session?.directory ?? "")
     }
 

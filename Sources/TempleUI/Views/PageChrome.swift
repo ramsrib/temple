@@ -185,7 +185,9 @@ struct FlatSegmentedPicker<Value: Hashable>: View {
         .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
         .accessibilityRepresentation {
             Picker(label, selection: Binding(get: { selection },
-                                             set: { Self.select($0, in: $selection) })) {
+                                             set: { option in
+                if option == selection, let onReselect { onReselect(option) } else { Self.select(option, in: $selection) }
+            })) {
                 ForEach(options, id: \.self) { option in
                     Text(optionTitle(option)).tag(option)
                 }

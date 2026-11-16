@@ -727,7 +727,7 @@ public enum RemoteCopy {
 
     /// A session's name in a notice: its title in quotes, or what it is.
     public static func sessionName(title: String?, agent: Agent, directory: String) -> String {
-        if let title, !title.isEmpty, title != Session.untitled, !agent.isPlaceholderTitle(title, directory: directory) { return "\u{201C}\(title)\u{201D}" }
+        if let title, !title.isEmpty, title != agent.newSessionTitle { return "\u{201C}\(title)\u{201D}" }
         let folder = (directory as NSString).lastPathComponent
         return "the new \(agent.displayName) session in \(folder.isEmpty ? directory : folder)"
     }
