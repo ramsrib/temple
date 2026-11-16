@@ -159,7 +159,7 @@ struct HistoryTabView: View {
                 .padding(.top, PageChrome.top)
                 .padding(.bottom, 18)
             toolbar
-            if history.isNarrowed || history.filteredProjectIsArchived {
+            if history.justArchivedChip != nil || history.filteredProjectIsArchived {
                 narrowedLine
                     .padding(.top, 8)
             }
@@ -189,7 +189,7 @@ struct HistoryTabView: View {
     }
 
     private var header: some View {
-        PageHeader(title: "History", subtitle: Text(subtitle)) { updatedLine }
+        PageHeader(title: "History", subtitle: Text(subtitle)) { EmptyView() }
     }
 
     /// What is in the box, not what is showing. A host's page says whose
@@ -206,81 +206,61 @@ struct HistoryTabView: View {
             }
             return line
         }
-        if history.allRows.isEmpty, history.lastUpdated == nil { return "Every session on disk" }
-        return history.countsLine
+        // No counts (design audit, 2026-11): they repeated the tabs, and the
+        // list says how much there is.
+        return "Every session on disk"
     }
 
-    /// The page is a snapshot, and says so: when it was taken, and the way to
-    /// take another.
-    private var updatedLine: some View {
-        TimelineView(.periodic(from: .now, by: 30)) { context in
-            HStack(spacing: 4) {
-                if history.page.host != nil {
-                    // The subtitle dates a host's page.
-                } else if let last = history.lastUpdated {
-                    Text("Updated \(PageChrome.relative(last, now: context.date))")
-                    Text("·")
-                }
-                Button("Refresh") { history.refresh() }
-                    .buttonStyle(.plain)
-                    .fontWeight(.semibold)
-                    .foregroundStyle(.primary)
-                Text("⌘R").foregroundStyle(.tertiary)
-                // A host's page offers it in its own line, about that host.
-                if history.page.host == nil {
-                    Text("·")
-                    openByIDLink(.local)
-                        .font(.system(size: 11))
-                }
-            }
-            .font(.system(size: 11))
-            .foregroundStyle(.secondary)
-        }
-    }
-
+    /// Search, the two tabs, Filter and More (design audit, 2026-11: seven
+    /// controls on two rows became four on one). Only the narrowest pane
+    /// takes a second row.
     @ViewBuilder
     private var toolbar: some View {
-        switch tier {
-        case .wide:
-            HStack(spacing: 10) {
-                if !history.enabledHosts().isEmpty { pageMenu }
-                searchField(minWidth: 220)
-                scopePicker(width: 390)
-                // The page menu takes the room the two menus had: they are
-                // one Filter menu then, so the row fits the page's column
-                // (130 + 220 + 390 + 110 + gaps, under its 1044 pt cap).
-                if history.enabledHosts().isEmpty {
-                    agentMenu(width: 130)
-                    projectMenu(width: 150)
-                } else {
-                    filterMenu
-                }
-            }
-        case .compact, .narrow:
-            // A host's page under 692 pt: its 390 pt scopes take the second
-            // row alone, and Filter joins the search row (narrowest: a 900 pt
-            // window with a 360 pt sidebar leaves ~484 pt).
-            let filterUp = tier == .narrow && history.page.host != nil
+        let hosted = !history.enabledHosts().isEmpty
+        if tier == .narrow {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 8) {
-                    if !history.enabledHosts().isEmpty { pageMenu }
+                    if hosted { pageMenu }
                     searchField(minWidth: 160)
-                    if filterUp { filterMenu }
                 }
                 HStack(spacing: 8) {
-                    scopePicker(width: 344)
+                    scopePicker
                     Spacer(minLength: 8)
-                    if filterUp {
-                        EmptyView()
-                    } else if tier == .narrow || history.page.host != nil {
-                        filterMenu
-                    } else {
-                        agentMenu(width: 120)
-                        projectMenu(width: 140)
-                    }
+                    filterMenu
+                    moreMenu
                 }
             }
+        } else {
+            HStack(spacing: tier == .wide ? 10 : 8) {
+                if hosted { pageMenu }
+                searchField(minWidth: 160)
+                scopePicker
+                filterMenu
+                moreMenu
+            }
         }
+    }
+
+    /// What isn't a filter and isn't used every visit: when the list was
+    /// read, reading it again, and opening a session by its id. They were a
+    /// line of bold text over the toolbar.
+    private var moreMenu: some View {
+        Menu {
+            if history.page.host == nil, let last = history.lastUpdated {
+                Text("Updated \(PageChrome.relative(last, now: Date()))")
+            }
+            Button("Refresh") { history.refresh() }
+                .keyboardShortcut("r", modifiers: .command)
+            if history.page.host == nil {
+                Divider()
+                Button("Open Session by ID…") { history.openByID(.local) }
+            }
+        } label: {
+            Image(systemName: "ellipsis")
+        }
+        .menuIndicator(.hidden)
+        .modifier(FlatToolbarMenu(width: 34))
+        .help("More")
     }
 
     private func searchField(minWidth: CGFloat) -> some View {
@@ -313,16 +293,18 @@ struct HistoryTabView: View {
         .background(Palette.controlFill, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
     }
 
-    /// Picking any segment clears the "Archived just now" chip.
-    private func scopePicker(width: CGFloat) -> some View {
-        // A host's labels are a fixed set ("In Temple here", 87 pt at the
-        // control's 12.5 pt, measured) that needs 390 pt for four equal
-        // segments whatever the host is called; never cut.
-        let width = history.page.host != nil ? max(width, 390) : width
-        return FlatSegmentedPicker(label: "Show",
-                            selection: Binding(get: { history.scope }, set: { history.pickScope($0) }),
-                            options: Array(HistoryScope.allCases),
-                            optionTitle: { [page = history.page] in $0.label(on: page) }, width: width)
+    /// Two tabs: everything, and what is put away (design audit, 2026-11).
+    /// In Temple and Not in Temple are in Filter: they named Temple's own
+    /// bookkeeping, and most days nearly every session is in Temple. Either
+    /// of them is a narrowing of All, so All stays lit. Picking a tab clears
+    /// the "Archived just now" chip.
+    private var scopePicker: some View {
+        FlatSegmentedPicker(label: "Show",
+                            selection: Binding(get: { history.scope == .archived ? .archived : .all },
+                                               set: { history.pickScope($0) }),
+                            options: [HistoryScope.all, .archived],
+                            optionTitle: { [page = history.page] in $0.label(on: page) },
+                            width: history.page.host != nil ? 210 : 170)
     }
 
     /// Whose sessions the page shows: this Mac's (History as it always
@@ -461,50 +443,49 @@ struct HistoryTabView: View {
         .labelsHidden()
     }
 
-    private func agentMenu(width: CGFloat) -> some View {
-        Menu { agentPicker } label: {
-            Text(history.agentFilter?.displayName ?? "Any agent")
-        }
-        .menuIndicator(.visible)
-        .modifier(FlatToolbarMenu(width: width))
-    }
-
-    private func projectMenu(width: CGFloat) -> some View {
-        Menu { projectPicker } label: {
-            Text(history.projectKeyFilter.map(\.displayName) ?? "Any project")
-        }
-        .menuIndicator(.visible)
-        .modifier(FlatToolbarMenu(width: width))
-    }
-
-    /// Under 692 pt: the agent and project menus as one, labelled with what
+    /// Agent, project and Temple membership in one menu, labelled with what
     /// is filtered ("Claude Code · raven") or "Filter".
     private var filterMenu: some View {
         Menu {
             Section("Agent") { agentPicker }
             Section("Project") { projectPicker }
+            Section("Temple") { membershipPicker }
         } label: {
-            Text(Self.filterLabel(agent: history.agentFilter, project: history.projectKeyFilter))
+            Text(Self.filterLabel(agent: history.agentFilter, project: history.projectKeyFilter,
+                                  membership: membershipFilter?.label(on: history.page)))
                 .lineLimit(1)
         }
         .menuIndicator(.visible)
         .modifier(FlatToolbarMenu(width: 110))
     }
 
-    static func filterLabel(agent: Agent?, project: ProjectKey?) -> String {
-        let names = [agent?.displayName, project?.displayName].compactMap { $0 }
+    /// In Temple or Not in Temple, when one of them narrows the page.
+    private var membershipFilter: HistoryScope? {
+        history.scope == .inTemple || history.scope == .notInTemple ? history.scope : nil
+    }
+
+    private var membershipPicker: some View {
+        Picker("", selection: Binding(get: { membershipFilter },
+                                      set: { history.pickScope($0 ?? .all) })) {
+            Text("Any").tag(HistoryScope?.none)
+            ForEach([HistoryScope.inTemple, .notInTemple]) { scope in
+                Text(scope.label(on: history.page)).tag(HistoryScope?.some(scope))
+            }
+        }
+        .pickerStyle(.inline)
+        .labelsHidden()
+    }
+
+    static func filterLabel(agent: Agent?, project: ProjectKey?, membership: String? = nil) -> String {
+        let names = [agent?.displayName, project?.displayName, membership].compactMap { $0 }
         return names.isEmpty ? "Filter" : names.joined(separator: " · ")
     }
 
-    /// "Showing 173 of 3,812", then the chip and the archived project's
-    /// Restore, each where one applies.
+    /// The "Archived just now" chip and the archived project's Restore, each
+    /// where one applies. ("Showing 173 of 3,812" went with the counts.)
     private var narrowedLine: some View {
         HStack(spacing: 6) {
-            if history.isNarrowed {
-                Text("Showing \(history.visibleRows.count.formatted()) of \(history.allRows.count.formatted())")
-            }
             if let chip = history.justArchivedChip {
-                separator
                 HStack(spacing: 4) {
                     Text("Archived just now · \(chip.count.formatted())")
                     Button {
@@ -524,7 +505,7 @@ struct HistoryTabView: View {
                 .help("The sessions Temple archived during this run. Clear it to see everything archived.")
             }
             if let project = history.projectKeyFilter, history.filteredProjectIsArchived {
-                separator
+                if history.justArchivedChip != nil { separator }
                 Text("\(project.displayName) is archived")
                 separator
                 Button("Restore project") { history.restoreProject(project, undoManager: undoManager) }
@@ -1029,8 +1010,10 @@ private struct HistoryPageRow: View, Equatable {
                 .foregroundStyle(lit ? Color.primary : Color.secondary.opacity(0.7))
                 .help(session.statusTooltip ?? "")
         case .inTemple:
-            TempleMark(size: 14, tint: lit ? .primary : .secondary)
-                .help(session.membershipTooltip)
+            // The ordinary case carries no mark (design audit, 2026-11): on
+            // nearly every row it said nothing. Only the exceptions end in
+            // something: Restore, Import, the faint mark of a conflict.
+            EmptyView()
         case .conflict(let conflict):
             // Its id is Temple's on another host or as another agent: shown
             // as the catalog has it, and not importable from here. The mark,
