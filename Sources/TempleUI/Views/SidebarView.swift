@@ -932,10 +932,12 @@ private struct ProjectDisclosure: View {
             // (round 3: the outlined box read "okay-ish"; the tone and the
             // trailing column say open vs closed on their own).
             ForEach(layout.open) { session in
-                row(session, isLast: session.id == lastID, footer: footer, draggable: false)
+                row(session, isLast: session.id == lastID, footer: footer, draggable: false,
+                    firstClosed: layout.closed.first?.id)
             }
             ForEach(layout.closed) { session in
-                row(session, isLast: session.id == lastID, footer: footer, draggable: true)
+                row(session, isLast: session.id == lastID, footer: footer, draggable: true,
+                    firstClosed: layout.closed.first?.id)
             }
             if footer {
                 HStack(spacing: 10) {
@@ -959,7 +961,12 @@ private struct ProjectDisclosure: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .opacity(inHand ? 0.4 : 1)
                 .transition(.opacity)
-                .onDrop(of: [Self.dragType], delegate: dropDelegate(row: "footer", edge: .bottom))
+                // A session dropped here goes last among the closed ones.
+                .onDrop(of: [Self.dragType, Self.sessionDragType],
+                        delegate: RowDropDelegate(model: model, project: dropDelegate(row: "footer", edge: .bottom),
+                                                  session: layout.closed.last.map {
+                                                      SessionDropDelegate(model: model, target: $0.id, fixedEdge: .bottom)
+                                                  }))
                 .overlay(alignment: .bottom) {
                     if dropIndicator == .bottom { dropLine }
                 }
@@ -969,13 +976,23 @@ private struct ProjectDisclosure: View {
     /// One session row, with the project's drop target and, for a closed
     /// session, its own drag to reorder (open ones follow their tabs).
     @ViewBuilder
-    private func row(_ session: Session, isLast: Bool, footer: Bool, draggable: Bool) -> some View {
+    private func row(_ session: Session, isLast: Bool, footer: Bool, draggable: Bool,
+                     firstClosed: SessionKey?) -> some View {
+        // One drop target per row for both drags: two stacked `.onDrop`s
+        // let one shadow the other. A session dropped on a closed row lands
+        // above or below it; on an open row (they follow their tabs), first
+        // among the closed ones.
+        let sessionDrop: SessionDropDelegate? = draggable
+            ? SessionDropDelegate(model: model, target: session.id)
+            : firstClosed.map { SessionDropDelegate(model: model, target: $0, fixedEdge: .top) }
         let base = SessionRow(session: session)
             .padding(.leading, Self.childInset)
             .background(Color.clear.id(SidebarView.rowScrollID(session.id)))
             .opacity(inHand || model.draggedSession == session.id ? 0.4 : 1)
             .transition(.opacity)
-            .onDrop(of: [Self.dragType], delegate: dropDelegate(row: session.sessionID, edge: .bottom))
+            .onDrop(of: [Self.dragType, Self.sessionDragType],
+                    delegate: RowDropDelegate(model: model, project: dropDelegate(row: session.sessionID, edge: .bottom),
+                                              session: sessionDrop))
             .overlay(alignment: .bottom) {
                 if dropIndicator == .bottom, !footer, isLast { dropLine }
             }
@@ -991,7 +1008,6 @@ private struct ProjectDisclosure: View {
                     }
                     return provider
                 }
-                .onDrop(of: [Self.sessionDragType], delegate: SessionDropDelegate(model: model, target: session.id))
                 .overlay(alignment: model.sessionDropSlot?.edge == .top ? .top : .bottom) {
                     if model.sessionDropSlot?.target == session.id { dropLine }
                 }
@@ -1480,11 +1496,40 @@ struct SidebarViewOptionsMenu: View {
 
 /// A closed session dropped on another closed session of the same project:
 /// above it in the row's upper half, below it in the lower.
+/// A row's one drop target: a dragged session goes to the session delegate,
+/// a dragged project to the project one.
+private struct RowDropDelegate: DropDelegate {
+    let model: AppModel
+    let project: ProjectDropDelegate
+    let session: SessionDropDelegate?
+
+    private var sessionDrag: Bool { model.draggedSession != nil }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        sessionDrag ? (session?.validateDrop(info: info) ?? false) : project.validateDrop(info: info)
+    }
+    func dropEntered(info: DropInfo) {
+        if sessionDrag { session?.dropEntered(info: info) } else { project.dropEntered(info: info) }
+    }
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        sessionDrag ? session?.dropUpdated(info: info) : project.dropUpdated(info: info)
+    }
+    func dropExited(info: DropInfo) {
+        if sessionDrag { session?.dropExited(info: info) } else { project.dropExited(info: info) }
+    }
+    func performDrop(info: DropInfo) -> Bool {
+        sessionDrag ? (session?.performDrop(info: info) ?? false) : project.performDrop(info: info)
+    }
+}
+
 private struct SessionDropDelegate: DropDelegate {
     let model: AppModel
     let target: SessionKey
+    /// Where a drop lands whatever half of the row it is over: the footer
+    /// puts a session last, an open row first among the closed ones.
+    var fixedEdge: Edge?
 
-    private func edge(_ info: DropInfo) -> Edge { info.location.y < 16 ? .top : .bottom }
+    private func edge(_ info: DropInfo) -> Edge { fixedEdge ?? (info.location.y < 16 ? .top : .bottom) }
 
     private var sameProject: Bool {
         guard let dragged = model.draggedSession, dragged != target else { return false }
