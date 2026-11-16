@@ -41,12 +41,20 @@ struct SessionRow: View {
                 // session is open or under the pointer, so open tabs stand out.
                 if let agent = session.agent {
                     AgentBadge(agent: agent, size: 13)
-                        .opacity(transcriptMissing ? 0.35 : openTab != nil || hovering ? 1 : 0.55)
+                        // An open row's mark is always at full strength: faded for
+                        // a missing transcript, it made an open row read as closed
+                        // (owner, 2026-11-16). Closed rows step back, a missing
+                        // transcript further.
+                        .opacity(openTab != nil || hovering ? 1 : transcriptMissing ? 0.3 : 0.45)
                 }
                 Text(model.displayTitle(session))
                     // Medium on the highlighted row — the same "you are here"
                     // weight the active tab chip carries.
-                    .font(.system(size: 13, weight: isHighlighted ? .medium : .regular))
+                    // Weight carries open and closed as well as tone (owner,
+                    // 2026-11-16: the tones alone were hard to tell apart):
+                    // open rows are medium, closed regular, and the row you
+                    // are on semibold, a step above its open neighbours.
+                    .font(.system(size: 13, weight: isHighlighted ? .semibold : openTab != nil ? .medium : .regular))
                     .lineLimit(1)
                     .truncationMode(.tail)
                     // Two tones: the sessions you have open are the ones you

@@ -107,7 +107,7 @@ enum Palette {
     /// sessions' primary, so open reads as open without a box around them
     /// (round 3; 0.82 was too faint a step to read). About 4.6:1 on the
     /// light rail and 6:1 on the dark one.
-    static let closedRowText = mono(light: 0, 0.55, dark: 1, 0.52)
+    static let closedRowText = mono(light: 0, 0.5, dark: 1, 0.48)
 
     /// Floating-panel surface (⌘K palette, ⌘P switcher, ⌘/ shortcuts).
     /// Opaque window background: the translucent material read as a muddy
