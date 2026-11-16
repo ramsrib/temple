@@ -25,6 +25,18 @@ public enum Agent: String, Codable, CaseIterable, Sendable {
         }
     }
 
+    /// A title that names nothing: the placeholder above, or the title the
+    /// agent's terminal carries before it has one of its own, its command
+    /// and its folder ("claude: storefront"). A row of those could not be
+    /// told from the next, and repeated the badge beside it and the project
+    /// above it (design audit, 2026-11). Shown as `Session.untitled`.
+    public func isPlaceholderTitle(_ title: String, directory: String?) -> Bool {
+        if title == newSessionTitle { return true }
+        guard let directory, !directory.isEmpty else { return false }
+        let folder = URL(fileURLWithPath: directory).lastPathComponent
+        return title.caseInsensitiveCompare("\(binaryName): \(folder)") == .orderedSame
+    }
+
     /// The command the agent installs as, before any user override or `PATH`
     /// resolution (see `LoginShellEnvironment.locate`).
     public var binaryName: String { rawValue }

@@ -301,10 +301,16 @@ final class SessionScopeTests: XCTestCase {
                          generatedTitle: "Legacy title", lastOpenedAt: opened, joinedVia: nil, joinedAt: joined,
                          agent: agent, directory: "/row", title: title, lastActiveAt: active)
         }
-        XCTAssertEqual(Session(state: row()).displayTitle, "Untitled session")
-        XCTAssertEqual(Session(state: row(agent: .codex)).displayTitle, "New Codex session")
-        XCTAssertEqual(Session(state: row(agent: .claude)).displayTitle, "New Claude session")
+        XCTAssertEqual(Session(state: row()).displayTitle, "Untitled Session")
+        XCTAssertEqual(Session(state: row(agent: .codex)).displayTitle, "Untitled Session")
+        XCTAssertEqual(Session(state: row(agent: .claude)).displayTitle, "Untitled Session")
         XCTAssertEqual(Session(state: row(title: "Title", agent: .claude)).displayTitle, "Title")
+        // The agent's command and folder is its terminal's title before it
+        // has one: it names nothing (the folder here is /row).
+        XCTAssertEqual(Session(state: row(title: "claude: row", agent: .claude)).displayTitle, "Untitled Session")
+        XCTAssertEqual(Session(state: row(title: "Claude: Row", agent: .claude)).displayTitle, "Untitled Session")
+        XCTAssertEqual(Session(state: row(title: "claude: other", agent: .claude)).displayTitle, "claude: other")
+        XCTAssertEqual(Session(state: row(title: "New Claude session", agent: .claude)).displayTitle, "Untitled Session")
         XCTAssertEqual(Session(state: row(name: "Custom", title: "Title", agent: .claude)).displayTitle, "Custom")
         let a = Date(timeIntervalSince1970: 1), b = Date(timeIntervalSince1970: 2), c = Date(timeIntervalSince1970: 3)
         XCTAssertEqual(Session(state: row(active: a, opened: b, joined: c)).sortDate, a)

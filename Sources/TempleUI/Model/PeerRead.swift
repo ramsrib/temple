@@ -36,7 +36,11 @@ public struct PeerRow: Equatable, Sendable {
 
     /// What the other Temple shows: its name, else its title, else the
     /// agent's placeholder (`Session.displayTitle`'s chain).
-    public var displayTitle: String { customName ?? title ?? agent.newSessionTitle }
+    public var displayTitle: String {
+        if let customName { return customName }
+        if let title, !agent.isPlaceholderTitle(title, directory: directory) { return title }
+        return Session.untitled
+    }
 
     /// The name and colour an import or an open brings with it.
     public var marks: CarriedMarks { CarriedMarks(name: customName, color: color) }

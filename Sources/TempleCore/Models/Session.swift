@@ -20,8 +20,17 @@ public struct Session: Identifiable, Hashable, Sendable {
     public var directory: String? { state.directory }
     public var project: ProjectKey? { directory.map { ProjectKey(host: host, path: $0) } }
     public var canResume: Bool { agent != nil && directory != nil }
+    /// What a session with no name of its own is called, everywhere.
+    public static let untitled = "Untitled Session"
+    /// The agent's or the transcript's title, unless it names nothing
+    /// (`Agent.isPlaceholderTitle`).
+    public var ownTitle: String? {
+        guard let title = state.title else { return nil }
+        if let agent, agent.isPlaceholderTitle(title, directory: directory) { return nil }
+        return title
+    }
     public var displayTitle: String {
-        state.customName ?? state.title ?? agent.map(\.newSessionTitle) ?? "Untitled session"
+        state.customName ?? ownTitle ?? Self.untitled
     }
     /// Every title the row knows the session by, the displayed one first:
     /// a rename (or the agent retitling itself) hides the original title

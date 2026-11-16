@@ -1394,7 +1394,7 @@ public final class AppModel: ObservableObject {
     /// row's placeholder ("New Claude session") never beats a real title.
     func sessionTabTitle(_ tab: SessionTab) -> String {
         if let key = tab.sessionKey, let row = presentedByID[key],
-           let title = row.state.customName ?? row.state.title { return title }
+           let title = row.state.customName ?? row.ownTitle { return title }
         return tab.title
     }
 
@@ -1658,7 +1658,8 @@ public final class AppModel: ObservableObject {
     // MARK: Sidebar data (U1)
 
     public func displayTitle(_ session: Session) -> String {
-        if session.state.customName == nil, session.state.title == nil, let hint = titleHints[session.id] { return hint }
+        if session.state.customName == nil, session.ownTitle == nil, let hint = titleHints[session.id],
+           session.agent?.isPlaceholderTitle(hint, directory: session.directory) != true { return hint }
         return session.displayTitle
     }
     public func resumeArgv(for session: Session) -> [String] { SessionLauncher.resumeArgv(session) }
@@ -1674,7 +1675,8 @@ public final class AppModel: ObservableObject {
     /// title plain, since the tab's band carries that question.
     public func tabDisplayTitle(_ tab: SessionTab) -> String {
         if let utility = tab.kind.utilityTitle { return utility }
-        let title = sessionTabTitle(tab)
+        var title = sessionTabTitle(tab)
+        if tab.agent.isPlaceholderTitle(title, directory: tab.projectPath) { title = Session.untitled }
         if tab.remote?.phase == .endedPending { return "\(title) (ended)" }
         if tab.remote != nil, tab.inputSubmitted { return title }
         return tab.isProvisional ? "\(title) (starting…)" : title
