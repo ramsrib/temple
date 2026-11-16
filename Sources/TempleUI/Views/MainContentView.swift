@@ -62,6 +62,9 @@ private struct SessionTerminalView: View {
     /// Resume anyway, or Start a new session for a pending Codex session:
     /// asked in a sheet that names the command to stop the original.
     @State private var confirmation: RemoteConfirmation?
+    /// The failed launch's command is showing (it is a click away unless
+    /// the command itself is what failed).
+    @State private var showsFailedCommand = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -520,7 +523,12 @@ private struct SessionTerminalView: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if !argv.isEmpty {
+                // The command leads only when it is what failed. Otherwise
+                // the agent's own reason is in the terminal right below, and
+                // a full command line with a session id was the heaviest
+                // thing on screen and the least useful (design audit,
+                // 2026-11); it is one click away.
+                if !argv.isEmpty, blameCommand || showsFailedCommand {
                     Text(argv.joined(separator: " "))
                         .font(.system(size: 11, design: .monospaced))
                         .foregroundStyle(.secondary)
@@ -553,6 +561,11 @@ private struct SessionTerminalView: View {
                 }
             }
             Spacer(minLength: 8)
+            if !argv.isEmpty, !blameCommand, !showsFailedCommand {
+                Button("Show Command") { showsFailedCommand = true }
+                    .buttonStyle(.link)
+                    .font(.system(size: 12))
+            }
             if !tab.host.isLocal, preparationError == RemoteCopy.notSetUp(tab.host.rawValue) {
                 // A tab on a host Temple doesn't have: Settings, at Hosts.
                 Button(RemoteCopy.openSettings) { model.openSessions.openSettingsAtHosts() }
