@@ -139,7 +139,8 @@ final class EngineMatrixTests: XCTestCase {
 
     func complete(_ h: Harness, _ id: String) throws {
         try h.db.fillCoreFields(sessionID: id, host: h.source.host, agent: .claude, directory: "/done",
-                                title: "Done", lastActiveAt: Date(timeIntervalSince1970: 1))
+                                title: "Done", lastActiveAt: Date(timeIntervalSince1970: 1),
+                                startedAt: Date(timeIntervalSince1970: 1))
     }
 
     func waitUntil(timeout: TimeInterval = 5, _ message: String = "condition", _ condition: () async throws -> Bool) async throws {

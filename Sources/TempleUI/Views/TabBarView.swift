@@ -651,7 +651,7 @@ private struct TabChip: View {
 
     private func commitRename() {
         guard editing, let key = tab.sessionKey else { return }
-        model.overlay.rename(key, to: draft)
+        model.renameSession(key, to: draft)
         editing = false
         model.openSessions.focusActiveTerminal()
     }

@@ -284,7 +284,7 @@ private struct LauncherRow: View {
                 // title rather than a column gap.
                 (Text(title).foregroundStyle(.primary)
                     + Text(detail.map { " " + $0 } ?? "").foregroundStyle(.secondary))
-                    .font(.system(size: 14.5))
+                    .font(.system(size: 14))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if let detailTag {
@@ -298,11 +298,11 @@ private struct LauncherRow: View {
                 Spacer(minLength: 12)
                 if let shortcut {
                     Text(shortcut)
-                        .font(.system(size: 12.5))
+                        .font(.system(size: 12))
                         .foregroundStyle(.tertiary)
                 } else if let trailing {
                     Text(trailing)
-                        .font(.system(size: 11.5))
+                        .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }
             }
@@ -352,7 +352,7 @@ private struct ContinueRow: View {
                 }
                 .frame(width: 18, alignment: .center)
                 Text(title)
-                    .font(.system(size: 14.5))
+                    .font(.system(size: 14))
                     .lineLimit(1)
                 Spacer(minLength: 12)
                 if let project = session.project {
@@ -377,7 +377,7 @@ private struct ContinueRow: View {
                     }
                 }
                 Text(RelativeTime.compact(from: session.sortDate))
-                    .font(.system(size: 11.5).monospacedDigit())
+                    .font(.system(size: 11).monospacedDigit())
                     .foregroundStyle(.tertiary)
                     .frame(width: 30, alignment: .trailing)
             }

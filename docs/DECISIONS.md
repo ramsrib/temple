@@ -2792,26 +2792,33 @@ Hosts list had problems of their own, decided with it.
 **Decisions.**
 
 - **Open first, then recent, then the rest.** A project lists its open
-  sessions in tab order, then (after an 8 pt gap, no label) closed sessions
-  active within the recent window, newest first, up to six rows in all;
-  Show N more reveals the rest by activity. A closed row shows its age
-  where an open row shows its dot.
+  sessions in tab order inside one outlined box, then closed sessions
+  active in the last week (fixed), in the session sort, up to six rows in
+  all; Show N older reveals the rest. A closed row shows its age where an
+  open row shows its dot. The box is an outline drawn behind the rows, so
+  spacing stays even (an 8 pt gap was tried first and read as inconsistent
+  spacing; owner, round 2) and a one-row box is not the selected row's
+  shape (a filled box was).
 - **Live order, held under the pointer.** The launch freeze is gone as a
   rule for the whole run. A tab opening or closing, or activity (gathered,
   1.5 s), takes the order again, except while the pointer is over the
   rail or a project is being dragged: then the move waits and lands when
   it leaves. A session first seen while the order is held goes where it
   belongs (a new session lands on top), so the hold never hides a new row.
-- **View Options** sort projects (Recent Activity, Manual Order, Name),
-  show Open Only or Open and the last day, week or month (one choice, so
-  "recent" is defined where it is picked; a search still finds everything),
-  and with a host enabled Group by Host. Window chrome, so `UIStateStore`, one key
+- **View Options** sort projects (Recent Activity, Custom, Name) and,
+  separately, a project's closed sessions (Recent Activity, Name, Date
+  Started, Custom by drag, stored per project in `UIStateStore`); Show Open
+  Sessions Only (a search still finds everything); with a host enabled
+  Group by Host, whose headings fold. Date Started is `started_at`
+  (`v15-session-started-at`, additive), filled NULL-only from the
+  transcript's first entry like every core fact. Window chrome, so `UIStateStore`, one key
   each, written only when chosen. With no sort stored, someone who has a
-  dragged order starts on Custom Order: the shipped default reading their
-  data, never a value written for them. Dragging a heading switches to
-  Manual Order. The labels went through a cold read (docs/copy-review.md):
-  "Group By: Project / Machine" (both group by project), "Recent Means" and
-  "Custom Order" were replaced, and "host" is the one word for a machine.
+  dragged order starts on Custom: the shipped default reading their
+  data, never a value written for them. Dragging a heading switches the
+  project sort to Custom, a session the session sort. Round 1's cold read
+  replaced "Group By: Project / Machine" and "Recent Means"; the owner
+  then dropped the recent-window choice ("Open and Last Week" read as
+  noise) and named the dragged order "Custom".
 - **A project is named, and its machine tagged, separately.**
   `ProjectNameLabel` puts `@host` beside or under the name, each
   truncating on its own and the host first; `ProjectKey.displayName` is for

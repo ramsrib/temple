@@ -34,7 +34,8 @@ public struct FactPersister: Sendable {
             let core = SessionCore(filling: summary)
             switch try database.fillCoreFields(sessionID: id, host: core.host, incarnation: facts.incarnation,
                                                agent: summary.agent, directory: core.directory,
-                                               title: core.title, lastActiveAt: core.lastActiveAt) {
+                                               title: core.title, lastActiveAt: core.lastActiveAt,
+                                               startedAt: core.startedAt) {
             case .ownershipMismatch: return .ownershipMismatch
             case .changed(let filled): changed = true; fields.formUnion(filled)
             case .unchanged: break

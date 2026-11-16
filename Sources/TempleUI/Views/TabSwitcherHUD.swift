@@ -18,10 +18,11 @@ struct TabSwitcherHUD: View {
     /// tells you where you would land but not where you would be leaving.
     private var current: SessionTab.ID? { model.openSessions.activeTabID }
 
-    static let cardSize = CGSize(width: 168, height: 112)
+    /// Four cards a row (4 × 196 + gaps + padding = 840 pt) so the panel
+    /// fits Temple's narrowest window (900 pt); more rows scroll.
+    static let cardSize = CGSize(width: 196, height: 92)
     static let spacing: CGFloat = 8
-    /// Cards per row before the next row starts; rows past `maxRows` scroll.
-    static let maxColumns = 5
+    static let maxColumns = 4
     static let maxRows = 3
 
     var body: some View {
@@ -51,30 +52,50 @@ struct TabSwitcherHUD: View {
                 }
             }
             Text("Release ⌃ to switch")
-                .font(.system(size: 10.5))
+                .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
         }
-        .padding(14)
-        .panelChrome(cornerRadius: 20)
+        .padding(16)
+        .panelChrome(cornerRadius: 16)
     }
 
+    /// A card reads like a window's title bar over its content: where the
+    /// tab is (agent, project, host) on one quiet line, then what it is,
+    /// the title, in the body. Only the card the walk is on is filled, as
+    /// in the macOS app switcher; the rest sit on the panel itself.
     private func card(_ tab: SessionTab, selected: Bool) -> some View {
         let isCurrent = tab.id == current
         let mark = TabColorMark.color(for: tab.sessionKey, in: model)
-        return VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 6) {
-                if let symbol = tab.kind.utilitySymbol {
-                    Image(systemName: symbol)
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
-                } else {
-                    AgentBadge(agent: tab.agent, size: 14)
+        return VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 6) {
+                Group {
+                    if let symbol = tab.kind.utilitySymbol {
+                        Image(systemName: symbol)
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        AgentBadge(agent: tab.agent, size: 13)
+                    }
                 }
-                Spacer(minLength: 0)
+                .frame(width: 14)
+                if tab.kind == .session {
+                    Text(tab.projectKey.name)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                    if let host = ProjectNameLabel.hostTag(tab.projectKey) {
+                        Text(host)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                }
+                Spacer(minLength: 4)
                 if isCurrent {
-                    Text("current")
-                        .font(.system(size: 9.5, weight: .medium))
-                        .tracking(0.4)
+                    Text("this tab")
+                        .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }
                 // An agent working (or waiting on you) in a tab you are NOT
@@ -84,42 +105,23 @@ struct TabSwitcherHUD: View {
                 }
             }
             Text(model.tabDisplayTitle(tab))
-                .font(.system(size: 12.5, weight: selected ? .semibold : .regular))
-                .foregroundStyle(selected ? .primary : .secondary)
+                .font(.system(size: 13, weight: selected ? .medium : .regular))
+                .foregroundStyle(.primary)
                 .lineLimit(2)
                 .multilineTextAlignment(.leading)
                 .frame(maxWidth: .infinity, alignment: .leading)
             Spacer(minLength: 0)
-            // The trail spans projects, so say where each tab would take you:
-            // the project and, on another machine, the machine, each on its
-            // own line so neither is cut to make room for the other.
-            if tab.kind == .session {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(tab.projectKey.name)
-                        .font(.system(size: 10.5))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                    if let host = ProjectNameLabel.hostTag(tab.projectKey) {
-                        Text(host)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .truncationMode(.middle)
-                    }
-                }
-            }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.vertical, 12)
         .frame(width: Self.cardSize.width, height: Self.cardSize.height, alignment: .topLeading)
-        .background(selected ? Palette.selectionFill : Color.primary.opacity(0.035),
-                    in: RoundedRectangle(cornerRadius: 12))
+        .background(selected ? Palette.selectionFill : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         // The tab you are leaving keeps a quiet outline when the highlight
         // has moved on, as ⌘P's tile does.
         .overlay(
-            RoundedRectangle(cornerRadius: 12)
-                .strokeBorder(Color.primary.opacity(isCurrent ? 0.18 : 0), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .strokeBorder(Palette.hairline.opacity(isCurrent && !selected ? 1 : 0), lineWidth: 1)
         )
         // A colour mark is the sidebar's slim bar, never a fill: a washed
         // card read as a second selection.
@@ -128,7 +130,7 @@ struct TabSwitcherHUD: View {
                 Capsule()
                     .fill(mark)
                     .frame(width: 3)
-                    .padding(.vertical, 12)
+                    .padding(.vertical, 14)
                     .padding(.leading, 3)
             }
         }

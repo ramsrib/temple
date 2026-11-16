@@ -36,7 +36,7 @@ struct ProjectSwitcherHUD: View {
             }
         }
         .padding(14)
-        .panelChrome(cornerRadius: 20)
+        .panelChrome(cornerRadius: 16)
         .fixedSize()
     }
 
@@ -64,13 +64,13 @@ struct ProjectSwitcherHUD: View {
             // cut from the middle lost both ("mentes…ersonal").
             VStack(spacing: 2) {
                 Text(path.name)
-                    .font(.system(size: 11.5, weight: selected ? .semibold : .regular))
+                    .font(.system(size: 12, weight: selected ? .semibold : .regular))
                     .foregroundStyle(selected ? .primary : .secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if hostLine {
                     Text(ProjectNameLabel.hostTag(path) ?? " ")
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)
@@ -80,7 +80,7 @@ struct ProjectSwitcherHUD: View {
 
             // One caption line for every tile, so the row's baselines stay level.
             Text(isCurrent ? "current" : "\(tabs.count) session\(tabs.count == 1 ? "" : "s")")
-                .font(.system(size: 9.5, weight: isCurrent ? .medium : .regular))
+                .font(.system(size: 11, weight: isCurrent ? .medium : .regular))
                 .tracking(isCurrent ? 0.4 : 0)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)

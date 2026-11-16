@@ -840,6 +840,22 @@ extension DBTests {
         XCTAssertNoThrow(try TempleDB(path: path, onMigrationLockContention: nil, lockTimeout: 0.1))
     }
 
+    /// v15: when a session began, filled from its transcript NULL-only like
+    /// every core fact, by a join's core as by a fill.
+    func testStartedAtIsFilledOnceFromTheTranscript() throws {
+        let (db, _) = try database()
+        try db.join(sessionID: "s", via: .imported)
+        XCTAssertNil(try db.sessionState("s")?.startedAt)
+        XCTAssertEqual(try db.fillCoreFields(sessionID: "s", host: .local, startedAt: Self.seededDate), .changed([.startedAt]))
+        XCTAssertEqual(try db.fillCoreFields(sessionID: "s", host: .local, startedAt: Date()), .unchanged)
+        XCTAssertEqual(try db.sessionState("s")?.startedAt, Self.seededDate)
+        XCTAssertTrue(try XCTUnwrap(db.sessionState("s")).missingCoreFields.isDisjoint(with: [.startedAt]))
+
+        try db.join(sessionID: "j", via: .imported, agent: .claude,
+                    core: SessionCore(directory: "/p", directorySource: .transcript, startedAt: Self.seededDate))
+        XCTAssertEqual(try db.sessionState("j")?.startedAt, Self.seededDate)
+    }
+
     func testCoreFillsNeverOverwriteAndLaunchDirectoryAlwaysWins() throws {
         let (db, _) = try database()
         try db.join(sessionID: "s", via: .imported)

@@ -9,6 +9,9 @@ import TempleCore
 struct SidebarView: View {
     @EnvironmentObject var model: AppModel
     @State private var showAllProjects = false
+    /// Hosts whose projects are folded under their heading (Group by Host).
+    /// Not persisted, as a project's fold isn't.
+    @State private var collapsedHosts: Set<HostID> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -243,10 +246,20 @@ struct SidebarView: View {
                     let byMachine = model.sidebarOptions.grouping == .machine
                         && shown.contains { !$0.key.host.isLocal }
                     ForEach(Array(shown.enumerated()), id: \.element.id) { index, project in
-                        if byMachine, index == 0 || shown[index - 1].key.host != project.key.host {
-                            MachineHeading(host: project.key.host)
+                        let host = project.key.host
+                        if byMachine, index == 0 || shown[index - 1].key.host != host {
+                            MachineHeading(host: host, expanded: !collapsedHosts.contains(host)) {
+                                withAnimation(.easeInOut(duration: 0.18)) {
+                                    if collapsedHosts.contains(host) { collapsedHosts.remove(host) } else { collapsedHosts.insert(host) }
+                                }
+                            }
                         }
-                        ProjectDisclosure(project: project, isFirst: index == 0, showsHost: !byMachine)
+                        // A folded host hides its projects whole, as a folded
+                        // project hides its rows.
+                        if !(byMachine && collapsedHosts.contains(host)) {
+                            ProjectDisclosure(project: project, isFirst: index == 0, showsHost: !byMachine)
+                                .transition(.opacity)
+                        }
                     }
                     // The number folded away is what the cap left out MINUS the
                     // active project `capped` appends past it: the old label
@@ -829,21 +842,27 @@ private struct ProjectDisclosure: View {
     private static let batch = 10
 
     /// What the project lists: its open group whole, then (with no search)
-    /// the closed sessions active within the recent window, up to six rows
-    /// in all; Show more reveals the rest by activity. A search lists every
-    /// match, six first, as before.
-    private var layout: (shown: [Session], openCount: Int, hidden: Int) {
+    /// the closed sessions active in the last week, in the session sort, up
+    /// to six rows in all; Show older reveals the rest in the same sort. A
+    /// search lists every match, six first.
+    private var layout: (open: [Session], closed: [Session], hidden: Int) {
         let sessions = project.sessions
         let openCount = sessions.prefix { model.inSidebarOpenGroup($0.id) }.count
+        let open = Array(sessions.prefix(openCount))
+        let rest = Array(sessions.dropFirst(openCount))
         if !model.searchText.trimmingCharacters(in: .whitespaces).isEmpty {
             let shown = Array(sessions.prefix(Self.collapsedLimit + extra))
-            return (shown, min(openCount, shown.count), sessions.count - shown.count)
+            let closed = Array(shown.dropFirst(min(openCount, shown.count)))
+            return (Array(shown.prefix(openCount)), closed, sessions.count - shown.count)
         }
-        let rest = sessions.dropFirst(openCount)
-        let recent = rest.prefix { model.inSidebarRecent($0) }.count
-        let base = min(recent, max(0, Self.collapsedLimit - openCount))
-        let shownRest = rest.prefix(base + extra)
-        return (Array(sessions.prefix(openCount)) + shownRest, openCount, rest.count - shownRest.count)
+        let recent = rest.filter { model.inSidebarRecent($0) }
+        let base = Array(recent.prefix(max(0, Self.collapsedLimit - openCount)))
+        let listed = Set(base.map(\.id))
+        let more = rest.filter { !listed.contains($0.id) }.prefix(extra)
+        // In the sort's order, whichever of them are listed.
+        let shownIDs = listed.union(more.map(\.id))
+        let closed = rest.filter { shownIDs.contains($0.id) }
+        return (open, closed, rest.count - closed.count)
     }
 
     /// Session rows indent one shallow step: the badge starts under the
@@ -852,8 +871,6 @@ private struct ProjectDisclosure: View {
     /// sits one badge width inside the heading. Manual header + rows because
     /// DisclosureGroup's child outline indent is fixed and much deeper.
     static let childInset: CGFloat = 12
-    /// Between a project's open sessions and the closed ones under them.
-    static let openGroupGap: CGFloat = 8
 
     /// The project label's column: the header's 4pt padding, its 12pt chevron
     /// column and the 6pt gap. The Pinned label and the rail-level "Show N
@@ -888,7 +905,10 @@ private struct ProjectDisclosure: View {
                 rows
             }
         }
-        .clipped()
+        // Clipped a few points outside its rows, not at them: the open box's
+        // outline reaches just past its rows (`boxOutset`), and a clip at the
+        // rows cut its top and bottom edges. The fold still happens inside.
+        .clipShape(Rectangle().inset(by: -Self.boxOutset))
         // Dev-only (WindowSnapshot): fold/unfold the first project so the
         // animation can be captured frame by frame without a click. Only the
         // first disclosure of a snapshot run subscribes; every other one gets
@@ -902,31 +922,39 @@ private struct ProjectDisclosure: View {
     private var rows: some View {
             let layout = self.layout
             let footer = hasFooterRow(hidden: layout.hidden)
-            ForEach(Array(layout.shown.enumerated()), id: \.element.id) { offset, session in
-                SessionRow(session: session)
-                    .padding(.leading, Self.childInset)
-                    // The open group stands apart from the closed sessions
-                    // under it by a gap, not a label: the dots above and the
-                    // ages below already say which is which.
-                    .padding(.top, offset == layout.openCount && offset > 0 ? Self.openGroupGap : 0)
-                    .background(Color.clear.id(SidebarView.rowScrollID(session.id)))
-                    .opacity(inHand ? 0.4 : 1)
-                    .transition(.opacity)
-                    .onDrop(of: [Self.dragType], delegate: dropDelegate(row: session.sessionID, edge: .bottom))
-                    .overlay(alignment: .bottom) {
-                        if dropIndicator == .bottom, !footer, offset == layout.shown.count - 1 {
-                            dropLine
-                        }
+            let lastID = (layout.closed.last ?? layout.open.last)?.id
+            if !layout.open.isEmpty {
+                // The open sessions in one box: the project's live zone,
+                // drawn behind the rows so no row moves and the badges and
+                // titles stay on the closed rows' columns (ADR-042). Not a
+                // fill per row: four filled rows read as four selections.
+                VStack(spacing: 0) {
+                    ForEach(layout.open) { session in
+                        row(session, isLast: session.id == lastID, footer: footer, draggable: false)
                     }
+                }
+                // An outline, not a fill: a filled box around one open
+                // session was the selected row's own shape (the selection
+                // is the fill). It reaches past the rows' pills on every
+                // side, so a selected row inside never shares its edge.
+                .background(alignment: .leading) {
+                    RoundedRectangle(cornerRadius: Self.boxRadius, style: .continuous)
+                        .strokeBorder(Palette.hairline, lineWidth: 1)
+                        .padding(.leading, Self.childInset - Self.boxOutset)
+                        .padding(.vertical, -2)
+                }
+            }
+            ForEach(layout.closed) { session in
+                row(session, isLast: session.id == lastID, footer: footer, draggable: true)
             }
             if footer {
                 HStack(spacing: 10) {
                     if layout.hidden > 0 {
                         // The count is the whole label: it says how deep the
                         // project goes, so a click on a 53-session project is
-                        // no surprise. "Older": what is folded is ordered by
-                        // activity under what shows (a search's matches
-                        // likewise). Each click reveals one batch.
+                        // no surprise. "Older": what is folded is outside the
+                        // last week, or past the first rows. Each click
+                        // reveals one batch.
                         sidebarExpander("Show \(layout.hidden) older") { extra += Self.batch }
                     }
                     if extra > 0 {
@@ -948,11 +976,58 @@ private struct ProjectDisclosure: View {
             }
     }
 
+    /// One session row, with the project's drop target and, for a closed
+    /// session, its own drag to reorder (open ones follow their tabs).
+    @ViewBuilder
+    private func row(_ session: Session, isLast: Bool, footer: Bool, draggable: Bool) -> some View {
+        let base = SessionRow(session: session)
+            .padding(.leading, Self.childInset)
+            // Every row, open or closed, leaves the box's outset on the
+            // right: the group clips (its fold animates inside its own
+            // box), so the box can't reach past it, and the dots and ages
+            // stay on one column.
+            .padding(.trailing, Self.boxOutset)
+            .background(Color.clear.id(SidebarView.rowScrollID(session.id)))
+            .opacity(inHand || model.draggedSession == session.id ? 0.4 : 1)
+            .transition(.opacity)
+            .onDrop(of: [Self.dragType], delegate: dropDelegate(row: session.sessionID, edge: .bottom))
+            .overlay(alignment: .bottom) {
+                if dropIndicator == .bottom, !footer, isLast { dropLine }
+            }
+        if draggable {
+            base
+                .onDrag {
+                    model.beginSessionDrag(session.id)
+                    let provider = NSItemProvider()
+                    provider.registerDataRepresentation(forTypeIdentifier: Self.sessionDragType.identifier,
+                                                        visibility: .ownProcess) { done in
+                        done(Data(), nil)
+                        return nil
+                    }
+                    return provider
+                }
+                .onDrop(of: [Self.sessionDragType], delegate: SessionDropDelegate(model: model, target: session.id))
+                .overlay(alignment: model.sessionDropSlot?.edge == .top ? .top : .bottom) {
+                    if model.sessionDropSlot?.target == session.id { dropLine }
+                }
+        } else {
+            base
+        }
+    }
+
+    /// The open box's corners: a step rounder than a row's 7 pt pill, which
+    /// sits inside it.
+    static let boxRadius: CGFloat = 10
+    /// How far the box reaches past the rows' pills on each side.
+    static let boxOutset: CGFloat = 3
+
     // MARK: Drag to reorder
 
     /// The drag payload is a private, in-process type — never plain text — so a
     /// drop that misses the rail cannot paste a path into a live terminal.
     static let dragType = UTType(exportedAs: "com.sriramb.temple.project-order")
+    /// A session row in hand, to reorder within its project; in-process only.
+    static let sessionDragType = UTType(exportedAs: "com.sriramb.temple.session-order")
     /// The gap above a heading, inside its hit shape and drop target.
     static let headerGap: CGFloat = 12
 
@@ -1325,29 +1400,43 @@ private extension View {
 }
 
 
-/// A machine's heading when the sidebar is grouped by machine: a step above
-/// the projects under it (sentence case, primary, a glyph for the kind of
-/// machine), where a project heading is a tracked uppercase label.
+/// A host's heading when the sidebar is grouped by host: it folds the
+/// host's projects the way a project heading folds its sessions (the same
+/// chevron, the same click), a step above them in weight (sentence case,
+/// primary, a glyph for the kind of machine) where a project heading is a
+/// tracked uppercase label.
 private struct MachineHeading: View {
     @EnvironmentObject var model: AppModel
     let host: HostID
+    let expanded: Bool
+    let toggle: () -> Void
+    @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: host.isLocal ? "laptopcomputer" : "server.rack")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(width: 16)
-            Text(host.isLocal ? "This Mac" : host.rawValue)
-                .font(.system(size: 12, weight: .semibold))
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Spacer(minLength: 0)
+        Button(action: toggle) {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+                    .frame(width: 12)
+                Image(systemName: host.isLocal ? "laptopcomputer" : "server.rack")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                Text(host.isLocal ? "This Mac" : host.rawValue)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(hovering ? .primary : .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 0)
+            }
+            .padding(.leading, 4)
+            .frame(height: 28)
+            .contentShape(Rectangle())
         }
-        .padding(.leading, 4)
-        .frame(height: 28)
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
         .padding(.top, 16)
-        .contentShape(Rectangle())
         .contextMenu {
             if !host.isLocal {
                 Button(RemoteCopy.sessionsOnMenuItem(host.rawValue)) { model.showRemoteSessions(host) }
@@ -1355,36 +1444,15 @@ private struct MachineHeading: View {
             Button("Manage Hosts…") { model.showHostsManager() }
         }
         .accessibilityAddTraits(.isHeader)
+        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
     }
 }
 
-/// The rail's View Options: how projects are sorted and grouped, what each
-/// one lists, and how far back "recent" goes. The filter glyph Mail and
-/// Notes use for the same job.
+/// The rail's View Options: how projects and the sessions in them are
+/// sorted, whether only open sessions show, and grouping by host. The
+/// filter glyph Mail and Notes use for the same job.
 struct SidebarViewOptionsMenu: View {
     @EnvironmentObject var model: AppModel
-
-    /// Show and the recent window in one choice: "Open and Last Week" says
-    /// what "recent" is where it is chosen (a cold read stumbled on a
-    /// separate "Recent Means" section).
-    private enum Shown: Hashable {
-        case openOnly
-        case openAnd(SidebarOptions.RecentWindow)
-    }
-
-    private var shown: Binding<Shown> {
-        Binding(get: {
-            model.sidebarOptions.show == .openOnly ? .openOnly : .openAnd(model.sidebarOptions.recentWindow)
-        }, set: { choice in
-            switch choice {
-            case .openOnly:
-                model.setSidebarShow(.openOnly)
-            case .openAnd(let window):
-                model.setSidebarShow(.openAndRecent)
-                model.setSidebarRecentWindow(window)
-            }
-        })
-    }
 
     var body: some View {
         Menu {
@@ -1392,17 +1460,16 @@ struct SidebarViewOptionsMenu: View {
                 ForEach(SidebarOptions.Sort.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.inline)
-            Picker("Show", selection: shown) {
-                Text("Open Only").tag(Shown.openOnly)
-                ForEach(SidebarOptions.RecentWindow.allCases, id: \.self) { window in
-                    Text("Open and \(window.title)").tag(Shown.openAnd(window))
-                }
+            Picker("Sort Sessions By", selection: binding(\.sessionSort, model.setSidebarSessionSort)) {
+                ForEach(SidebarOptions.SessionSort.allCases, id: \.self) { Text($0.title).tag($0) }
             }
             .pickerStyle(.inline)
+            Divider()
+            Toggle("Show Only Sessions Open in Tabs", isOn: Binding(
+                get: { model.sidebarOptions.openOnly }, set: { model.setSidebarOpenOnly($0) }))
             // Hosts are remote UI: with no host enabled there is one
             // machine and nothing to group (ADR-036).
             if !model.remoteHostIDs.isEmpty {
-                Divider()
                 Toggle("Group by Host", isOn: Binding(
                     get: { model.sidebarOptions.grouping == .machine },
                     set: { model.setSidebarGrouping($0 ? .machine : .project) }))
@@ -1411,11 +1478,59 @@ struct SidebarViewOptionsMenu: View {
             Image(systemName: "line.3.horizontal.decrease")
         }
         .menuIndicator(.hidden)
-        .help("View options: sort, group and filter the sidebar")
+        .help("View options: sort, filter and group the sidebar")
     }
 
     private func binding<Value>(_ path: KeyPath<SidebarOptions, Value>,
                                 _ set: @escaping (Value) -> Void) -> Binding<Value> {
         Binding(get: { model.sidebarOptions[keyPath: path] }, set: { set($0) })
+    }
+}
+
+/// A closed session dropped on another closed session of the same project:
+/// above it in the row's upper half, below it in the lower.
+private struct SessionDropDelegate: DropDelegate {
+    let model: AppModel
+    let target: SessionKey
+
+    private func edge(_ info: DropInfo) -> Edge { info.location.y < 16 ? .top : .bottom }
+
+    private var sameProject: Bool {
+        guard let dragged = model.draggedSession, dragged != target else { return false }
+        let rows = model.sessions
+        return rows.first { $0.id == dragged }?.project == rows.first { $0.id == target }?.project
+    }
+
+    func validateDrop(info: DropInfo) -> Bool {
+        info.hasItemsConforming(to: [ProjectDisclosure.sessionDragType]) && sameProject
+    }
+
+    func dropEntered(info: DropInfo) { show(info) }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        show(info)
+        return DropProposal(operation: .move)
+    }
+
+    private func show(_ info: DropInfo) {
+        guard sameProject else { return }
+        let slot = AppModel.SessionDropSlot(target: target, edge: edge(info))
+        if model.sessionDropSlot != slot { model.sessionDropSlot = slot }
+    }
+
+    func dropExited(info: DropInfo) {
+        if model.sessionDropSlot?.target == target { model.sessionDropSlot = nil }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        guard let dragged = model.draggedSession, sameProject else { return false }
+        let edge = edge(info)
+        model.endSessionDrag()
+        DispatchQueue.main.async { model.endSessionDrag() }
+        switch edge {
+        case .top: model.moveSession(dragged, before: target)
+        default: model.moveSession(dragged, after: target)
+        }
+        return true
     }
 }

@@ -119,7 +119,7 @@ struct SessionRow: View {
         .contextMenu { contextMenu }
         .alert("Rename session", isPresented: $renaming) {
             TextField("Name", text: $draftName)
-            Button("Save") { model.overlay.rename(session.id, to: draftName) }
+            Button("Save") { model.renameSession(session.id, to: draftName) }
             Button("Cancel", role: .cancel) {}
         }
         .alert(stopQuestion.title,

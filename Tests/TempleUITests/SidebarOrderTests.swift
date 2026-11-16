@@ -137,7 +137,7 @@ final class SidebarOrderTests: XCTestCase {
         let model = makeModel(rows())
         open(model, "a2")
         pump()
-        model.setSidebarShow(.openOnly)
+        model.setSidebarOpenOnly(true)
         XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a"])
         XCTAssertEqual(ids(model, "/p/a"), ["a2"])
         model.searchText = "Title"
@@ -148,15 +148,130 @@ final class SidebarOrderTests: XCTestCase {
         let database = try! TempleDB.inMemory()
         let model = makeModel(rows(), database: database)
         let store = UIStateStore(db: database)
-        XCTAssertNil(store.string(UIStateStore.SidebarKey.show))
-        model.setSidebarShow(.openOnly)
-        model.setSidebarRecentWindow(.month)
+        XCTAssertNil(store.string(UIStateStore.SidebarKey.openOnly))
+        model.setSidebarOpenOnly(true)
+        model.setSidebarSessionSort(.name)
         let reread = UIStateStore(db: database)
-        XCTAssertEqual(reread.string(UIStateStore.SidebarKey.show), "openOnly")
-        XCTAssertEqual(reread.string(UIStateStore.SidebarKey.recentWindow), "month")
+        XCTAssertEqual(reread.string(UIStateStore.SidebarKey.openOnly), "1")
+        XCTAssertEqual(reread.string(UIStateStore.SidebarKey.sessionSort), "name")
         XCTAssertNil(reread.string(UIStateStore.SidebarKey.grouping))
         XCTAssertEqual(reread.sidebarOptions(customByDefault: false),
-                       SidebarOptions(show: .openOnly, recentWindow: .month))
+                       SidebarOptions(sessionSort: .name, openOnly: true))
+        model.setSidebarOpenOnly(false)
+        XCTAssertNil(UIStateStore(db: database).string(UIStateStore.SidebarKey.openOnly), "off is the default: no key")
+    }
+
+    // MARK: Session sort
+
+    private func titled() -> [Session] {
+        [
+            Fixture.row("c", project: "/p/a", title: "Charlie", updated: 50),
+            Fixture.row("a", project: "/p/a", title: "Alpha", updated: 40),
+            Fixture.row("b", project: "/p/a", title: "Bravo", updated: 30),
+        ]
+    }
+
+    func testSessionsSortByNameWithoutMovingProjects() {
+        let model = makeModel(titled() + [Fixture.row("z", project: "/p/z", updated: 10)])
+        model.setSidebarSessionSort(.name)
+        XCTAssertEqual(ids(model, "/p/a"), ["a", "b", "c"])
+        XCTAssertEqual(model.displayProjects.map(\.path), ["/p/a", "/p/z"], "projects keep their own sort")
+    }
+
+    func testOpenSessionsStayFirstWhateverTheSessionSort() {
+        let model = makeModel(titled())
+        open(model, "c")
+        pump()
+        model.setSidebarSessionSort(.name)
+        XCTAssertEqual(ids(model, "/p/a"), ["c", "a", "b"])
+    }
+
+    func testSessionsSortByDateStartedFromTheTranscriptElseWhenTempleSawThem() throws {
+        let database = try TempleDB.inMemory()
+        try database.join(sessionID: "old", via: .imported, agent: .claude,
+                          core: SessionCore(directory: "/p/a", directorySource: .transcript, title: "Old",
+                                            lastActiveAt: Date(timeIntervalSince1970: 90),
+                                            startedAt: Date(timeIntervalSince1970: 5)))
+        try database.join(sessionID: "new", via: .imported, agent: .claude,
+                          core: SessionCore(directory: "/p/a", directorySource: .transcript, title: "New",
+                                            lastActiveAt: Date(timeIntervalSince1970: 50),
+                                            startedAt: Date(timeIntervalSince1970: 40)))
+        let model = makeModel([], database: database)
+        XCTAssertEqual(ids(model, "/p/a"), ["old", "new"], "by activity")
+        model.setSidebarSessionSort(.dateStarted)
+        XCTAssertEqual(ids(model, "/p/a"), ["new", "old"], "newest start first")
+    }
+
+    func testDraggingASessionMakesACustomOrderThatSurvivesARelaunch() throws {
+        let database = try TempleDB.inMemory()
+        let model = makeModel(titled(), database: database)
+        XCTAssertEqual(ids(model, "/p/a"), ["c", "a", "b"])
+        model.moveSession(SessionKey(id: "b", host: .local), before: SessionKey(id: "c", host: .local))
+        XCTAssertEqual(model.sidebarOptions.sessionSort, .custom)
+        XCTAssertEqual(ids(model, "/p/a"), ["b", "c", "a"])
+        // Activity no longer moves them.
+        model.overlay.touch(SessionKey(id: "a", host: .local), at: Date(timeIntervalSince1970: 500))
+        scheduledRecency.forEach { $0() }
+        XCTAssertEqual(ids(model, "/p/a"), ["b", "c", "a"])
+
+        let next = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+                            engines: [FakeEngine(CatalogFixtureIndex(projects: []))], database: database,
+                            settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+        next.receiveEngineSnapshot(SessionsSnapshot(generation: 1, resolutions: Dictionary(
+            uniqueKeysWithValues: next.sessions.map { ($0.id, MemberResolution.confirmedAbsent) })))
+        XCTAssertEqual(ids(next, "/p/a"), ["b", "c", "a"])
+        // A session nobody placed comes in above the placed ones.
+        next.overlay.join("d", via: .created, agent: .claude, core: SessionCore(directory: "/p/a"))
+        XCTAssertEqual(ids(next, "/p/a").first, "d")
+    }
+
+    /// A search shows closed sessions even with Open Only on; dragging one
+    /// of them still reorders.
+    func testADragStillWorksOnClosedRowsASearchShowsUnderOpenOnly() {
+        let model = makeModel(titled())
+        model.setSidebarOpenOnly(true)
+        model.searchText = "a"
+        model.moveSession(SessionKey(id: "b", host: .local), before: SessionKey(id: "c", host: .local))
+        XCTAssertEqual(model.sidebarOptions.sessionSort, .custom)
+        XCTAssertEqual(model.sessionOrder[Fixture.key("/p/a")], ["b", "c", "a"])
+    }
+
+    /// A person's own rename moves the row at once under a Name sort; a
+    /// name that changes otherwise (here, the overlay directly, as a fill
+    /// does) waits for the pointer to leave.
+    func testARenameMovesAtOnceAndOtherNameChangesWaitForThePointer() {
+        let model = makeModel(titled())
+        model.setSidebarSessionSort(.name)
+        model.sidebarPointerInside = true
+        model.renameSession(SessionKey(id: "b", host: .local), to: "Zulu")
+        XCTAssertEqual(ids(model, "/p/a"), ["a", "c", "b"], "the person's rename lands now")
+        model.sidebarPointerInside = false
+        model.requestSidebarRefresh()
+        model.overlay.rename(SessionKey(id: "b", host: .local), to: "Bravo")
+        scheduledRecency.forEach { $0() }
+        scheduledRecency.removeAll()
+        model.requestSidebarRefresh()
+        XCTAssertEqual(ids(model, "/p/a"), ["a", "b", "c"])
+    }
+
+    func testANameFilledUnderThePointerWaitsForItToLeave() {
+        let model = makeModel(titled())
+        model.setSidebarSessionSort(.name)
+        XCTAssertEqual(ids(model, "/p/a"), ["a", "b", "c"])
+        model.sidebarPointerInside = true
+        model.overlay.rename(SessionKey(id: "c", host: .local), to: "Aardvark")
+        scheduledRecency.forEach { $0() }
+        XCTAssertEqual(ids(model, "/p/a"), ["a", "b", "c"], "held")
+        model.sidebarPointerInside = false
+        model.requestSidebarRefresh()
+        XCTAssertEqual(ids(model, "/p/a"), ["c", "a", "b"])
+    }
+
+    func testASessionDropAcrossProjectsDoesNothing() {
+        let model = makeModel(rows())
+        model.moveSession(SessionKey(id: "b1", host: .local), before: SessionKey(id: "a1", host: .local))
+        XCTAssertEqual(model.sidebarOptions.sessionSort, .recentActivity)
+        XCTAssertEqual(ids(model, "/p/b"), ["b1", "b2"])
     }
 
     func testOpenRowsKeepTheirPlacesUnderThePointerWhenATabCloses() {

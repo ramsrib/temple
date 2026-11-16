@@ -34,9 +34,11 @@ final class MemberStateMachineTests: XCTestCase {
         try write(file, agent: agent, id: "member", prompt: prompt)
         let db = try TempleDB.inMemory()
         let core: SessionCore? = switch row {
-        case .complete: SessionCore(directory: "/work", title: "Complete", lastActiveAt: Date())
-        case .wantsTitle: SessionCore(directory: "/work", directorySource: .tab, lastActiveAt: Date())
-        case .wantsDirectoryAndTitle: SessionCore(lastActiveAt: Date())
+        // Every core field a transcript fills, `startedAt` (v15) included,
+        // or the member wants it and is read.
+        case .complete: SessionCore(directory: "/work", title: "Complete", lastActiveAt: Date(), startedAt: Date())
+        case .wantsTitle: SessionCore(directory: "/work", directorySource: .tab, lastActiveAt: Date(), startedAt: Date())
+        case .wantsDirectoryAndTitle: SessionCore(lastActiveAt: Date(), startedAt: Date())
         case .bare: nil
         }
         try db.join(sessionID: "member", via: .imported, agent: agent, locator: TranscriptLocator(localURL: file), core: core)
@@ -355,7 +357,7 @@ final class MemberStateMachineTests: XCTestCase {
     func testASharedHistoryPromptCompletesACodexTitleWithoutTheRolloutChanging() async throws {
         let (root, file, db, clock, watcher, _) = try fixture(agent: .codex, row: .wantsTitle)
         try db.join(sessionID: "complete", via: .imported, agent: .claude,
-            core: SessionCore(directory: "/w", title: "Done", lastActiveAt: Date()))
+            core: SessionCore(directory: "/w", title: "Done", lastActiveAt: Date(), startedAt: Date()))
         try await start(watcher)
         XCTAssertEqual(watcher.resolution(for: "member"), .loaded(file))
         XCTAssertNil(watcher.latestSnapshot?.facts["member"], "nothing the row wants yet")

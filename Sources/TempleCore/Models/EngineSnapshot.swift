@@ -101,6 +101,7 @@ public struct AuthorizedFacts: Equatable, Sendable {
         if summary.lastEntryAt != nil { fields.insert(.lastActiveAt) }
         if summary.cwd != nil { fields.insert(.directory) }
         if summary.titleFact != nil { fields.insert(.title) }
+        if summary.createdAt != nil { fields.insert(.startedAt) }
         return fields
     }
 
@@ -120,6 +121,7 @@ public extension SessionState {
         if directory == nil { missing.insert(.directory) }
         if title == nil { missing.insert(.title) }
         if lastActiveAt == nil { missing.insert(.lastActiveAt) }
+        if startedAt == nil { missing.insert(.startedAt) }
         return missing
     }
 }

@@ -65,11 +65,13 @@ open tabs; any other session returns the next time it is opened
 ([ADR-023](./DECISIONS.md#adr-023--temple-browses-its-own-sessions-by-default)).
 
 - Inside each project, **open sessions come first**, in the order of their
-  tabs, with their activity dot; then, after a small gap, the closed sessions
-  active within the recent window (a week by default), newest first, each
-  with its age on the right ("2h", "1d", "3w") where an open row has its dot.
-  A project lists every open session and fills up to six rows with recent
-  ones; the rest wait behind **Show N older**. A project with nothing open and
+  tabs, inside one thin outlined box (the project's live sessions; drawn
+  behind the rows, so every row keeps the same 32 pt spacing and the same
+  columns), each with its activity dot; then the closed sessions active in
+  the last week, in the session sort, each with its age on the right ("2h",
+  "1d", "3w") where an open row has its dot. A project lists every open
+  session and fills up to six rows with recent ones; the rest wait behind
+  **Show N older**. A project with nothing open and
   nothing recent shows its heading and **Show N older**
   ([ADR-042](./DECISIONS.md#adr-042--the-sidebar-shows-what-is-open-then-what-is-recent)).
 - The order is live: a tab opening or closing moves its row into or out of
@@ -78,15 +80,22 @@ open tabs; any other session returns the next time it is opened
   and land when it leaves (Mail holds new messages the same way). Until
   0.8.5 the order was frozen at launch for the whole run.
 - **View Options** (the filter button beside search in the sidebar's title
-  bar) sorts projects by **Recent Activity**, **Manual Order** (the order you
-  dragged) or **Name**; **Show** picks **Open Only** or **Open and Last
-  Day / Last Week / Last Month** (what "recent" means; a search still finds
-  everything); and, with a host enabled, **Group by Host** puts each machine
-  under a heading ("This Mac" first, then each host), its projects under it
+  bar) has two separate sorts. **Sort Projects By**: **Recent Activity**,
+  **Name** or **Custom** (the order you dragged). **Sort Sessions By** (the
+  closed sessions inside each project; open ones keep their tab order):
+  **Recent Activity**, **Name**, **Date Started** (when the session began,
+  from its transcript) or **Custom** (drag a closed session onto another in
+  the same project to put it above or below; sessions you never placed
+  stay on top, newest first). **Show Only Sessions Open in Tabs** hides closed
+  sessions and projects with nothing open (a search still finds
+  everything). With a host enabled, **Group by Host** puts each machine
+  under a heading ("This Mac" first, then each host) that folds and
+  unfolds its projects like a project heading, the projects under it
   without their `@host` tag. Choices are remembered; dragging a project
-  heading switches the sort to Manual Order. Someone who dragged projects
-  before View Options existed starts on Manual Order. The dot on an open row
-  says so on hover ("Open in a tab · working").
+  heading switches the project sort to Custom, dragging a session the
+  session sort. Someone who dragged projects before View Options existed
+  starts on Custom. The dot on an open row says so on hover ("Open tab ·
+  working").
 - Each project is a section: an uppercase, letter-spaced label trailed by a
   hairline rule — the launcher's own section language — led by a chevron that
   folds the group. A folded group hides its rows inside its own box; nothing
@@ -101,7 +110,7 @@ open tabs; any other session returns the next time it is opened
   project's header lands above it; dropping anywhere in its body lands below it,
   and an insertion line shows where. A collapsed project has no body, so the
   lower half of its header means below it. The order persists. A manual order
-  wins over recency (in Manual Order); projects nobody has placed stay above the placed ones, so a
+  wins over recency (in Custom); projects nobody has placed stay above the placed ones, so a
   new project still surfaces at the top rather than under the eight-project cap.
 - The initial view shows up to eight projects and, per project, its open
   sessions and recent ones up to six rows.

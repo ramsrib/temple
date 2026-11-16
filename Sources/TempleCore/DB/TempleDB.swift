@@ -84,12 +84,14 @@ public struct SessionCore: Sendable {
     public let directorySource: DirectorySource?
     public let title: String?
     public let lastActiveAt: Date?
+    /// When the transcript's first entry was written: when the session began.
+    public let startedAt: Date?
 
     public init(host: HostID = .local, directory: String? = nil,
                 directorySource: DirectorySource? = nil, title: String? = nil,
-                lastActiveAt: Date? = nil) {
+                lastActiveAt: Date? = nil, startedAt: Date? = nil) {
         self.host = host; self.directory = directory; self.directorySource = directorySource
-        self.title = title; self.lastActiveAt = lastActiveAt
+        self.title = title; self.lastActiveAt = lastActiveAt; self.startedAt = startedAt
     }
 
     /// What a transcript can tell a row: its host, its recorded folder
@@ -100,12 +102,12 @@ public struct SessionCore: Sendable {
     public init(filling summary: TranscriptSummary) {
         self.init(host: summary.locator.host, directory: summary.cwd,
                   directorySource: summary.cwd == nil ? nil : .transcript,
-                  title: summary.titleFact, lastActiveAt: summary.lastEntryAt)
+                  title: summary.titleFact, lastActiveAt: summary.lastEntryAt, startedAt: summary.createdAt)
     }
 }
 
 public enum SessionCoreField: Hashable, Sendable {
-    case agent, directory, title, lastActiveAt
+    case agent, directory, title, lastActiveAt, startedAt
 }
 
 /// Why Temple, not the user, archived a row (ADR-030). NULL in the column
@@ -197,6 +199,9 @@ public struct SessionState: Codable, Hashable, Sendable {
     public let directorySource: DirectorySource?
     public let title: String?
     public var lastActiveAt: Date?
+    /// When the session began, from its transcript's first entry (v15).
+    /// Nil until a transcript has said, and for a row an older build wrote.
+    public let startedAt: Date?
     /// This membership's identity: set by the database on every insert (a
     /// rejoin after a leave is a new row, so a new value), kept by repeated
     /// joins. Opaque; nil only for a row read from a pre-v11 file.
@@ -220,7 +225,8 @@ public struct SessionState: Codable, Hashable, Sendable {
                 host: HostID = .local, directory: String? = nil,
                 directorySource: DirectorySource? = nil, title: String? = nil,
                 lastActiveAt: Date? = nil, incarnation: String? = nil,
-                archiveReason: ArchiveReason? = nil, keptAt: Date? = nil, archivedAt: Date? = nil) {
+                archiveReason: ArchiveReason? = nil, keptAt: Date? = nil, archivedAt: Date? = nil,
+                startedAt: Date? = nil) {
         self.id = id; self.pinned = pinned; self.archived = archived
         self.customName = customName; self.color = color; self.generatedTitle = generatedTitle
         self.lastOpenedAt = lastOpenedAt; self.joinedVia = joinedVia; self.joinedAt = joinedAt
@@ -229,6 +235,7 @@ public struct SessionState: Codable, Hashable, Sendable {
         self.title = title; self.lastActiveAt = lastActiveAt
         self.incarnation = incarnation
         self.archiveReason = archiveReason; self.keptAt = keptAt; self.archivedAt = archivedAt
+        self.startedAt = startedAt
     }
 
     public init(from decoder: any Decoder) throws {
@@ -253,6 +260,7 @@ public struct SessionState: Codable, Hashable, Sendable {
         archiveReason = try c.decodeIfPresent(ArchiveReason.self, forKey: .archiveReason)
         keptAt = try c.decodeIfPresent(Date.self, forKey: .keptAt)
         archivedAt = try c.decodeIfPresent(Date.self, forKey: .archivedAt)
+        startedAt = try c.decodeIfPresent(Date.self, forKey: .startedAt)
     }
 }
 
@@ -712,12 +720,13 @@ public final class TempleDB: @unchecked Sendable {
                     UPDATE session_state SET
                         directory_source = CASE WHEN directory IS NULL AND ? IS NOT NULL THEN ? ELSE directory_source END,
                         directory = COALESCE(directory, ?), title = COALESCE(title, ?),
-                        last_active_at = COALESCE(last_active_at, ?)
+                        last_active_at = COALESCE(last_active_at, ?), started_at = COALESCE(started_at, ?)
                     WHERE id = ? AND host = ? AND ((directory IS NULL AND ? IS NOT NULL)
-                        OR (title IS NULL AND ? IS NOT NULL) OR (last_active_at IS NULL AND ? IS NOT NULL))
+                        OR (title IS NULL AND ? IS NOT NULL) OR (last_active_at IS NULL AND ? IS NOT NULL)
+                        OR (started_at IS NULL AND ? IS NOT NULL))
                     """, arguments: [core.directory, core.directorySource?.rawValue, core.directory,
-                                       core.title, core.lastActiveAt, sessionID, host.rawValue,
-                                       core.directory, core.title, core.lastActiveAt])
+                                       core.title, core.lastActiveAt, core.startedAt, sessionID, host.rawValue,
+                                       core.directory, core.title, core.lastActiveAt, core.startedAt])
                 coreChanged = database.changesCount > 0
             }
             if inserted, !marks.isEmpty {
@@ -1128,7 +1137,8 @@ public final class TempleDB: @unchecked Sendable {
             incarnation: row["incarnation"],
             archiveReason: (row["archive_reason"] as String?).map(ArchiveReason.init(rawValue:)),
             keptAt: row["kept_at"],
-            archivedAt: row["archived_at"]
+            archivedAt: row["archived_at"],
+            startedAt: row["started_at"]
         )
     }
 
@@ -1199,7 +1209,7 @@ public final class TempleDB: @unchecked Sendable {
     @discardableResult
     public func fillCoreFields(sessionID: String, host: HostID, incarnation: String? = nil, agent: Agent? = nil,
                                directory: String? = nil, title: String? = nil,
-                               lastActiveAt: Date? = nil) throws -> SessionWriteOutcome {
+                               lastActiveAt: Date? = nil, startedAt: Date? = nil) throws -> SessionWriteOutcome {
         let outcome = try db.write { database -> SessionWriteOutcome in
             let owner = Self.ownership(sessionID, host: host, incarnation: incarnation)
             guard let row = try Row.fetchOne(database, sql: "SELECT * FROM session_state WHERE \(owner.sql)", arguments: owner.arguments) else {
@@ -1210,13 +1220,14 @@ public final class TempleDB: @unchecked Sendable {
             if (row["directory"] as String?) == nil && directory != nil { fields.insert(.directory) }
             if (row["title"] as String?) == nil && title != nil { fields.insert(.title) }
             if (row["last_active_at"] as Date?) == nil && lastActiveAt != nil { fields.insert(.lastActiveAt) }
+            if (row["started_at"] as Date?) == nil && startedAt != nil { fields.insert(.startedAt) }
             guard !fields.isEmpty else { return .unchanged }
             try database.execute(sql: """
                 UPDATE session_state SET agent = COALESCE(agent, ?),
                     directory_source = CASE WHEN directory IS NULL AND ? IS NOT NULL THEN 'transcript' ELSE directory_source END,
                     directory = COALESCE(directory, ?), title = COALESCE(title, ?),
-                    last_active_at = COALESCE(last_active_at, ?) WHERE \(owner.sql)
-                """, arguments: [agent?.rawValue, directory, directory, title, lastActiveAt] + owner.arguments)
+                    last_active_at = COALESCE(last_active_at, ?), started_at = COALESCE(started_at, ?) WHERE \(owner.sql)
+                """, arguments: [agent?.rawValue, directory, directory, title, lastActiveAt, startedAt] + owner.arguments)
             return .changed(fields)
         }
         if case .changed = outcome { committedRowChange(SessionKey(id: sessionID, host: host)) }
@@ -1634,6 +1645,15 @@ public final class TempleDB: @unchecked Sendable {
             }
         }
         migrator.registerMigration("v14-session-host-key", migrate: migrateSessionHostKey)
+        // When a session began, for the sidebar's Date Started sort
+        // (ADR-042). Additive: NULL until a transcript fills it (NULL-only,
+        // like every core fact); a build before this one keeps working on
+        // the file until the newer-schema guard asks it to update.
+        migrator.registerMigration("v15-session-started-at") { database in
+            try database.alter(table: "session_state") { table in
+                table.add(column: "started_at", .datetime)
+            }
+        }
         return migrator
     }
 }

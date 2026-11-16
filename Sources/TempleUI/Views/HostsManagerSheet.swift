@@ -142,7 +142,7 @@ struct HostsManagerSheet: View {
             ScrollView {
                 VStack(alignment: .leading, spacing: 8) {
                     Text(record.name)
-                        .font(.system(size: 17, weight: .semibold))
+                        .font(.system(size: 13, weight: .semibold))
                         .textSelection(.enabled)
                     if caption == .goneFromConfig {
                         Text(caption.text)
@@ -318,7 +318,7 @@ private struct HostListRow: View {
                         .lineLimit(1)
                         .truncationMode(.middle)
                     Text(record.source == .config ? HostsSettingsSection.Caption.sshConfig.text : record.summary)
-                        .font(.system(size: 10.5))
+                        .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                         .truncationMode(.middle)

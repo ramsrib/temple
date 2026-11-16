@@ -50,6 +50,16 @@
 				<string>public.data</string>
 			</array>
 		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>com.sriramb.temple.session-order</string>
+			<key>UTTypeDescription</key>
+			<string>Temple sidebar session (drag to reorder)</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
 	</array>
 </dict>
 </plist>

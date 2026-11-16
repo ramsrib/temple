@@ -163,17 +163,142 @@ public final class AppModel: ObservableObject {
         sidebarOptions.grouping = grouping
         uiState.write(grouping.rawValue, UIStateStore.SidebarKey.grouping)
     }
-    public func setSidebarShow(_ show: SidebarOptions.Show) {
-        guard sidebarOptions.show != show else { return }
-        sidebarOptions.show = show
-        uiState.write(show.rawValue, UIStateStore.SidebarKey.show)
+    public func setSidebarSessionSort(_ sort: SidebarOptions.SessionSort) {
+        guard sidebarOptions.sessionSort != sort else { return }
+        sidebarOptions.sessionSort = sort
+        uiState.write(sort.rawValue, UIStateStore.SidebarKey.sessionSort)
     }
-    public func setSidebarRecentWindow(_ window: SidebarOptions.RecentWindow) {
-        guard sidebarOptions.recentWindow != window else { return }
-        sidebarOptions.recentWindow = window
-        uiState.write(window.rawValue, UIStateStore.SidebarKey.recentWindow)
-        // Chosen, so applied now, held or not.
-        if sidebarRanksFrozen { holdOpenGroup() }
+    public func setSidebarOpenOnly(_ openOnly: Bool) {
+        guard sidebarOptions.openOnly != openOnly else { return }
+        sidebarOptions.openOnly = openOnly
+        // Off is the shipped default: the key goes rather than holding "0".
+        uiState.write(openOnly ? "1" : nil, UIStateStore.SidebarKey.openOnly)
+    }
+
+    // MARK: Custom session order
+
+    /// Each project's dragged order of its closed sessions, by session id
+    /// (a project is on one host, so the id alone is unique in it). Kept in
+    /// `UIStateStore` as one JSON value; a project with no entry was never
+    /// arranged.
+    @Published public private(set) var sessionOrder: [ProjectKey: [String]] = [:]
+
+    private static func sessionOrderKey(_ key: ProjectKey) -> String { "\(key.host.rawValue)\u{1F}\(key.path)" }
+
+    private func loadSessionOrder() {
+        guard let text = uiState.string(UIStateStore.SidebarKey.sessionOrder),
+              let stored = try? JSONDecoder().decode([String: [String]].self, from: Data(text.utf8)) else { return }
+        var order: [ProjectKey: [String]] = [:]
+        for (key, ids) in stored {
+            let parts = key.split(separator: "\u{1F}", maxSplits: 1, omittingEmptySubsequences: false)
+            guard parts.count == 2 else { continue }
+            order[ProjectKey(host: HostID(rawValue: String(parts[0])), path: String(parts[1]))] = ids
+        }
+        sessionOrder = order
+    }
+
+    private func saveSessionOrder() {
+        let stored = Dictionary(uniqueKeysWithValues: sessionOrder.map { (Self.sessionOrderKey($0.key), $0.value) })
+        guard let data = try? JSONEncoder().encode(stored) else { return }
+        uiState.write(String(decoding: data, as: UTF8.self), UIStateStore.SidebarKey.sessionOrder)
+    }
+
+    /// A closed session dropped on another in the same project: it lands
+    /// above (`before`) or below it. What was on screen becomes the order,
+    /// the move applied, and the session sort becomes Custom.
+    public func moveSession(_ id: SessionKey, before target: SessionKey) { placeSession(id, target) { $0 } }
+    public func moveSession(_ id: SessionKey, after target: SessionKey) { placeSession(id, target) { $0 + 1 } }
+    private func placeSession(_ id: SessionKey, _ target: SessionKey, slot: (Int) -> Int) {
+        guard id != target, let project = presentedByID[id]?.project, presentedByID[target]?.project == project,
+              let shown = sidebarProjects(matching: "", includeClosed: true).first(where: { $0.key == project }) else { return }
+        let group = sidebarOpenGroup()
+        var ids = shown.sessions.filter { !group.isOpen($0.id) }.map(\.sessionID)
+        guard let from = ids.firstIndex(of: id.id) else { return }
+        ids.remove(at: from)
+        guard let to = ids.firstIndex(of: target.id).map(slot) else { return }
+        ids.insert(id.id, at: min(to, ids.count))
+        // Sessions the list doesn't show now (archived) keep their slots.
+        sessionOrder[project] = Self.merge(visibleOrder: ids, into: sessionOrder[project] ?? [])
+        saveSessionOrder()
+        setSidebarSessionSort(.custom)
+    }
+
+    /// The session a row is being dragged for, from grab to drop.
+    @Published public private(set) var draggedSession: SessionKey?
+    private var sessionDragWatch: Timer?
+    /// As a project drag: watched from the source side, so a drag released
+    /// over the terminal or cancelled with Escape still ends it.
+    public func beginSessionDrag(_ id: SessionKey) {
+        endSessionDrag()
+        draggedSession = id
+        let watch = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self, NSEvent.pressedMouseButtons == 0 else { return }
+                self.endSessionDrag()
+            }
+        }
+        RunLoop.main.add(watch, forMode: .common)
+        sessionDragWatch = watch
+    }
+    /// Where the dragged session would land: above or below one row.
+    public struct SessionDropSlot: Equatable {
+        public let target: SessionKey
+        public let edge: Edge
+    }
+    @Published public var sessionDropSlot: SessionDropSlot?
+    public func endSessionDrag() {
+        sessionDragWatch?.invalidate()
+        sessionDragWatch = nil
+        draggedSession = nil
+        if sessionDropSlot != nil { sessionDropSlot = nil }
+        if sidebarRefreshPending, !sidebarPointerInside { requestSidebarRefresh() }
+    }
+
+    /// A person's rename: their own act, so a Name sort takes the new name
+    /// at once, hold or not (a title the transcript fills waits for it).
+    public func renameSession(_ id: SessionKey, to name: String) {
+        overlay.rename(id, to: name)
+        if let row = overlay.rows[id] {
+            let session = presentedByID[id] ?? Session(state: row)
+            let renamed = Session(state: row, resolution: session.resolution)
+            heldSortKeys[id] = HeldSortKey(name: displayTitle(renamed), started: Self.startDate(renamed))
+            objectWillChange.send()
+        }
+    }
+
+    /// When a session began, as well as Temple knows: the transcript's own
+    /// first entry, else when Temple first saw it, else its activity.
+    static func startDate(_ session: Session) -> Date {
+        session.state.startedAt ?? session.state.joinedAt ?? session.sortDate
+    }
+
+    /// A project's closed sessions in the session sort. Recent Activity is
+    /// the held order the rows arrived in; the others are stable on their
+    /// own, so nothing in them moves under the pointer but an edit.
+    private func sortedRest(_ rest: [Session], in project: ProjectKey) -> [Session] {
+        switch sidebarOptions.sessionSort {
+        case .recentActivity:
+            return rest
+        case .name:
+            let name = { (s: Session) in self.heldSortKeys[s.id]?.name ?? self.displayTitle(s) }
+            return rest.sorted { lhs, rhs in
+                let order = name(lhs).localizedStandardCompare(name(rhs))
+                return order == .orderedSame ? lhs.id < rhs.id : order == .orderedAscending
+            }
+        case .dateStarted:
+            let started = { (s: Session) in self.heldSortKeys[s.id]?.started ?? Self.startDate(s) }
+            return rest.sorted { lhs, rhs in
+                let (l, r) = (started(lhs), started(rhs))
+                return l == r ? lhs.id < rhs.id : l > r
+            }
+        case .custom:
+            let stored = sessionOrder[project] ?? []
+            let rank = Dictionary(stored.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+            // Never placed: above the placed ones, newest first (`rest` is
+            // in activity order), as with projects.
+            return rest.filter { rank[$0.sessionID] == nil }
+                + rest.filter { rank[$0.sessionID] != nil }.sorted { rank[$0.sessionID]! < rank[$1.sessionID]! }
+        }
     }
 
     /// The pointer is over the rail's list. While it is, nothing moves: a
@@ -206,12 +331,18 @@ public final class AppModel: ObservableObject {
     /// The ages rows showed when the order was taken: activity
     /// that moves no row still changes what one says ("2h" to "now").
     private var heldAges: [SessionKey: String] = [:]
+    /// Each row's name and start as the order was taken: the Name and Date
+    /// Started sorts read these, so a title or a start filled in the
+    /// background moves nothing under the pointer; the next refresh (the
+    /// fill asks for one) takes the new values.
+    private var heldSortKeys: [SessionKey: HeldSortKey] = [:]
+    private struct HeldSortKey: Equatable { let name: String; let started: Date }
 
     /// Something that moves rows happened. Before the startup freeze the
     /// order is live already.
     func requestSidebarRefresh() {
         guard sidebarRanksFrozen else { return }
-        guard !sidebarPointerInside, draggedProjectKey == nil else {
+        guard !sidebarPointerInside, draggedProjectKey == nil, draggedSession == nil else {
             sidebarRefreshPending = true
             return
         }
@@ -222,7 +353,7 @@ public final class AppModel: ObservableObject {
     private func refreshSidebarOrder() {
         sidebarRefreshPending = false
         guard sidebarRanksFrozen else { return }
-        let before = (frozenProjectOrder, frozenSessionOrder, heldOpen, heldTabRank, heldRecent, heldAges)
+        let before = (frozenProjectOrder, frozenSessionOrder, heldOpen, heldTabRank, heldRecent, heldAges, heldSortKeys)
         // Whole sorts, not `place` one by one (quadratic in a project's
         // sessions): every row is re-ranked from scratch.
         let projects = rowProjects
@@ -237,7 +368,8 @@ public final class AppModel: ObservableObject {
         }
         holdOpenGroup()
         if before.0 != frozenProjectOrder || before.1 != frozenSessionOrder || before.2 != heldOpen
-            || before.3 != heldTabRank || before.4 != heldRecent || before.5 != heldAges {
+            || before.3 != heldTabRank || before.4 != heldRecent || before.5 != heldAges
+            || before.6 != heldSortKeys {
             objectWillChange.send()
         }
     }
@@ -247,13 +379,14 @@ public final class AppModel: ObservableObject {
         heldOpen = Set(open)
         heldTabRank = Dictionary(open.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
         heldKnown = Set(presentedByID.keys)
-        let cutoff = now().addingTimeInterval(-sidebarOptions.recentWindow.interval)
+        let cutoff = now().addingTimeInterval(-SidebarOptions.recentWindow)
         let recent = presentedByID.values.filter { $0.sortDate >= cutoff }
         heldRecent = Set(recent.map(\.id))
         let clock = now()
         // Every row's, not only the recent ones': pinned rows, search
         // results and rows revealed by Show older show an age too.
         heldAges = presentedByID.mapValues { RelativeTime.compact(from: $0.sortDate, now: clock) }
+        heldSortKeys = presentedByID.mapValues { HeldSortKey(name: displayTitle($0), started: Self.startDate($0)) }
     }
 
     /// Time alone moves the rail: ages tick ("5m" to "6m") and rows leave
@@ -284,7 +417,7 @@ public final class AppModel: ObservableObject {
     /// leaves under the pointer).
     public func inSidebarRecent(_ session: Session) -> Bool {
         if sidebarRanksFrozen, heldKnown.contains(session.id) { return heldRecent.contains(session.id) }
-        return session.sortDate >= now().addingTimeInterval(-sidebarOptions.recentWindow.interval)
+        return session.sortDate >= now().addingTimeInterval(-SidebarOptions.recentWindow)
     }
 
     /// The same question for a whole projection, with this moment's open
@@ -845,6 +978,7 @@ public final class AppModel: ObservableObject {
             directoryEvidence: { key in await hostBox.value.entry(for: key.host)?.source.directoryEvidence(key.path) ?? .unknown })
 
         // Now self is fully initialized — finish wiring the closures & observers.
+        loadSessionOrder()
         resolveAppearance = { [weak self] in
             self?.currentAppearance() ?? .default
         }
@@ -1585,10 +1719,12 @@ public final class AppModel: ObservableObject {
 
     /// Each project's sessions: its open group first (in tab order), then the
     /// rest by activity. With Open Only and no search, only the open group.
-    private func sidebarProjects(matching q: String) -> [SessionRowProject] {
+    /// `includeClosed`: Open Only does not apply (a session drag's own
+    /// list, which a search can show closed rows from).
+    private func sidebarProjects(matching q: String, includeClosed: Bool = false) -> [SessionRowProject] {
         let projects = sidebarRanksFrozen ? rowProjects : visibleRowProjects
         let group = sidebarOpenGroup()
-        let openOnly = q.isEmpty && sidebarOptions.show == .openOnly
+        let openOnly = q.isEmpty && sidebarOptions.openOnly && !includeClosed
         let filtered: [SessionRowProject] = projects.compactMap { project in
             guard !overlay.isProjectArchived(project.key) else { return nil }
             let ordered = sidebarRanksFrozen
@@ -1597,7 +1733,7 @@ public final class AppModel: ObservableObject {
             let rows = ordered.filter { !$0.state.archived && (q.isEmpty || $0.displayTitle.localizedCaseInsensitiveContains(q)) }
             var open = rows.filter { group.isOpen($0.id) }
             open.sort { group.rank($0.id) < group.rank($1.id) }
-            let rest = openOnly ? [] : rows.filter { !group.isOpen($0.id) }
+            let rest = openOnly ? [] : sortedRest(rows.filter { !group.isOpen($0.id) }, in: project.key)
             let shown = open + rest
             return shown.isEmpty ? nil : SessionRowProject(key: project.key, sessions: shown)
         }

@@ -904,7 +904,7 @@ final class SessionEngineTests: XCTestCase {
         try FileManager.default.setAttributes([.modificationDate: Date().addingTimeInterval(-1000)], ofItemAtPath: selected.path)
         let db = try TempleDB.inMemory()
         try db.join(sessionID: thread, via: .opened, agent: .codex, locator: TranscriptLocator(localURL: original),
-                    core: SessionCore(directory: "/w", title: "Complete", lastActiveAt: Date()))
+                    core: SessionCore(directory: "/w", title: "Complete", lastActiveAt: Date(), startedAt: Date()))
         let watcher = SessionEngine(source: LocalSessionSource(stores: [CodexSessionStore(root: root)], debounceInterval: 0.02, monitorChanges: false), database: db)
         // The consumer persists what the engine authorizes: here, the hint.
         let committer = FactCommitter(database: db)

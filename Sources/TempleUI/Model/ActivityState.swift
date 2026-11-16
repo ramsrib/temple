@@ -36,10 +36,10 @@ public enum ActivityState: Sendable, Equatable {
     /// agent is doing.
     var openTabHelp: String {
         switch self {
-        case .running: "Open in a tab · working"
-        case .idle: "Open in a tab"
-        case .needsAttention: "Open in a tab · waiting for you"
-        case .exited: "Open in a tab · the agent has exited"
+        case .running: "Open tab · working"
+        case .idle: "Open tab"
+        case .needsAttention: "Open tab · waiting for you"
+        case .exited: "Open tab · the agent has exited"
         }
     }
 
