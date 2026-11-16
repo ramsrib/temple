@@ -43,17 +43,49 @@ struct HostsSettingsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             SectionRule("Hosts")
-            HostsRow(RemoteCopy.hostsLabel) {
-                HStack(alignment: .firstTextBaseline, spacing: 12) {
-                    Text(Self.summary(hosts.records.count))
-                        .font(.system(size: 13))
-                        .foregroundStyle(.secondary)
+            // The hosts themselves, each with its last test's dot, not a
+            // count under a label that repeated the section's title (owner,
+            // round 3). Changes happen in the manager.
+            VStack(alignment: .leading, spacing: 0) {
+                let records = Self.inUse(hosts.records)
+                if records.isEmpty {
+                    HStack(alignment: .firstTextBaseline, spacing: 12) {
+                        Text(Self.emptyLine)
+                            .font(.system(size: 13))
+                            .foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button("Add Host…") { model.showHostsManager(adding: true) }
+                            .buttonStyle(.temple)
+                    }
+                } else {
+                    ForEach(records.prefix(Self.listed)) { record in
+                        HStack(spacing: 10) {
+                            HostStatusDot(tone: HostsManagerSheet.tone(hosts.summaries[record.name]))
+                            Text(record.name)
+                                .font(.system(size: 13))
+                                .lineLimit(1)
+                            Text(record.source == .config ? Caption.sshConfig.text : record.summary)
+                                .font(.system(size: 12))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                                .truncationMode(.middle)
+                            Spacer(minLength: 0)
+                        }
+                        .frame(height: 26)
+                    }
+                    if records.count > Self.listed {
+                        Text("and \(records.count - Self.listed) more")
+                            .font(.system(size: 12))
+                            .foregroundStyle(.secondary)
+                            .padding(.leading, 18)
+                            .frame(height: 22)
+                    }
                     Button("Manage Hosts…") { model.showHostsManager() }
-                        .controlSize(.small)
-                    Spacer(minLength: 0)
+                        .buttonStyle(.temple)
+                        .padding(.top, 10)
                 }
-                .padding(.top, 3)
             }
+            .padding(.vertical, 14)
             Rectangle().fill(Palette.hairline).frame(height: 1)
             // The notes fold away behind one line (owner, round 3: two
             // paragraphs of small print made the page look weird); open,
@@ -142,6 +174,10 @@ struct HostsSettingsSection: View {
     }
 
     static let inUseEmpty = RemoteCopy.hostsEmpty
+    /// With no host yet: what a host is for, beside Add Host….
+    static let emptyLine = "No hosts yet. Add a machine you reach with ssh to run sessions there."
+    /// Hosts listed before "and N more".
+    static let listed = 5
 
     /// What a row says beside the name: where the host came from.
     enum Caption: Equatable {

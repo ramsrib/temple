@@ -797,7 +797,6 @@ public enum RemoteCopy {
 
     // MARK: Settings, Hosts
 
-    public static let hostsLabel = "Added hosts"
     public static let hostsEmpty = "No hosts yet."
     public static let goneFromConfig =
         "No longer in ~/.ssh/config: ssh may not reach it by this name. Add it back to the file, or remove the host."

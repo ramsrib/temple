@@ -102,7 +102,6 @@ final class HostsSettingsViewTests: XCTestCase {
         XCTAssertEqual(HostsSettingsSection.caption(for: .config("jetson-mentes"), configAliases: nil), .sshConfig,
                        "nothing is known missing while the config is read")
         XCTAssertEqual(HostsSettingsSection.inUseEmpty, "No hosts yet.")
-        XCTAssertEqual(RemoteCopy.hostsLabel, "Added hosts")
         XCTAssertEqual(RemoteCopy.removeHostHelp(fromConfig: true), "Removes it from Temple. ~/.ssh/config is not changed.")
         XCTAssertEqual(RemoteCopy.removeHostHelp(fromConfig: false), "Removes it from Temple.")
     }

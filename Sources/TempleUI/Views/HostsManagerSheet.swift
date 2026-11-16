@@ -73,6 +73,10 @@ struct HostsManagerSheet: View {
         .tint(Palette.accent)
         .onAppear {
             hosts.loadConfigAliases()
+            if model.hostsManagerStartsAdding {
+                model.hostsManagerStartsAdding = false
+                addHost = AddHostSheetModel(hosts: hosts)
+            }
             // Dev-only (TEMPLE_SNAPSHOT_DIR + TEMPLE_SNAPSHOT_PRESENT=hosts-add):
             // Add host over the manager, for its field's first moments.
             let env = ProcessInfo.processInfo.environment
@@ -394,11 +398,7 @@ private struct HostListRow: View {
     var body: some View {
         Button(action: select) {
             HStack(spacing: 8) {
-                Circle()
-                    .fill(color)
-                    .overlay(Circle().strokeBorder(Color.secondary.opacity(tone == .untested ? 0.6 : 0), lineWidth: 1))
-                    .frame(width: 8, height: 8)
-                    .help(help)
+                HostStatusDot(tone: tone)
                 VStack(alignment: .leading, spacing: 1) {
                     Text(record.name)
                         .font(.system(size: 13, weight: selected ? .medium : .regular))
@@ -418,6 +418,22 @@ private struct HostListRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+    }
+
+}
+
+/// A host's last test, as a dot: green connected, orange with a warning,
+/// red couldn't connect, hollow not tested. The manager's list and
+/// Settings' Hosts section both show it.
+struct HostStatusDot: View {
+    let tone: HostsManagerSheet.Tone
+
+    var body: some View {
+        Circle()
+            .fill(color)
+            .overlay(Circle().strokeBorder(Color.secondary.opacity(tone == .untested ? 0.6 : 0), lineWidth: 1))
+            .frame(width: 8, height: 8)
+            .help(help)
     }
 
     private var color: Color {
