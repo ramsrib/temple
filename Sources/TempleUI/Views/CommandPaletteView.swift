@@ -150,8 +150,10 @@ struct CommandPaletteView: View {
         .onKeyPress(.escape) { model.commandPalettePresented = false; return .handled }
     }
 
-    /// Fixed row height so the list height is exact (two text lines + padding).
-    private static let rowHeight: CGFloat = 46
+    /// Fixed row height so the list height is exact. One line a row, the
+    /// ⌃⇥ switcher's (design audit, 2026-11: the same sessions were two-line
+    /// rows here and one-line rows there).
+    private static let rowHeight: CGFloat = TabSwitcherHUD.rowHeight
 
     private func move(_ delta: Int) {
         cursor.move(delta, in: results, historyRow: !trimmedQuery.isEmpty)
@@ -260,9 +262,9 @@ private struct SearchHistoryRow: View {
                 .lineLimit(1)
             Spacer()
         }
-        .padding(.horizontal, 14)
+        .padding(.horizontal, 12)
         .frame(maxHeight: .infinity)
-        .background(selected ? Palette.selectionFill : hovering ? Palette.hoverFill : Color.clear)
+        .panelRow(selected: selected, hovering: hovering)
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture(perform: action)
@@ -284,29 +286,40 @@ private struct PaletteResultRow: View {
         // A row with no folder opens History instead of a tab: it says so,
         // dimmed, rather than looking like a session Return would resume.
         let openable = model.canOpenFromPalette(session)
-        HStack(spacing: 10) {
-            if let agent = session.agent { AgentBadge(agent: agent, size: 14) }
-            VStack(alignment: .leading, spacing: 1) {
-                Text(model.displayTitle(session))
-                    .font(.system(size: 13))
-                    .lineLimit(1)
+        // The ⌃⇥ switcher's line: badge, title, its state if it is open,
+        // then where it lives, quieter, at the right.
+        HStack(spacing: 8) {
+            Group {
+                if let agent = session.agent { AgentBadge(agent: agent, size: 14) }
+            }
+            .frame(width: 16)
+            Text(model.displayTitle(session))
+                .font(.system(size: 13, weight: selected ? .medium : .regular))
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if let activity = model.openSessions.openTab(for: session.id)?.activity,
+               activity == .running || activity == .needsAttention {
+                ActivityDot(state: activity, size: 7)
+            }
+            Spacer(minLength: 8)
+            Group {
                 if let project = session.project {
-                    ProjectNameLabel(key: project, font: .system(size: 11), hostFont: .system(size: 11),
+                    ProjectNameLabel(key: project, font: .system(size: 12), hostFont: .system(size: 11),
                                      nameStyle: AnyShapeStyle(.secondary))
                 } else {
                     Text(openable ? "No project" : "No folder on record · opens in History")
-                        .font(.system(size: 11))
+                        .font(.system(size: 12))
                         .foregroundStyle(.secondary)
                 }
             }
-            .opacity(openable ? 1 : 0.55)
-            Spacer()
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: 220, alignment: .trailing)
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 8)
-        .background(TabColorMark.rowFill(
-            TabColorMark.color(for: session.id, in: model),
-            selected: selected, hovering: hovering))
+        .opacity(openable ? 1 : 0.55)
+        .padding(.horizontal, 12)
+        .frame(maxHeight: .infinity)
+        .panelRow(selected: selected, hovering: hovering, mark: TabColorMark.color(for: session.id, in: model))
         .contentShape(Rectangle())
         .onHover { hovering = $0 }
         .onTapGesture(perform: open)

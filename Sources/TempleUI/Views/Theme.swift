@@ -73,7 +73,9 @@ enum Palette {
     static let selectionFill = mono(light: 0.0, 0.085, dark: 1.0, 0.13)
 
     /// Hover / pressed fill on interactive rows.
-    static let hoverFill = mono(light: 0.0, 0.05, dark: 1.0, 0.07)
+    /// Clearly fainter than the selection (design audit, 2026-11: at 0.05
+    /// against 0.085 a row under the pointer read as a second selection).
+    static let hoverFill = mono(light: 0.0, 0.03, dark: 1.0, 0.045)
 
     /// Neutral control fill (search field, "New session", chips).
     static let controlFill = mono(light: 0.0, 0.06, dark: 1.0, 0.08)
@@ -214,4 +216,35 @@ extension ButtonStyle where Self == TemplePrimaryButtonStyle {
 
 extension ButtonStyle where Self == TempleButtonStyle {
     static var temple: TempleButtonStyle { TempleButtonStyle() }
+}
+
+// MARK: - Panel rows
+
+/// The one look for a row in a floating panel (⌘K, the new session picker,
+/// ⌃⇥): an inset rounded fill for the selection, a fainter one under the
+/// pointer, and a colour mark as the sidebar's slim bar, never a tint.
+/// (Design audit, 2026-11: ⌘K and the picker lit rows edge to edge, ⌃⇥
+/// inset, and a marked row was a wash in one and a bar in the other.)
+struct PanelRowFill: ViewModifier {
+    let selected: Bool
+    let hovering: Bool
+    var mark: Color? = nil
+
+    func body(content: Content) -> some View {
+        content
+            .background(selected ? Palette.selectionFill : hovering ? Palette.hoverFill : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .overlay(alignment: .leading) {
+                if let mark {
+                    Capsule().fill(mark).frame(width: 3).padding(.vertical, 9).padding(.leading, 3)
+                }
+            }
+            .padding(.horizontal, 8)
+    }
+}
+
+extension View {
+    func panelRow(selected: Bool, hovering: Bool, mark: Color? = nil) -> some View {
+        modifier(PanelRowFill(selected: selected, hovering: hovering, mark: mark))
+    }
 }

@@ -53,7 +53,6 @@ struct TabSwitcherHUD: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.tertiary)
         }
-        .padding(.horizontal, 8)
         .padding(.top, 8)
         .padding(.bottom, 10)
         .frame(width: Self.width)
@@ -114,19 +113,7 @@ struct TabSwitcherHUD: View {
         }
         .padding(.horizontal, 12)
         .frame(height: Self.rowHeight)
-        .background(selected ? Palette.selectionFill : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-        // A colour mark is the sidebar's slim bar, never a fill: a washed
-        // row read as a second selection.
-        .overlay(alignment: .leading) {
-            if let mark {
-                Capsule()
-                    .fill(mark)
-                    .frame(width: 3)
-                    .padding(.vertical, 9)
-                    .padding(.leading, 3)
-            }
-        }
+        .panelRow(selected: selected, hovering: false, mark: mark)
         .contentShape(Rectangle())
         .onTapGesture {
             model.tabSwitcherSelection = tab.id
