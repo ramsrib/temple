@@ -996,7 +996,8 @@ private struct ProjectDisclosure: View {
         let base = SessionRow(session: session)
             .padding(.leading, Self.childInset)
             .background(Color.clear.id(SidebarView.rowScrollID(session.id)))
-            .opacity(inHand || model.draggedSession == session.id ? 0.4 : 1)
+            .opacity(inHand ? 0.4 : 1)
+            .modifier(SessionDragDim(drag: model.sessionDrag, id: session.id))
             .transition(.opacity)
             .onDrop(of: [Self.dragType],
                     delegate: RowDropDelegate(model: model, project: dropDelegate(row: session.sessionID, edge: .bottom),
@@ -1037,9 +1038,7 @@ private struct ProjectDisclosure: View {
                     .background(Palette.panelBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
                     .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Palette.hairline))
                 })
-                .overlay(alignment: model.sessionDropSlot?.edge == .top ? .top : .bottom) {
-                    if model.sessionDropSlot?.target == session.id { dropLine }
-                }
+                .overlay { SessionDropLine(drag: model.sessionDrag, target: session.id) }
         } else {
             base
         }
@@ -1531,6 +1530,34 @@ struct SidebarViewOptionsMenu: View {
 
 /// A closed session dropped on another closed session of the same project:
 /// above it in the row's upper half, below it in the lower.
+/// The dragged row's dimming, watching only the drag (not the app model).
+private struct SessionDragDim: ViewModifier {
+    @ObservedObject var drag: SessionDragState
+    let id: SessionKey
+    func body(content: Content) -> some View {
+        content.opacity(drag.dragged == id ? 0.4 : 1)
+    }
+}
+
+/// Where a dragged session would land, on its target row's edge; watches
+/// only the drag, so a move of the line redraws this and nothing else.
+private struct SessionDropLine: View {
+    @ObservedObject var drag: SessionDragState
+    let target: SessionKey
+    var body: some View {
+        if let slot = drag.slot, slot.target == target {
+            VStack(spacing: 0) {
+                if slot.edge == .bottom { Spacer(minLength: 0) }
+                Capsule()
+                    .fill(Palette.accent)
+                    .frame(height: 2)
+                    .padding(.horizontal, 6)
+                if slot.edge == .top { Spacer(minLength: 0) }
+            }
+        }
+    }
+}
+
 /// A row's one drop target: a dragged session goes to the session delegate,
 /// a dragged project to the project one.
 private struct RowDropDelegate: DropDelegate {

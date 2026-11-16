@@ -223,8 +223,14 @@ public final class AppModel: ObservableObject {
         setSidebarSessionSort(.custom)
     }
 
+    /// A session drag's state, in an object of its own: only the dragged
+    /// row's dimming and the drop line watch it. As `@Published` on this
+    /// model, every change (the grab, each move of the drop line) redrew
+    /// every view that observes the model, the whole sidebar and the main
+    /// pane, so the preview came late and the line stuttered (owner, round 3).
+    public let sessionDrag = SessionDragState()
     /// The session a row is being dragged for, from grab to drop.
-    @Published public private(set) var draggedSession: SessionKey?
+    public var draggedSession: SessionKey? { sessionDrag.dragged }
     /// The dragged session's project, looked up once when the drag begins:
     /// every row the pointer crosses asks whether it is in the same project,
     /// many times a second (a scan of every session per ask made the drag
@@ -235,7 +241,7 @@ public final class AppModel: ObservableObject {
     /// over the terminal or cancelled with Escape still ends it.
     public func beginSessionDrag(_ id: SessionKey) {
         endSessionDrag()
-        draggedSession = id
+        sessionDrag.dragged = id
         draggedSessionProject = presentedByID[id]?.project
         let watch = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated {
@@ -251,13 +257,16 @@ public final class AppModel: ObservableObject {
         public let target: SessionKey
         public let edge: Edge
     }
-    @Published public var sessionDropSlot: SessionDropSlot?
+    public var sessionDropSlot: SessionDropSlot? {
+        get { sessionDrag.slot }
+        set { if sessionDrag.slot != newValue { sessionDrag.slot = newValue } }
+    }
     public func endSessionDrag() {
         sessionDragWatch?.invalidate()
         sessionDragWatch = nil
-        draggedSession = nil
+        if sessionDrag.dragged != nil { sessionDrag.dragged = nil }
         draggedSessionProject = nil
-        if sessionDropSlot != nil { sessionDropSlot = nil }
+        sessionDropSlot = nil
         if sidebarRefreshPending, !sidebarPointerInside { requestSidebarRefresh() }
     }
 
@@ -2455,3 +2464,12 @@ public final class AppModel: ObservableObject {
     }
 
 }
+
+/// A session drag in the sidebar: the row in hand and where it would land.
+/// Its own object, observed only by the views that show it (`AppModel.sessionDrag`).
+@MainActor
+public final class SessionDragState: ObservableObject {
+    @Published public internal(set) var dragged: SessionKey?
+    @Published var slot: AppModel.SessionDropSlot?
+}
+
