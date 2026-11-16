@@ -20,7 +20,7 @@ final class ShortcutsCardTests: XCTestCase {
         XCTAssertGreaterThan(natural.height, 653 - 52 - 2 * ShortcutsView.windowMargin,
                              "the card is taller than a minimum-size window offers, so the bound matters")
         XCTAssertEqual(idealSize(ShortcutsView(maxHeight: natural.height + 200)).height, natural.height, accuracy: 0.5)
-        XCTAssertEqual(natural.width, 540, accuracy: 0.5)
+        XCTAssertEqual(natural.width, ShortcutsView.cardWidth, accuracy: 0.5)
     }
 
     func testABoundedCardIsNoTallerThanItsBound() {
@@ -28,7 +28,7 @@ final class ShortcutsCardTests: XCTestCase {
             let size = idealSize(ShortcutsView(maxHeight: bound))
             XCTAssertLessThanOrEqual(size.height, bound + 0.5, "bound \(bound)")
             XCTAssertGreaterThan(size.height, bound - 1, "and uses the room it has, scrolling the rest")
-            XCTAssertEqual(size.width, 540, accuracy: 0.5)
+            XCTAssertEqual(size.width, ShortcutsView.cardWidth, accuracy: 0.5)
         }
     }
 }

@@ -308,7 +308,7 @@ final class AddHostSheetTests: XCTestCase {
         emptyWindow.close()
         XCTAssertEqual(RemoteCopy.addHostTitle, "Add host")
         XCTAssertEqual(RemoteCopy.addHostFieldLabel, "Host")
-        XCTAssertEqual(RemoteCopy.addHostPlaceholder, "alias from ~/.ssh/config, or user@address")
+        XCTAssertEqual(RemoteCopy.addHostPlaceholder, "alias from ~/.ssh/config, or user@host")
     }
 
     private func render<V: View>(_ view: V, size: NSSize) -> NSWindow {

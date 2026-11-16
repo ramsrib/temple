@@ -61,7 +61,7 @@ public struct SidebarOptions: Equatable, Sendable {
     public var openOnly: Bool
 
     public init(sort: Sort = .recentActivity, sessionSort: SessionSort = .recentActivity,
-                grouping: Grouping = .project, openOnly: Bool = false) {
+                grouping: Grouping = .machine, openOnly: Bool = false) {
         self.sort = sort
         self.sessionSort = sessionSort
         self.grouping = grouping
@@ -95,7 +95,9 @@ extension UIStateStore {
         SidebarOptions(
             sort: string(SidebarKey.sort).flatMap(SidebarOptions.Sort.init) ?? (customByDefault ? .custom : .recentActivity),
             sessionSort: string(SidebarKey.sessionSort).flatMap(SidebarOptions.SessionSort.init) ?? .recentActivity,
-            grouping: string(SidebarKey.grouping).flatMap(SidebarOptions.Grouping.init) ?? .project,
+            // Group by Host is the default (owner, round 3); it only shows
+            // once a project is on a host, and a choice made is kept.
+            grouping: string(SidebarKey.grouping).flatMap(SidebarOptions.Grouping.init) ?? .machine,
             openOnly: string(SidebarKey.openOnly) == "1")
     }
 }

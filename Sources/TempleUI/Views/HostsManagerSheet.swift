@@ -71,7 +71,15 @@ struct HostsManagerSheet: View {
         }
         .frame(width: Self.size.width, height: Self.size.height)
         .tint(Palette.accent)
-        .onAppear { hosts.loadConfigAliases() }
+        .onAppear {
+            hosts.loadConfigAliases()
+            // Dev-only (TEMPLE_SNAPSHOT_DIR + TEMPLE_SNAPSHOT_PRESENT=hosts-add):
+            // Add host over the manager, for its field's first moments.
+            let env = ProcessInfo.processInfo.environment
+            if env["TEMPLE_SNAPSHOT_DIR"] != nil, env["TEMPLE_SNAPSHOT_PRESENT"] == "hosts-add" {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { addHost = AddHostSheetModel(hosts: hosts) }
+            }
+        }
         .onChange(of: selected?.name) { endSessions() }
         .onDisappear { endSessions() }
         .alert(removal.map { RemoteCopy.removalTitle($0.live.count, host: $0.name) } ?? "",

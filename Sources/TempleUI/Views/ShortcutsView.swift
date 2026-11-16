@@ -15,30 +15,33 @@ struct ShortcutsView: View {
     var defaultAgent: Agent = .claude
     var otherAgent: Agent = .codex
 
-    private var sessions: [Shortcut] {
+    private var newSessions: [Shortcut] {
         let usual = defaultAgent.displayName, other = otherAgent.displayName
         return [
             .init(keys: "⌘T", action: "New \(usual) session in the current project"),
             .init(keys: "⌥⌘T", action: "New \(other) session in the current project"),
             .init(keys: "⌘N", action: "New \(usual) session in a project you pick"),
             .init(keys: "⌥⌘N", action: "New \(other) session in a project you pick"),
-        ] + Self.tabs
+            .init(keys: "⌘O", action: "Open a project folder Temple hasn't seen yet"),
+        ]
     }
 
     private static let tabs: [Shortcut] = [
         .init(keys: "⌘W", action: "Close the current tab (asks first if the agent is working)"),
         .init(keys: "⌘⇧T", action: "Reopen the last closed tab"),
-        .init(keys: "⌘O", action: "Open a project folder Temple hasn't seen yet"),
-        .init(keys: "⌘⇧H", action: "Go to the home page"),
         .init(keys: "⌘⇧[ / ⌘⇧]", action: "Previous / next tab"),
         .init(keys: "⌘1–8", action: "Switch to session 1–8 in the current project"),
         .init(keys: "⌘9", action: "Switch to the current project's last session"),
         .init(keys: "⌃⇥ / ⌃⇧⇥", action: "Last visited tab — hold ⌃ to walk the list, ⇧ reverses"),
+    ]
+
+    private static let terminal: [Shortcut] = [
         .init(keys: "⌘F", action: "Find in the terminal"),
         .init(keys: "⌘G / ⌘⇧G", action: "Next / previous match (Return / ⇧Return in the find field)"),
     ]
 
     private static let navigation: [Shortcut] = [
+        .init(keys: "⌘⇧H", action: "Go to the home page"),
         .init(keys: "⌘P", action: "Switch project — hold ⌘ and tap P to walk, release to land"),
         .init(keys: "⌥⌘[ / ⌥⌘]", action: "Previous / next project (returns to its last session)"),
         .init(keys: "⌘K / ⌘⇧P", action: "Command palette (recent sessions + search)"),
@@ -85,10 +88,23 @@ struct ShortcutsView: View {
                 .padding([.horizontal, .top], 28)
             ScrollView {
                 VStack(alignment: .leading, spacing: 22) {
-                    section("Sessions & tabs", sessions)
-                    section("Navigation", Self.navigation)
-                    section("On the History tab", Self.history)
-                    section("App", Self.app)
+                    // Two columns, as most Mac apps' shortcut references are
+                    // (owner, round 3), balanced: starting and handling tabs on
+                    // the left, getting around, the terminal and History on the right.
+                    HStack(alignment: .top, spacing: 36) {
+                        VStack(alignment: .leading, spacing: 22) {
+                            section("New sessions", newSessions)
+                            section("Tabs", Self.tabs)
+                            section("App", Self.app)
+                        }
+                        .frame(width: Self.columnWidth)
+                        VStack(alignment: .leading, spacing: 22) {
+                            section("Navigation", Self.navigation)
+                            section("Terminal", Self.terminal)
+                            section("On the History tab", Self.history)
+                        }
+                        .frame(width: Self.columnWidth)
+                    }
                     if remoteNote {
                         Text(Self.remoteScrollingNote)
                             .font(.system(size: 12))
@@ -101,13 +117,19 @@ struct ShortcutsView: View {
             }
             .thinScrollers()
         }
-        .frame(width: 540)
+        .frame(width: Self.cardWidth)
         // A flexible frame clamps the card's ideal height, which is what the
         // panel's hosting view sizes itself by: min(natural, maxHeight), with
         // nothing measured.
         .frame(maxHeight: maxHeight)
         .panelChrome()
     }
+
+    /// One column's width: two of them and the gutters fit Temple's
+    /// narrowest window (900 pt) with a margin.
+    static let columnWidth: CGFloat = 380
+    /// Both columns, the gutter between them and the card's padding.
+    static let cardWidth: CGFloat = columnWidth * 2 + 36 + 56
 
     /// The margin kept between the card and the window's top and bottom.
     static let windowMargin: CGFloat = 24
@@ -123,14 +145,22 @@ struct ShortcutsView: View {
             }
             .padding(.bottom, 6)
             ForEach(shortcuts) { shortcut in
-                HStack(spacing: 16) {
+                HStack(alignment: .firstTextBaseline, spacing: 16) {
+                    // Wraps to a second line in the narrower column rather
+                    // than squeezing the keys.
                     Text(shortcut.action)
                         .font(.system(size: 13))
                         .foregroundStyle(.primary)
-                    Spacer(minLength: 24)
+                        .lineLimit(3)
+                        // Without it the ⌃⇥ line was given one line's height
+                        // and cut off. The AGENTS.md titlebar-inset trap is a
+                        // detail-pane one: checked, the sidebar keeps its inset
+                        // with this card up (round 3 snapshot).
+                        .fixedSize(horizontal: false, vertical: true)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                     keycaps(shortcut.keys)
                 }
-                .padding(.vertical, 6)
+                .padding(.vertical, 5)
             }
         }
     }

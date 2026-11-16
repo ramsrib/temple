@@ -33,6 +33,8 @@ import TempleTerminalAPI
 /// titlebar inset): no `.fixedSize`, `.allowsHitTesting`, `layoutPriority`,
 /// `List` or `Form`.
 struct HostsSettingsSection: View {
+    /// The notes under the section, folded until asked for.
+    @State private var notesShown = false
     @EnvironmentObject var model: AppModel
     @ObservedObject var hosts: RemoteHostsModel
     /// Codex's arguments as set above: whether they carry `--no-daemon`.
@@ -53,18 +55,48 @@ struct HostsSettingsSection: View {
                 .padding(.top, 3)
             }
             Rectangle().fill(Palette.hairline).frame(height: 1)
-            Text(Self.flagsAsCode(Self.argumentsNote))
-                .font(.system(size: 11))
+            // The notes fold away behind one line (owner, round 3: two
+            // paragraphs of small print made the page look weird); open,
+            // each is a point of its own.
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) { notesShown.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .rotationEffect(.degrees(notesShown ? 90 : 0))
+                        .frame(width: 10)
+                    Text(Self.notesTitle)
+                        .font(.system(size: 12))
+                }
                 .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 12)
-            Text(Self.noDaemonHint(enabled: codexArguments.contains("--no-daemon")))
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.top, 4)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.top, 12)
+            if notesShown {
+                VStack(alignment: .leading, spacing: 8) {
+                    note(Self.flagsAsCode(Self.argumentsNote))
+                    note(Self.noDaemonHint(enabled: codexArguments.contains("--no-daemon")))
+                }
+                .padding(.top, 8)
+                .padding(.leading, 16)
+                .transition(.opacity)
+            }
         }
         .padding(.top, 26)
+    }
+
+    static let notesTitle = "How hosts use your agent arguments"
+
+    private func note(_ text: AttributedString) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text("•").foregroundStyle(.tertiary)
+            Text(text)
+                .frame(maxWidth: 520, alignment: .leading)
+        }
+        .font(.system(size: 11))
+        .foregroundStyle(.secondary)
     }
 
     static func summary(_ count: Int) -> String {

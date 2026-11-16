@@ -889,7 +889,10 @@ public enum RemoteCopy {
     /// aliases under it, the form for an address behind a link.
     public static let addHostTitle = "Add host"
     public static let addHostFieldLabel = "Host"
-    public static let addHostPlaceholder = "alias from ~/.ssh/config, or user@address"
+    /// No "address": macOS AutoFill guesses from a field's placeholder, and (most likely) a
+    /// postal-address guess flashed its suggestion list over the field on
+    /// open (owner, round 3).
+    public static let addHostPlaceholder = "alias from ~/.ssh/config, or user@host"
     public static let addHostListCaption = "Click a host to add it at once."
     /// An alias whose blocks set neither User nor HostName.
     public static let addHostNoDestination = "no User or HostName set"

@@ -89,7 +89,8 @@ open tabs; any other session returns the next time it is opened
   the same project to put it above or below; sessions you never placed
   stay on top, newest first). **Show Only Sessions Open in Tabs** hides closed
   sessions and projects with nothing open (a search still finds
-  everything). With a host enabled, **Group by Host** puts each machine
+  everything). With a host enabled, **Group by Host** (on unless you turn
+  it off; it shows once a project is on a host) puts each machine
   under a heading ("This Mac" first, then each host): the machine's name in
   semibold, its glyph where the project chevrons sit (so nothing moves
   right), its fold chevron at the right edge, a full-width rule above each
@@ -834,7 +835,7 @@ Changes apply live where applicable.
   selecting a host never connects to it. Done and the other buttons use
   Temple's graphite, not the system blue. With none, "No hosts yet" and **Add
   Host…**. **+** opens a small sheet with one
-  **Host** field ("alias from ~/.ssh/config, or user@address"). Under it,
+  **Host** field ("alias from ~/.ssh/config, or user@host"). Under it,
   "Click a host to add it at once." heads the config's aliases not added yet
   (`Host` entries, one level of `Include`; patterns and `Match` blocks are
   skipped), each beside the `user@hostname` its own `User` and `HostName`
@@ -866,9 +867,11 @@ Changes apply live where applicable.
   (results are kept for this run only). A host that was never tested can
   still start sessions; only a test that ran and found a CLI unusable, or
   tmux missing or too old, rules it out. The Settings section is always
-  there, with no host yet too (it is how one is added); its notes say that the arguments
-  above apply on hosts, and whether Codex's arguments include `--no-daemon`
-  (which lets Temple tell new Codex sessions there apart without asking).
+  there, with no host yet too (it is how one is added); its notes, folded
+  under **How hosts use your agent arguments** until opened, say that the
+  arguments above apply on hosts, and whether Codex's arguments include
+  `--no-daemon` (which lets Temple tell new Codex sessions there apart
+  without asking).
   `~/.ssh/config` is read when the hosts manager opens and again when Add host…
   opens, never before. Opening the sheet runs nothing (not even `ssh -G`,
   which would run a config's `Match exec` commands).
@@ -966,7 +969,7 @@ of truth.
 | **⌘R / ⌘I / ⌘A** | On the History tab: refresh the snapshot / import the selection / select every row in view (from the list; in the search field ⌘A selects its text). |
 | **⌘⌫** | On the History tab: archive the selection, when every selected row can be (from the list; in the search field it deletes text). |
 | **⌘⇧Y** | Archived sessions, in History: the History tab in its Archived scope; pressed there, stays. |
-| **⌘/** | Open the Keyboard Shortcuts reference overlay. |
+| **⌘/** | Open the Keyboard Shortcuts reference overlay: two columns, grouped New sessions, Tabs and App on the left, Navigation, Terminal and On the History tab on the right. |
 | **⌘B** | Toggle the sidebar. |
 | **⌘,** | Open Settings as a tab. |
 | **Esc** | Dismiss the palette or shortcuts overlay from anywhere; close the find bar from its field; cancel busy-close confirmation. On the History tab: clear the search, then the "Archived just now" chip, then the selection, then go back. |

@@ -126,6 +126,7 @@ final class SidebarOrderTests: XCTestCase {
             Fixture.row("m", project: "/p/mid", updated: 30),
         ])
         model.setSidebarSort(.name)
+        model.setSidebarGrouping(.project)
         XCTAssertEqual(model.displayProjects.map(\.key.name), ["alpha", "mid", "zeta"])
         model.setSidebarGrouping(.machine)
         XCTAssertEqual(model.displayProjects.map(\.key), [Fixture.key("/p/mid"), Fixture.key("/p/zeta"),

@@ -85,7 +85,7 @@ public struct RootView: View {
                 case "open-by-id":
                     model.openSessionByID(host: model.remoteHostIDs.first ?? .local)
                 case "settings": model.openSessions.openSettings()
-                case "hosts": model.showHostsManager()
+                case "hosts", "hosts-add": model.showHostsManager()
                 // Keys pressed in Settings' fields, delivered in-process, to
                 // prove the page's own key handling fires (SettingsKeysProbe).
                 case "settings-keys": SettingsKeysProbe.run(model: model)
