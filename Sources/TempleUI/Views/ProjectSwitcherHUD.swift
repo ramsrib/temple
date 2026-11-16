@@ -1,14 +1,14 @@
 import SwiftUI
 import TempleCore
 
-/// ⌘P — the project switcher. Hold ⌘ and tap P to walk, release ⌘ to land —
-/// the ⌘⇥ gesture, so one tap bounces to the project you were just in.
+/// ⌘P — the project switcher, shaped like the macOS app switcher rather than
+/// like ⌘K.
 ///
-/// The ⌃⇥ tab switcher's list, with projects in it (design audit, 2026-11).
-/// It was a row of folder tiles after the macOS app switcher, a third shape
-/// beside ⌘K's rows and ⌃⇥'s; a project is a name, and a name fits a line.
-/// Still no field: you switch between a handful of projects you are already
-/// holding in your head.
+/// The two are different acts and should not look the same: ⌘K searches hundreds
+/// of sessions, so it is a field; you switch between a handful of projects you
+/// are already holding in your head, so it is a row of tiles you tab through.
+/// Hold ⌘ and tap P to walk, release ⌘ to land — the ⌘⇥ gesture, so one tap
+/// bounces to the project you were just in.
 struct ProjectSwitcherHUD: View {
     @EnvironmentObject var model: AppModel
 
@@ -19,75 +19,87 @@ struct ProjectSwitcherHUD: View {
     /// land but not where you would be leaving.
     private var current: ProjectKey? { model.openSessions.activeProjectKey }
 
+    /// Whether any tile is on another machine: then every tile carries a
+    /// machine line (blank on this Mac) so the row's baselines stay level;
+    /// with none, no tile has one and the row looks as it always did.
+    private var anyRemote: Bool { projects.contains { !$0.host.isLocal } }
+
+    /// Wide enough for a typical project name whole; a longer one, or a
+    /// machine name, truncates from the middle on its own line.
+    static let tileWidth: CGFloat = 120
+
     var body: some View {
-        let projects = self.projects
-        let rowHeight = TabSwitcherHUD.rowHeight
-        VStack(spacing: 10) {
-            ScrollViewReader { proxy in
-                ScrollView {
-                    VStack(spacing: 0) {
-                        ForEach(projects, id: \.self) { project in
-                            row(project, selected: project == model.projectSwitcherKeySelection)
-                                .id(project)
-                        }
-                    }
-                }
-                .frame(height: CGFloat(min(projects.count, TabSwitcherHUD.maxRows)) * rowHeight)
-                .scrollDisabled(projects.count <= TabSwitcherHUD.maxRows)
-                .thinScrollers()
-                .onChange(of: model.projectSwitcherKeySelection) {
-                    if let selection = model.projectSwitcherKeySelection {
-                        proxy.scrollTo(selection, anchor: .center)
-                    }
-                }
+        let anyRemote = self.anyRemote
+        HStack(spacing: 4) {
+            ForEach(projects, id: \.self) { path in
+                tile(path, selected: path == model.projectSwitcherKeySelection, hostLine: anyRemote)
             }
-            Text("Release ⌘ to switch")
-                .font(.system(size: 11))
-                .foregroundStyle(.tertiary)
         }
-        .padding(.top, 8)
-        .padding(.bottom, 10)
-        .frame(width: TabSwitcherHUD.width)
+        .padding(14)
         .panelChrome(cornerRadius: 16)
+        .fixedSize()
     }
 
-    /// One line: the project and its machine, then how many sessions it has
-    /// open, then its state. An agent working (or waiting on you) in a
-    /// project you are NOT looking at is the whole reason to glance here.
-    private func row(_ project: ProjectKey, selected: Bool) -> some View {
-        let tabs = model.openSessions.tabs.filter { $0.kind == .session && $0.projectKey == project }
+    private func tile(_ path: ProjectKey, selected: Bool, hostLine: Bool) -> some View {
+        let tabs = model.openSessions.tabs.filter { $0.kind == .session && $0.projectKey == path }
         let states = tabs.map(\.activity)
         let activity: ActivityState? = states.contains(.needsAttention) ? .needsAttention
             : (states.contains(.running) ? .running : nil)
-        let isCurrent = project == current
+        let isCurrent = path == current
 
-        return HStack(spacing: 8) {
-            Image(systemName: "folder")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .frame(width: 16)
-            ProjectNameLabel(key: project,
-                             font: .system(size: 13, weight: selected ? .medium : .regular),
-                             hostFont: .system(size: 11))
-                .lineLimit(1)
-                .truncationMode(.middle)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            Text(isCurrent ? "this project" : "\(tabs.count) open")
-                .font(.system(size: 11))
+        return VStack(spacing: 7) {
+            ZStack(alignment: .topTrailing) {
+                Image(systemName: isCurrent ? "folder.fill" : "folder")
+                    .font(.system(size: 30, weight: .light))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .frame(width: 56, height: 44)
+                // An agent working (or waiting on you) in a project you are NOT
+                // looking at is the whole reason to glance at this list.
+                if let activity {
+                    ActivityDot(state: activity, size: 7)
+                }
+            }
+
+            // The name and the machine on lines of their own: one string
+            // cut from the middle lost both ("mentes…ersonal").
+            VStack(spacing: 2) {
+                Text(path.name)
+                    .font(.system(size: 12, weight: selected ? .semibold : .regular))
+                    .foregroundStyle(selected ? .primary : .secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if hostLine {
+                    Text(ProjectNameLabel.hostTag(path) ?? " ")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            .padding(.horizontal, 6)
+
+            // One caption line for every tile, so the row's baselines stay level.
+            Text(isCurrent ? "current" : "\(tabs.count) session\(tabs.count == 1 ? "" : "s")")
+                .font(.system(size: 11, weight: isCurrent ? .medium : .regular))
+                .tracking(isCurrent ? 0.4 : 0)
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
-            Group {
-                if let activity, !isCurrent { ActivityDot(state: activity, size: 7) }
-            }
-            .frame(minWidth: 12, alignment: .trailing)
         }
-        .padding(.horizontal, 12)
-        .frame(height: TabSwitcherHUD.rowHeight)
-        .panelRow(selected: selected, hovering: false)
+        .frame(width: Self.tileWidth)
+        .padding(.vertical, 10)
+        .background(selected ? Palette.selectionFill : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 12))
+        // The project you are leaving keeps a quiet outline even when the
+        // highlight has moved on somewhere else.
+        .overlay(
+            RoundedRectangle(cornerRadius: 12)
+                .strokeBorder(Color.primary.opacity(isCurrent ? 0.18 : 0), lineWidth: 1)
+        )
         .contentShape(Rectangle())
         .onTapGesture {
-            model.projectSwitcherKeySelection = project
+            model.projectSwitcherKeySelection = path
             model.commitProjectSwitcher()
         }
     }
+
 }
