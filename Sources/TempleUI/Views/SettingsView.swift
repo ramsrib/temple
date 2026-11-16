@@ -53,6 +53,9 @@ struct SettingsView: View {
                     header
                         .padding(.top, PageChrome.top)
                         .id(Anchor.top)
+                    // What people change first (design audit, 2026-11: it
+                    // was last, under three agent sections and Hosts).
+                    appearanceSection
                     agentsSection
                     agentSection(.claude)
                     agentSection(.codex)
@@ -61,7 +64,6 @@ struct SettingsView: View {
                     HostsSettingsSection(hosts: model.remoteHosts,
                                          codexArguments: settings.extraArgs(for: .codex))
                         .id(Anchor.hosts)
-                    appearanceSection
                 }
                 .frame(maxWidth: Self.formWidth, alignment: .leading)
                 .padding(.bottom, 40)
