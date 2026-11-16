@@ -64,9 +64,10 @@ already pinned, renamed, colored, archived or seen retitle in a tab, plus the
 open tabs; any other session returns the next time it is opened
 ([ADR-023](./DECISIONS.md#adr-023--temple-browses-its-own-sessions-by-default)).
 
-- Inside each project, **open sessions come first**, in the order of their
-  tabs, at full strength, each with its activity dot; then the closed
-  sessions active in the last week, in the session sort, in gray, each with
+- Inside each project, **open sessions come first**, in the session sort
+  (not the tab strip's order: the two are separate), at full strength, each
+  with its activity dot; then the closed sessions active in the last week,
+  in the session sort, in gray, each with
   its age on the right ("2h", "1d", "3w") where an open row has its dot
   (hovering a closed row lifts it to full strength). Every row keeps the
   same 32 pt spacing; there is no box or gap between the two. Two tones
@@ -84,10 +85,14 @@ open tabs; any other session returns the next time it is opened
 - **View Options** (the filter button beside search in the sidebar's title
   bar) has two separate sorts. **Sort Projects By**: **Recent Activity**,
   **Name** or **Custom** (the order you dragged). **Sort Sessions By** (the
-  closed sessions inside each project; open ones keep their tab order):
+  sessions inside each project, the open ones and the closed ones each in
+  it):
   **Recent Activity**, **Name**, **Date Started** (when the session began,
-  from its transcript) or **Custom** (drag a closed session onto another in
-  the same project to put it above or below; sessions you never placed
+  from its transcript) or **Custom** (drag a session up or down: the row
+  lifts and follows the pointer, the others slide aside to open its place,
+  and it settles there on release; open sessions move among the open ones
+  and closed among the closed, and the tabs keep their order; Escape puts it
+  back; sessions you never placed
   stay on top, newest first). **Hide Closed Sessions** hides closed
   sessions and projects with nothing open (a search still finds
   everything). With a host enabled, **Group by Host** (on unless you turn

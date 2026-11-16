@@ -48,12 +48,14 @@ final class SidebarOrderTests: XCTestCase {
         RunLoop.main.run(until: Date().addingTimeInterval(0.05))
     }
 
-    func testOpenSessionsComeFirstInTabOrderThenTheRestByActivity() {
+    /// Open sessions come first, in the session sort, not in tab order: the
+    /// sidebar's order and the tab strip's are different things (owner).
+    func testOpenSessionsComeFirstInTheSessionSortThenTheRest() {
         let model = makeModel(rows())
         open(model, "a3")
         open(model, "a2")
         pump()
-        XCTAssertEqual(ids(model, "/p/a"), ["a3", "a2", "a1"])
+        XCTAssertEqual(ids(model, "/p/a"), ["a2", "a3", "a1"], "a2 was active more recently, whatever the tabs' order")
         XCTAssertTrue(model.inSidebarOpenGroup(SessionKey(id: "a3", host: .local)))
         XCTAssertFalse(model.inSidebarOpenGroup(SessionKey(id: "a1", host: .local)))
     }
@@ -268,6 +270,46 @@ final class SidebarOrderTests: XCTestCase {
         XCTAssertEqual(ids(model, "/p/a"), ["c", "a", "b"])
     }
 
+    /// Dragging an open session reorders the open rows, saves a Custom
+    /// order, and leaves the tabs as they were.
+    func testDraggingAnOpenSessionReordersTheOpenRowsAndNotTheTabs() {
+        let model = makeModel(rows())
+        open(model, "a3")
+        open(model, "a2")
+        pump()
+        let tabsBefore = model.openSessions.tabs.map(\.sessionKey)
+        model.moveSession(SessionKey(id: "a3", host: .local), before: SessionKey(id: "a2", host: .local))
+        XCTAssertEqual(ids(model, "/p/a"), ["a3", "a2", "a1"])
+        XCTAssertEqual(model.sidebarOptions.sessionSort, .custom)
+        XCTAssertEqual(model.openSessions.tabs.map(\.sessionKey), tabsBefore, "the tab strip keeps its own order")
+    }
+
+    /// Open and closed sessions don't mix: an open one can't be placed
+    /// among the closed ones, or the other way round.
+    func testASessionCantBePlacedAcrossTheOpenAndClosedGroups() {
+        let model = makeModel(rows())
+        open(model, "a3")
+        pump()
+        model.moveSession(SessionKey(id: "a3", host: .local), after: SessionKey(id: "a1", host: .local))
+        model.moveSession(SessionKey(id: "a2", host: .local), before: SessionKey(id: "a3", host: .local))
+        XCTAssertEqual(ids(model, "/p/a"), ["a3", "a1", "a2"])
+        XCTAssertEqual(model.sidebarOptions.sessionSort, .recentActivity, "nothing was placed")
+    }
+
+    /// Where a dragged row lands: rounded to the nearest slot, clamped to
+    /// its group; the row stays under the pointer inside the group's span.
+    func testReorderMathFollowsThePointerAndStaysInTheGroup() {
+        XCTAssertEqual(SessionReorderMath.slot(from: 2, count: 4, translation: 0, rowHeight: 32), 2)
+        XCTAssertEqual(SessionReorderMath.slot(from: 2, count: 4, translation: 15, rowHeight: 32), 2)
+        XCTAssertEqual(SessionReorderMath.slot(from: 2, count: 4, translation: 17, rowHeight: 32), 3)
+        XCTAssertEqual(SessionReorderMath.slot(from: 2, count: 4, translation: -70, rowHeight: 32), 0)
+        XCTAssertEqual(SessionReorderMath.slot(from: 2, count: 4, translation: 500, rowHeight: 32), 3, "clamped to the group")
+        XCTAssertEqual(SessionReorderMath.offset(from: 2, to: 3, count: 4, translation: 20, rowHeight: 32), -12)
+        XCTAssertEqual(SessionReorderMath.offset(from: 2, to: 3, count: 4, translation: 500, rowHeight: 32), 0,
+                       "past the group's end it rests in the last slot")
+        XCTAssertEqual(SessionReorderMath.offset(from: 0, to: 0, count: 4, translation: -40, rowHeight: 32), 0)
+    }
+
     func testASessionDropAcrossProjectsDoesNothing() {
         let model = makeModel(rows())
         model.moveSession(SessionKey(id: "b1", host: .local), before: SessionKey(id: "a1", host: .local))
@@ -280,12 +322,12 @@ final class SidebarOrderTests: XCTestCase {
         open(model, "a3")
         open(model, "a2")
         pump()
-        XCTAssertEqual(ids(model, "/p/a"), ["a3", "a2", "a1"])
+        XCTAssertEqual(ids(model, "/p/a"), ["a2", "a3", "a1"])
         model.sidebarPointerInside = true
         let tab = model.openSessions.tabs.first { $0.sessionKey == SessionKey(id: "a3", host: .local) }!
         model.openSessions.closeTab(tab.id)
         pump()
-        XCTAssertEqual(ids(model, "/p/a"), ["a3", "a2", "a1"], "the closed row keeps its place while held")
+        XCTAssertEqual(ids(model, "/p/a"), ["a2", "a3", "a1"], "the closed row keeps its place while held")
         model.sidebarPointerInside = false
         XCTAssertEqual(ids(model, "/p/a"), ["a2", "a1", "a3"])
     }

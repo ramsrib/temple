@@ -890,9 +890,6 @@ private struct ProjectDisclosure: View {
         model.projectDropSlot?.key == project.key ? model.projectDropSlot?.edge : nil
     }
     @State private var headerHeight: CGFloat = 22
-    /// The rows' width, for a dragged session's chip: the row's own size,
-    /// so picking one up doesn't jump.
-    @State private var rowsWidth: CGFloat = 240
 
     private func hasFooterRow(hidden: Int) -> Bool { hidden > 0 || extra > 0 }
 
@@ -914,10 +911,6 @@ private struct ProjectDisclosure: View {
                 rows
             }
         }
-        .background(GeometryReader { geo in
-            Color.clear.onAppear { rowsWidth = geo.size.width }
-                .onChange(of: geo.size.width) { _, width in rowsWidth = width }
-        })
         .clipped()
         // Dev-only (WindowSnapshot): fold/unfold the first project so the
         // animation can be captured frame by frame without a click. Only the
@@ -932,19 +925,17 @@ private struct ProjectDisclosure: View {
     private var rows: some View {
             let layout = self.layout
             let footer = hasFooterRow(hidden: layout.hidden)
-            let lastID = (layout.closed.last ?? layout.open.last)?.id
-            // The open sessions first, in tab order, at full strength with
-            // their activity dot; the closed ones follow in gray with their
-            // age (SessionRow). Same pitch throughout, no box and no gap
-            // (round 3: the outlined box read "okay-ish"; the tone and the
-            // trailing column say open vs closed on their own).
-            ForEach(layout.open) { session in
-                row(session, isLast: session.id == lastID, footer: footer, draggable: false,
-                    firstClosed: layout.closed.first?.id)
+            let open = arranged(layout.open), closed = arranged(layout.closed)
+            let lastID = (closed.last ?? open.last)?.id
+            // The open sessions first, at full strength with their activity
+            // dot; the closed ones follow in gray with their age (SessionRow).
+            // Same pitch throughout, no box and no gap. Each group is in the
+            // session sort, and each reorders by dragging within itself.
+            ForEach(open) { session in
+                row(session, group: open, isLast: session.id == lastID, footer: footer)
             }
-            ForEach(layout.closed) { session in
-                row(session, isLast: session.id == lastID, footer: footer, draggable: true,
-                    firstClosed: layout.closed.first?.id)
+            ForEach(closed) { session in
+                row(session, group: closed, isLast: session.id == lastID, footer: footer)
             }
             if footer {
                 HStack(spacing: 10) {
@@ -968,95 +959,146 @@ private struct ProjectDisclosure: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .opacity(inHand ? 0.4 : 1)
                 .transition(.opacity)
-                // A session dropped here goes last among the closed ones.
-                .onDrop(of: [Self.dragType],
-                        delegate: RowDropDelegate(model: model, project: dropDelegate(row: "footer", edge: .bottom),
-                                                  session: layout.closed.last.map {
-                                                      SessionDropDelegate(model: model, target: $0.id, targetProject: project.key,
-                                                                          fixedEdge: .bottom)
-                                                  }))
+                .onDrop(of: [Self.dragType], delegate: dropDelegate(row: "footer", edge: .bottom))
                 .overlay(alignment: .bottom) {
                     if dropIndicator == .bottom { dropLine }
                 }
             }
     }
 
-    /// One session row, with the project's drop target and, for a closed
-    /// session, its own drag to reorder (open ones follow their tabs).
+    /// One session row: the project's drop target (for a dragged project),
+    /// and its own drag to reorder within its group.
     @ViewBuilder
-    private func row(_ session: Session, isLast: Bool, footer: Bool, draggable: Bool,
-                     firstClosed: SessionKey?) -> some View {
-        // One drop target per row for both drags: two stacked `.onDrop`s
-        // let one shadow the other. A session dropped on a closed row lands
-        // above or below it; on an open row (they follow their tabs), first
-        // among the closed ones.
-        let sessionDrop: SessionDropDelegate? = draggable
-            ? SessionDropDelegate(model: model, target: session.id, targetProject: project.key)
-            : firstClosed.map { SessionDropDelegate(model: model, target: $0, targetProject: project.key, fixedEdge: .top) }
-        let base = SessionRow(session: session)
+    private func row(_ session: Session, group: [Session], isLast: Bool, footer: Bool) -> some View {
+        let inHandRow = reorder?.id == session.id
+        SessionRow(session: session)
             .padding(.leading, Self.childInset)
+            // The row in hand rides on the pointer, lifted by an opaque card
+            // and a shadow (no scaling: it blurs the title); the others keep
+            // their slots and glide aside as its slot moves.
+            .background {
+                if inHandRow {
+                    RoundedRectangle(cornerRadius: 7, style: .continuous)
+                        .fill(Palette.panelBackground)
+                        .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Palette.hairline))
+                        .shadow(color: .black.opacity(0.18), radius: 8, y: 3)
+                        .padding(.leading, Self.childInset)
+                }
+            }
+            .offset(y: inHandRow ? reorder?.offset ?? 0 : 0)
+            .zIndex(inHandRow ? 2 : 0)
+            .animation(reorder != nil && !inHandRow ? .easeInOut(duration: 0.16) : nil,
+                       value: reorder?.proposed)
             .background(Color.clear.id(SidebarView.rowScrollID(session.id)))
             .opacity(inHand ? 0.4 : 1)
-            .modifier(SessionDragDim(drag: model.sessionDrag, id: session.id))
             .transition(.opacity)
-            .onDrop(of: [Self.dragType],
-                    delegate: RowDropDelegate(model: model, project: dropDelegate(row: session.sessionID, edge: .bottom),
-                                              session: sessionDrop))
+            // A press that moves 4 pt is a drag; one that doesn't is the
+            // row's click (open the session). High priority so the row's
+            // button doesn't take the press first.
+            .highPriorityGesture(reorderGesture(session, group: group))
+            .onDrop(of: [Self.dragType], delegate: dropDelegate(row: session.sessionID, edge: .bottom))
             .overlay(alignment: .bottom) {
                 if dropIndicator == .bottom, !footer, isLast { dropLine }
             }
-        if draggable {
-            base
-                .onDrag({
-                    model.beginSessionDrag(session.id)
-                    let provider = NSItemProvider()
-                    provider.registerDataRepresentation(forTypeIdentifier: Self.sessionDragType.identifier,
-                                                        visibility: .ownProcess) { done in
-                        done(Data(), nil)
-                        return nil
+    }
+
+    // MARK: Reorder sessions
+
+    /// A session row in hand (round 3, after astra's review): an in-app
+    /// gesture, as the tab strip's, not system drag-and-drop. That was a
+    /// data transfer between drop targets; it needed a declared type, a
+    /// preview handed to the system, and drop delegates each redrawing the
+    /// rail, and it lagged and missed. Here the row follows the pointer,
+    /// the others slide aside, and the order is written once, on release.
+    struct Reorder: Equatable {
+        let id: SessionKey
+        /// The group in hand (the open or the closed rows), as it was.
+        let original: [SessionKey]
+        /// The same group with the row in hand at its current slot.
+        var proposed: [SessionKey]
+        /// The row's distance from its current slot, so it stays under the pointer.
+        var offset: CGFloat
+        var cancelled = false
+    }
+    @State private var reorder: Reorder?
+    @State private var reorderEscape: Any?
+
+    /// The rows of one group, in the drag's proposed order while one of them
+    /// is in hand.
+    private func arranged(_ rows: [Session]) -> [Session] {
+        guard let reorder, rows.contains(where: { $0.id == reorder.id }) else { return rows }
+        let byID = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        return reorder.proposed.compactMap { byID[$0] }
+    }
+
+    private func reorderGesture(_ session: Session, group: [Session]) -> some Gesture {
+        DragGesture(minimumDistance: 4, coordinateSpace: .global)
+            .onChanged { value in
+                if reorder == nil {
+                    // A group of one has nowhere to go.
+                    guard group.count > 1 else { return }
+                    let ids = group.map(\.id)
+                    reorder = Reorder(id: session.id, original: ids, proposed: ids, offset: 0)
+                    model.sessionReorderActive = true
+                    watchEscape()
+                }
+                guard var current = reorder, current.id == session.id, !current.cancelled,
+                      let from = current.original.firstIndex(of: session.id) else { return }
+                let to = SessionReorderMath.slot(from: from, count: current.original.count,
+                                                 translation: value.translation.height, rowHeight: Self.rowHeight)
+                var proposed = current.original
+                proposed.remove(at: from)
+                proposed.insert(session.id, at: to)
+                current.proposed = proposed
+                current.offset = SessionReorderMath.offset(from: from, to: to, count: current.original.count,
+                                                           translation: value.translation.height, rowHeight: Self.rowHeight)
+                reorder = current
+            }
+            .onEnded { _ in
+                guard let done = reorder, done.id == session.id else { return }
+                if !done.cancelled, done.proposed != done.original,
+                   let at = done.proposed.firstIndex(of: done.id) {
+                    // Written once: above the row now below it, or below the
+                    // one above it at the end.
+                    if at + 1 < done.proposed.count {
+                        model.moveSession(done.id, before: done.proposed[at + 1])
+                    } else {
+                        model.moveSession(done.id, after: done.proposed[at - 1])
                     }
-                    return provider
-                }, preview: {
-                    // The row itself, lifted: same size, same columns, on a
-                    // solid card. The default preview was the row's text,
-                    // translucent ("dragging text, not a session"), and a
-                    // smaller chip jumped as it appeared (owner, round 3).
-                    HStack(spacing: 8) {
-                        if let agent = session.agent { AgentBadge(agent: agent, size: 13) }
-                        Text(model.displayTitle(session))
-                            .font(.system(size: 13))
-                            .foregroundStyle(.primary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                        Spacer(minLength: 4)
-                        Text(RelativeTime.compact(from: session.sortDate))
-                            .font(.system(size: 11).monospacedDigit())
-                            .foregroundStyle(.tertiary)
-                    }
-                    .padding(.horizontal, 10)
-                    .frame(width: max(120, rowsWidth - Self.childInset), height: 32)
-                    .background(Palette.panelBackground, in: RoundedRectangle(cornerRadius: 7, style: .continuous))
-                    .overlay(RoundedRectangle(cornerRadius: 7, style: .continuous).strokeBorder(Palette.hairline))
-                })
-                .overlay { SessionDropLine(drag: model.sessionDrag, target: session.id) }
-        } else {
-            base
+                }
+                endReorder()
+            }
+    }
+
+    /// The row settles into its slot; the gesture's watchers go.
+    private func endReorder() {
+        withAnimation(.spring(response: 0.28, dampingFraction: 0.85)) { reorder = nil }
+        model.sessionReorderActive = false
+        if let monitor = reorderEscape { NSEvent.removeMonitor(monitor) }
+        reorderEscape = nil
+    }
+
+    /// Escape puts the row back, for this gesture only; the key still goes
+    /// on to whatever has focus once nothing is in hand.
+    private func watchEscape() {
+        if let monitor = reorderEscape { NSEvent.removeMonitor(monitor) }
+        reorderEscape = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { event in
+            guard event.keyCode == 53, reorder != nil else { return event }
+            reorder?.cancelled = true
+            reorder?.proposed = reorder?.original ?? []
+            reorder?.offset = 0
+            return nil
         }
     }
+
+    /// Every session row's height (SessionRow's frame).
+    static let rowHeight: CGFloat = 32
 
     // MARK: Drag to reorder
 
     /// The drag payload is a private, in-process type — never plain text — so a
     /// drop that misses the rail cannot paste a path into a live terminal.
     static let dragType = UTType(exportedAs: "com.sriramb.temple.project-order")
-    /// A session row in hand, to reorder within its project: the same
-    /// private type. A drop target only sees a drag whose type macOS knows,
-    /// and it knows a type from an installed app's Info.plist; a type of
-    /// its own reached no row in the demo, or in any copy of Temple that
-    /// didn't declare it (owner, round 3: "no drop targets"). Which drag is
-    /// in hand is the model's (`draggedSession`, `draggedProjectKey`), and
-    /// each delegate refuses the other's.
-    static let sessionDragType = dragType
     /// The gap above a heading, inside its hit shape and drop target.
     static let headerGap: CGFloat = 12
 
@@ -1530,119 +1572,22 @@ struct SidebarViewOptionsMenu: View {
 
 /// A closed session dropped on another closed session of the same project:
 /// above it in the row's upper half, below it in the lower.
-/// The dragged row's dimming, watching only the drag (not the app model).
-private struct SessionDragDim: ViewModifier {
-    @ObservedObject var drag: SessionDragState
-    let id: SessionKey
-    func body(content: Content) -> some View {
-        content.opacity(drag.dragged == id ? 0.4 : 1)
+
+/// Where a dragged session row lands: its group's slot under the pointer,
+/// clamped to the group (open rows stay with open ones, closed with closed).
+enum SessionReorderMath {
+    static func slot(from: Int, count: Int, translation: CGFloat, rowHeight: CGFloat) -> Int {
+        guard count > 0, rowHeight > 0 else { return from }
+        let moved = Int((translation / rowHeight).rounded())
+        return min(max(from + moved, 0), count - 1)
+    }
+
+    /// The row's offset from its slot: the pointer's travel less the slots
+    /// it has moved, kept inside the group's span.
+    static func offset(from: Int, to: Int, count: Int, translation: CGFloat, rowHeight: CGFloat) -> CGFloat {
+        let lowest = -CGFloat(from) * rowHeight, highest = CGFloat(count - 1 - from) * rowHeight
+        let travel = min(max(translation, lowest), highest)
+        return travel - CGFloat(to - from) * rowHeight
     }
 }
 
-/// Where a dragged session would land, on its target row's edge; watches
-/// only the drag, so a move of the line redraws this and nothing else.
-private struct SessionDropLine: View {
-    @ObservedObject var drag: SessionDragState
-    let target: SessionKey
-    var body: some View {
-        if let slot = drag.slot, slot.target == target {
-            VStack(spacing: 0) {
-                if slot.edge == .bottom { Spacer(minLength: 0) }
-                Capsule()
-                    .fill(Palette.accent)
-                    .frame(height: 2)
-                    .padding(.horizontal, 6)
-                if slot.edge == .top { Spacer(minLength: 0) }
-            }
-        }
-    }
-}
-
-/// A row's one drop target: a dragged session goes to the session delegate,
-/// a dragged project to the project one.
-private struct RowDropDelegate: DropDelegate {
-    let model: AppModel
-    let project: ProjectDropDelegate
-    let session: SessionDropDelegate?
-
-    private var sessionDrag: Bool { model.draggedSession != nil }
-
-    func validateDrop(info: DropInfo) -> Bool {
-        sessionDrag ? (session?.validateDrop(info: info) ?? false) : project.validateDrop(info: info)
-    }
-    func dropEntered(info: DropInfo) {
-        if sessionDrag { session?.dropEntered(info: info) } else { project.dropEntered(info: info) }
-    }
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        sessionDrag ? session?.dropUpdated(info: info) : project.dropUpdated(info: info)
-    }
-    func dropExited(info: DropInfo) {
-        if sessionDrag { session?.dropExited(info: info) } else { project.dropExited(info: info) }
-    }
-    func performDrop(info: DropInfo) -> Bool {
-        let isSession = sessionDrag
-        let ok = isSession ? (session?.performDrop(info: info) ?? false) : project.performDrop(info: info)
-        DragDebug.log("perform \(isSession ? "session" : "project") -> \(ok)")
-        return ok
-    }
-}
-
-/// `TEMPLE_DEBUG_DRAG=1`: the sidebar's drop steps on stderr, to see where a
-/// drag that a person makes stops (a drop can't be driven in-process).
-enum DragDebug {
-    static let on = ProcessInfo.processInfo.environment["TEMPLE_DEBUG_DRAG"] == "1"
-    static func log(_ line: @autoclosure () -> String) {
-        guard on else { return }
-        FileHandle.standardError.write(Data("[drag] \(line())\n".utf8))
-    }
-}
-
-private struct SessionDropDelegate: DropDelegate {
-    let model: AppModel
-    let target: SessionKey
-    /// The project the target row is in (its disclosure's).
-    let targetProject: ProjectKey
-    /// Where a drop lands whatever half of the row it is over: the footer
-    /// puts a session last, an open row first among the closed ones.
-    var fixedEdge: Edge?
-
-    private func edge(_ info: DropInfo) -> Edge { fixedEdge ?? (info.location.y < 16 ? .top : .bottom) }
-
-    private var sameProject: Bool {
-        guard let dragged = model.draggedSession, dragged != target else { return false }
-        return model.draggedSessionProject == targetProject
-    }
-
-    func validateDrop(info: DropInfo) -> Bool {
-        info.hasItemsConforming(to: [ProjectDisclosure.sessionDragType]) && sameProject
-    }
-
-    func dropEntered(info: DropInfo) { show(info) }
-
-    func dropUpdated(info: DropInfo) -> DropProposal? {
-        show(info)
-        return DropProposal(operation: .move)
-    }
-
-    private func show(_ info: DropInfo) {
-        guard sameProject else { return }
-        let slot = AppModel.SessionDropSlot(target: target, edge: edge(info))
-        if model.sessionDropSlot != slot { model.sessionDropSlot = slot }
-    }
-
-    func dropExited(info: DropInfo) {
-        if model.sessionDropSlot?.target == target { model.sessionDropSlot = nil }
-    }
-
-    func performDrop(info: DropInfo) -> Bool {
-        guard let dragged = model.draggedSession, sameProject else { return false }
-        let edge = edge(info)
-        model.endSessionDrag()
-        DispatchQueue.main.async { model.endSessionDrag() }
-        switch edge {
-        case .top: model.moveSession(dragged, before: target)
-        default: model.moveSession(dragged, after: target)
-        }
-        return true
-    }
-}

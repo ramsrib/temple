@@ -2840,3 +2840,14 @@ at this density, and the dots and ages already say it); a fill on open
 rows (tried before, four open rows read as four selections); live order
 with no hold (rows move under the click); a separate Hosts window (the
 quit-on-close logic is written for one window).
+
+**Revised 2026-11-16 (owner, round 3).** Open sessions come first in the
+session sort, not in tab order: the sidebar's order and the tab strip's are
+different things. Sessions reorder by an in-app drag (the tab strip's
+mechanism: the row follows the pointer, neighbours slide aside, one write
+on release, Escape cancels), open among open and closed among closed,
+replacing a system drag-and-drop that needed a declared pasteboard type,
+handed its preview to the system and redrew the rail on every move (it
+lagged, and missed every drop in any copy of Temple that hadn't declared
+the type). The design came from astra's review of six rounds of fixes to
+the first approach.

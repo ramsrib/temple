@@ -203,16 +203,20 @@ public final class AppModel: ObservableObject {
         uiState.write(String(decoding: data, as: UTF8.self), UIStateStore.SidebarKey.sessionOrder)
     }
 
-    /// A closed session dropped on another in the same project: it lands
-    /// above (`before`) or below it. What was on screen becomes the order,
-    /// the move applied, and the session sort becomes Custom.
+    /// A session dragged onto another of its group in the same project (open
+    /// among open, closed among closed): it lands above (`before`) or below
+    /// it. What was on screen becomes the order, the move applied, and the
+    /// session sort becomes Custom. Tabs keep their own order (owner: the
+    /// sidebar's order and the tab strip's are different things).
     public func moveSession(_ id: SessionKey, before target: SessionKey) { placeSession(id, target) { $0 } }
     public func moveSession(_ id: SessionKey, after target: SessionKey) { placeSession(id, target) { $0 + 1 } }
     private func placeSession(_ id: SessionKey, _ target: SessionKey, slot: (Int) -> Int) {
         guard id != target, let project = presentedByID[id]?.project, presentedByID[target]?.project == project,
               let shown = sidebarProjects(matching: "", includeClosed: true).first(where: { $0.key == project }) else { return }
         let group = sidebarOpenGroup()
-        var ids = shown.sessions.filter { !group.isOpen($0.id) }.map(\.sessionID)
+        let open = group.isOpen(id)
+        guard group.isOpen(target) == open else { return }
+        var ids = shown.sessions.filter { group.isOpen($0.id) == open }.map(\.sessionID)
         guard let from = ids.firstIndex(of: id.id) else { return }
         ids.remove(at: from)
         guard let to = ids.firstIndex(of: target.id).map(slot) else { return }
@@ -223,51 +227,14 @@ public final class AppModel: ObservableObject {
         setSidebarSessionSort(.custom)
     }
 
-    /// A session drag's state, in an object of its own: only the dragged
-    /// row's dimming and the drop line watch it. As `@Published` on this
-    /// model, every change (the grab, each move of the drop line) redrew
-    /// every view that observes the model, the whole sidebar and the main
-    /// pane, so the preview came late and the line stuttered (owner, round 3).
-    public let sessionDrag = SessionDragState()
-    /// The session a row is being dragged for, from grab to drop.
-    public var draggedSession: SessionKey? { sessionDrag.dragged }
-    /// The dragged session's project, looked up once when the drag begins:
-    /// every row the pointer crosses asks whether it is in the same project,
-    /// many times a second (a scan of every session per ask made the drag
-    /// lag, owner round 3).
-    private(set) var draggedSessionProject: ProjectKey?
-    private var sessionDragWatch: Timer?
-    /// As a project drag: watched from the source side, so a drag released
-    /// over the terminal or cancelled with Escape still ends it.
-    public func beginSessionDrag(_ id: SessionKey) {
-        endSessionDrag()
-        sessionDrag.dragged = id
-        draggedSessionProject = presentedByID[id]?.project
-        let watch = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self, NSEvent.pressedMouseButtons == 0 else { return }
-                self.endSessionDrag()
-            }
+    /// A session row is in hand in the sidebar (`ProjectDisclosure`'s
+    /// reorder gesture): background order changes wait, as for a project
+    /// drag, and land when it ends.
+    var sessionReorderActive = false {
+        didSet {
+            guard oldValue, !sessionReorderActive, sidebarRefreshPending, !sidebarPointerInside else { return }
+            requestSidebarRefresh()
         }
-        RunLoop.main.add(watch, forMode: .common)
-        sessionDragWatch = watch
-    }
-    /// Where the dragged session would land: above or below one row.
-    public struct SessionDropSlot: Equatable {
-        public let target: SessionKey
-        public let edge: Edge
-    }
-    public var sessionDropSlot: SessionDropSlot? {
-        get { sessionDrag.slot }
-        set { if sessionDrag.slot != newValue { sessionDrag.slot = newValue } }
-    }
-    public func endSessionDrag() {
-        sessionDragWatch?.invalidate()
-        sessionDragWatch = nil
-        if sessionDrag.dragged != nil { sessionDrag.dragged = nil }
-        draggedSessionProject = nil
-        sessionDropSlot = nil
-        if sidebarRefreshPending, !sidebarPointerInside { requestSidebarRefresh() }
     }
 
     /// A person's rename: their own act, so a Name sort takes the new name
@@ -358,7 +325,7 @@ public final class AppModel: ObservableObject {
     /// order is live already.
     func requestSidebarRefresh() {
         guard sidebarRanksFrozen else { return }
-        guard !sidebarPointerInside, draggedProjectKey == nil, draggedSession == nil else {
+        guard !sidebarPointerInside, draggedProjectKey == nil, !sessionReorderActive else {
             sidebarRefreshPending = true
             return
         }
@@ -1758,8 +1725,10 @@ public final class AppModel: ObservableObject {
                 ? (frozenSessionOrder[project.key] ?? []).compactMap { presentedByID[$0] }.filter { $0.project == project.key }
                 : project.sessions
             let rows = ordered.filter { !$0.state.archived && (q.isEmpty || $0.displayTitle.localizedCaseInsensitiveContains(q)) }
-            var open = rows.filter { group.isOpen($0.id) }
-            open.sort { group.rank($0.id) < group.rank($1.id) }
+            // Open sessions first, in the session sort as the closed ones
+            // are: the sidebar's order is its own, not the tab strip's
+            // (owner, round 3).
+            let open = sortedRest(rows.filter { group.isOpen($0.id) }, in: project.key)
             let rest = openOnly ? [] : sortedRest(rows.filter { !group.isOpen($0.id) }, in: project.key)
             let shown = open + rest
             return shown.isEmpty ? nil : SessionRowProject(key: project.key, sessions: shown)
@@ -2464,12 +2433,3 @@ public final class AppModel: ObservableObject {
     }
 
 }
-
-/// A session drag in the sidebar: the row in hand and where it would land.
-/// Its own object, observed only by the views that show it (`AppModel.sessionDrag`).
-@MainActor
-public final class SessionDragState: ObservableObject {
-    @Published public internal(set) var dragged: SessionKey?
-    @Published var slot: AppModel.SessionDropSlot?
-}
-
