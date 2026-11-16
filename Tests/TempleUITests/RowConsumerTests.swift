@@ -8,9 +8,13 @@ final class RowConsumerTests: XCTestCase {
     func model(_ rows: [Session]) throws -> AppModel {
         let db = try TempleDB.inMemory()
         Fixture.join(rows, to: db)
-        return AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
+        let app = AppModel(surfaceFactory: FakeTerminalSurfaceFactory(),
             engines: [FakeEngine(CatalogFixtureIndex(projects: []))], database: db,
             settings: SettingsStore(defaults: Fixture.uniqueDefaults()))
+        // These pin the rail's own order, ungrouped (Group by Host became
+        // the default after they were written; SidebarOrderTests covers it).
+        app.setSidebarGrouping(.project)
+        return app
     }
 
     private func nextPresentationTurn() async {

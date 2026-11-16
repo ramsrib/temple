@@ -55,11 +55,14 @@ struct SessionRow: View {
                     // tone, with the trailing dot vs age, is what marks the
                     // open group now; the outlined box is gone). Hover lifts a
                     // closed row to primary, the one you're about to open.
+                    // Two tones only: a third, lighter one for a missing
+                    // transcript read as "closed" and made the closed rows
+                    // beside it read as open (owner, round 3). A missing
+                    // transcript shows in its faded badge and tooltip.
                     // A row whose transcript is gone steps back further: it
                     // still opens (and fails, and says why), but should not
                     // look like a session that would resume.
-                    .foregroundStyle(transcriptMissing ? Palette.missingRowText
-                                     : openTab != nil || hovering ? Color.primary : Palette.closedRowText)
+                    .foregroundStyle(openTab != nil || hovering ? Color.primary : Palette.closedRowText)
                 if isPinned {
                     Image(systemName: "pin.fill")
                         .font(.system(size: 8))

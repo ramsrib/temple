@@ -69,8 +69,9 @@ open tabs; any other session returns the next time it is opened
   sessions active in the last week, in the session sort, in gray, each with
   its age on the right ("2h", "1d", "3w") where an open row has its dot
   (hovering a closed row lifts it to full strength). Every row keeps the
-  same 32 pt spacing; there is no box or gap between the two. A session
-  whose transcript is gone is lighter still. A project lists every open
+  same 32 pt spacing; there is no box or gap between the two. Two tones
+  only: a session whose transcript is gone (one you restored after Temple
+  archived it) reads as any closed one, its badge faded, with a tooltip. A project lists every open
   session and fills up to six rows with recent ones; the rest wait behind
   **Show N older**. A project with nothing open and
   nothing recent shows its heading and **Show N older**
