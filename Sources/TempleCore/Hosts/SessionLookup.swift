@@ -12,10 +12,13 @@ public struct SessionLookup: Sendable, Equatable {
 
     public subscript(agent: Agent) -> AgentLookup { agents[agent] ?? .cannotTell(.storeUnknown) }
 
+    /// The agents the host was asked about, in `Agent.allCases` order: a
+    /// host other than this Mac is not asked about Antigravity (ADR-043).
+    public var asked: [Agent] { Agent.allCases.filter { agents[$0] != nil } }
     /// The agents that have the session, in `Agent.allCases` order.
-    public var found: [Agent] { Agent.allCases.filter { if case .found = self[$0] { true } else { false } } }
-    /// Every agent's store was listed to the end, and none has the session.
-    public var notFoundAnywhere: Bool { Agent.allCases.allSatisfy { self[$0] == .notFound } }
+    public var found: [Agent] { asked.filter { if case .found = self[$0] { true } else { false } } }
+    /// Every asked agent's store was listed to the end, and none has the session.
+    public var notFoundAnywhere: Bool { !asked.isEmpty && asked.allSatisfy { self[$0] == .notFound } }
 }
 
 public enum AgentLookup: Sendable, Equatable {

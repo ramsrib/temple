@@ -143,7 +143,7 @@ if CommandLine.arguments.contains("--disk") {
     let wantsMetrics = CommandLine.arguments.contains("--metrics")
     let disableWatcher = CommandLine.arguments.contains("--benchmark-disable-watcher")
     if disableWatcher {
-        let keys = ["TEMPLE_CLAUDE_ROOT", "TEMPLE_CODEX_ROOT", "TEMPLE_STATE_DIR"]
+        let keys = ["TEMPLE_CLAUDE_ROOT", "TEMPLE_CODEX_ROOT", "TEMPLE_ANTIGRAVITY_ROOT", "TEMPLE_STATE_DIR"]
         let temporaryRoot = URL(fileURLWithPath: "/private/tmp").resolvingSymlinksInPath().path + "/"
         guard wantsMetrics, keys.allSatisfy({ key in
             guard let path = ProcessInfo.processInfo.environment[key] else { return false }

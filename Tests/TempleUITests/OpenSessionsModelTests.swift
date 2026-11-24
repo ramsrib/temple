@@ -409,7 +409,7 @@ final class OpenSessionsModelTests: XCTestCase {
             factory.configure = { $0.startError = CocoaError(.executableNotLoadable) }
             let model = writerModel(db: db, overlay: overlay, factory: factory)
             let tab = model.newSession(agent: agent, project: Fixture.key(directory.path))
-            if agent == .codex { model.adopt(sessionID: "codex-id", for: tab.id) }
+            if tab.isProvisional { model.adopt(sessionID: "\(agent)-id", for: tab.id) }
             let row = try XCTUnwrap(db.sessionState(try XCTUnwrap(tab.sessionID)))
             XCTAssertNil(row.directory)
             XCTAssertNil(row.directorySource)
@@ -428,7 +428,7 @@ final class OpenSessionsModelTests: XCTestCase {
                 let overlay = SessionOverlayStore(db: db)
                 let model = writerModel(db: db, overlay: overlay)
                 let tab = model.newSession(agent: agent, project: Fixture.key(cwd.path))
-                if agent == .codex { model.adopt(sessionID: "codex-id", for: tab.id) }
+                if tab.isProvisional { model.adopt(sessionID: "\(agent)-id", for: tab.id) }
                 let row = try XCTUnwrap(db.sessionState(try XCTUnwrap(tab.sessionID)))
                 XCTAssertNil(row.directory)
                 XCTAssertNil(row.directorySource)

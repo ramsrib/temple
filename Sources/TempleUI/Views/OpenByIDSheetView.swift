@@ -42,14 +42,14 @@ struct OpenByIDSheetView: View {
             if sheet.showsAgent {
                 RemoteFormRow(label: "Agent") {
                     Picker("", selection: $sheet.agent) {
-                        ForEach(Agent.allCases, id: \.self) { agent in
+                        ForEach(sheet.agentChoices, id: \.self) { agent in
                             Text(agent.displayName).tag(Agent?.some(agent))
                         }
                     }
                     .labelsHidden()
                     .pickerStyle(.segmented)
                     .frame(maxWidth: 260, alignment: .leading)
-                    RemoteHint("This id is both a Claude Code and a Codex session on \(hostName). Choose which to open.")
+                    RemoteHint("This id is \(sheet.agentChoices.map { "a \($0.displayName)" }.formatted(.list(type: .and))) session on \(hostName). Choose which to open.")
                 }
             }
             if sheet.showsFolder {

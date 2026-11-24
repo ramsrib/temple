@@ -307,3 +307,86 @@ final class LocalFolderEvidenceTests: XCTestCase {
         }
     }
 }
+
+/// A new Antigravity tab learns its id from the lock its own process holds,
+/// once the launch reports that process (ADR-043); Codex's rollout
+/// reconciler is never asked.
+@MainActor
+final class AntigravityAdoptionTests: XCTestCase {
+    private let id = "502dbaf1-4ae5-4f7c-ab0f-53dfb69d6efd"
+    private let started = ProcessStart(seconds: 100, microseconds: 1)
+
+    private final class ScriptedIdentity: CodexAdopting {
+        var answers: [ProcessIdentity]
+        var asked: [ProcessIdentityRequest] = []
+        var reconciled = 0
+        init(_ answers: [ProcessIdentity]) { self.answers = answers }
+        func reconcile(host: HostID, projectPath: String, startedAt: Date,
+                       adopt: @escaping (String, TranscriptLocator?) -> Void) { reconciled += 1 }
+        func identifyProcess(host: HostID, _ request: ProcessIdentityRequest) async -> ProcessIdentity {
+            asked.append(request)
+            return answers.isEmpty ? .ended : answers.removeFirst()
+        }
+    }
+
+    private func model(_ identity: ScriptedIdentity, events: [LaunchEvent]) -> OpenSessionsModel {
+        let launcher = ScriptedLauncher()
+        launcher.queuedBeforeStart = events
+        let model = OpenSessionsModel(surfaceFactory: FakeTerminalSurfaceFactory(), appearanceProvider: { .default },
+            runtime: SessionRuntimeController(), registry: InMemoryProcessRegistry(), reconciler: identity,
+            persistence: UserDefaultsTabPersistence(defaults: Fixture.uniqueDefaults()),
+            launcherForHost: { _ in launcher })
+        model.processAdoptionInterval = 0.01
+        return model
+    }
+
+    private func settle(_ until: @escaping () -> Bool) async {
+        for _ in 0..<200 where !until() { try? await Task.sleep(for: .milliseconds(10)) }
+    }
+
+    func testANewTabAdoptsTheConversationItsProcessHoldsOnceItHasOne() async throws {
+        let locator = TranscriptLocator(localURL: URL(fileURLWithPath: "/s/conversations/\(id).db"))
+        let identity = ScriptedIdentity([.none(started: started), .none(started: started),
+                                         .session(id: id, locator: locator, createdAt: Date(), started: started)])
+        let model = model(identity, events: [.directoryEstablished("/p"), .agentProcess(pid: 4242)])
+        var opens: [SessionOpen] = []
+        model.openedHandler = { opens.append($0); return .joined }
+        let tab = model.newSession(agent: .antigravity, project: ProjectKey(host: .local, path: "/p"))
+        XCTAssertTrue(tab.isProvisional)
+        await settle { tab.sessionID != nil }
+        XCTAssertEqual(tab.sessionID, id)
+        XCTAssertFalse(tab.isProvisional)
+        XCTAssertEqual(opens.map(\.agent), [.antigravity])
+        XCTAssertEqual(opens.first?.via, .created)
+        XCTAssertEqual(identity.asked.map(\.pid), [4242, 4242, 4242])
+        XCTAssertEqual(identity.asked.map(\.started), [nil, started, started], "later asks carry the start time, so a reused pid is caught")
+        XCTAssertEqual(identity.reconciled, 0, "Codex's rollout reconciler is never asked")
+    }
+
+    func testAConversationOlderThanTheLaunchJoinsAsOpened() async {
+        let locator = TranscriptLocator(localURL: URL(fileURLWithPath: "/s/conversations/\(id).db"))
+        let identity = ScriptedIdentity([.session(id: id, locator: locator, createdAt: Date(timeIntervalSinceNow: -3600), started: started)])
+        let model = model(identity, events: [.directoryEstablished("/p"), .agentProcess(pid: 4242)])
+        var opens: [SessionOpen] = []
+        model.openedHandler = { opens.append($0); return .joined }
+        let tab = model.newSession(agent: .antigravity, project: ProjectKey(host: .local, path: "/p"))
+        await settle { tab.sessionID != nil }
+        XCTAssertEqual(opens.first?.via, .opened, "an in-TUI resume loaded it; this launch did not create it")
+    }
+
+    func testAnEndedProcessStopsTheAskingAndNoPidMeansNoAsking() async {
+        let identity = ScriptedIdentity([.none(started: started), .ended])
+        let model = model(identity, events: [.directoryEstablished("/p"), .agentProcess(pid: 4242)])
+        let tab = model.newSession(agent: .antigravity, project: ProjectKey(host: .local, path: "/p"))
+        await settle { identity.asked.count >= 2 }
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(identity.asked.count, 2)
+        XCTAssertNil(tab.sessionID)
+
+        let silent = ScriptedIdentity([])
+        let unreported = self.model(silent, events: [.directoryEstablished("/p")])
+        _ = unreported.newSession(agent: .antigravity, project: ProjectKey(host: .local, path: "/p"))
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(silent.asked.isEmpty, "no pid reported: nothing to ask about, the tab stays provisional")
+    }
+}

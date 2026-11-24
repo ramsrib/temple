@@ -3,7 +3,8 @@
 First written 2026-07-10; re-verified **2026-09-25** against Claude Code 2.1.282
 and codex-cli 0.156.1 on macOS, from the real stores (structure and counts only).
 Both CLIs evolve; treat this as "current best-known," re-verify on version
-bumps. This is the ground truth behind `TempleCore`'s stores.
+bumps. This is the ground truth behind `TempleCore`'s stores. The Antigravity
+CLI (`agy`) was first measured 2026-11-24; its section says what with.
 
 What Temple reads today is marked **(read)**. Everything else is recorded
 because a future feature will need it: sessions forked or continued from a
@@ -231,3 +232,148 @@ there is no fork-on-background step.
 
 > ⚠️ Verify resume subcommands/flags against the installed CLI version before
 > wiring the launch path — both tools change quickly.
+
+---
+
+## Antigravity CLI (`agy`)
+
+First measured **2026-11-24** against `agy` 1.5.15 and 1.5.16 on macOS (the
+CLI updated itself between two runs), by driving the TUI in a pty in scratch
+folders and reading the store before, during and after each step. Nothing
+here is documented upstream: the public reference covers flags, keys and
+`settings.json`, not storage. Not yet read by Temple (ADR-043).
+
+**Binary:** `agy`, installed by Google's installer at `~/.local/bin/agy` (a
+single ~230 MB Mach-O). It updates itself in place (`updater/`,
+`update_status.json` says "restart CLI to use"), so the binary at a path can
+change under a running Temple, the case ADR-025's retries exist for.
+
+**Location:** `~/.gemini/antigravity-cli/`. No flag or environment variable
+moves it (the reference documents none), so a test or demo cannot point a real
+`agy` at a fake store. The Antigravity **app** keeps the same layout in
+`~/.gemini/antigravity/` (`AppDataDir` tells them apart in the metadata cache);
+whether `agy` can resume an app conversation was not measured.
+
+```
+antigravity-cli/
+  conversation_summaries.db   one row per conversation (SQLite, WAL)
+  conversations/<id>.db       one SQLite database per conversation (WAL)
+  brain/<id>/                 per-conversation scratch space
+  presence/<id>.lock          held open while a CLI has <id> loaded; never deleted
+  history.jsonl               prompt history, for the TUI's up-arrow
+  cache/last_conversations.json      { "<folder>": "<last conversation id>" }
+  cache/conversation_metadata.json   a cached copy of the summaries, lagging
+  settings.json               the CLI's settings (model, trustedWorkspaces, …)
+  log/cli-<stamp>.log         one per launch; cli.log links the newest
+```
+
+**Ids** are UUIDs, the conversation's database's file name stem.
+
+### When a conversation exists
+
+- **Launch creates nothing.** No database, summary row or folder entry
+  appears at launch, nor while the TUI waits. In a folder not yet in
+  `settings.json`'s `trustedWorkspaces`, the TUI first asks "Do you trust the
+  contents of this project?" and writes nothing until it is answered.
+- **The first prompt creates it**, all within a second: `conversations/<id>.db`
+  (plus `-wal`/`-shm` while open), `presence/<id>.lock`, a
+  `conversation_summaries` row with status `CASCADE_RUN_STATUS_RUNNING`, an
+  AI-generated title already set, and `last_conversations.json[<folder>] = <id>`.
+- **`/clear` (alias `/new`) rotates the id in-process**: a new database and a
+  summary row with `step_count` 0 and zero timestamps
+  (`0001-01-01 00:00:00+00:00`) appear at once; the folder's
+  `last_conversations` entry moves only at the next prompt. A slash command
+  alone (`/model`, `/usage`) can leave such a 0-step row too.
+- **On exit** the TUI prints `Resume with -c (or command below):` and
+  `agy --conversation=<id>`. The WAL files are checkpointed away; the
+  presence lock file stays.
+
+### `conversation_summaries.db` — table `conversation_summaries`
+
+Plain columns (the useful ones): `conversation_id`, `title`, `preview` (equal
+to `title` in every row seen), `step_count`, `last_modified_time`,
+`last_user_input_time`, `workspace_uris` (a JSON array of `file://` URLs: the
+folder the conversation **started** in), `status`
+(`CASCADE_RUN_STATUS_RUNNING` / `…_IDLE`), `project_id`
+(`default-cli-project`), `parent_conversation_id`, `nesting_depth`,
+`app_data_dir` (`antigravity-cli`), `killed`, `raw_summary` (a protobuf of
+the same facts: 1 title, 3 last modified, 7 created, 10 last user input, 15
+title again, 17.6 the id).
+
+- **Titles are generated and renamed in one column.** The title is generated
+  from the first prompt as it is sent ("Reply with only the word ok" →
+  "Replying With Only Ok"). `/rename <name>` overwrites `title`, `preview`
+  and `raw_summary` field 1 and 15 alike; nothing found tells a name from a
+  generated title (`raw_summary` field 16 was 2 on the renamed row and 0 on
+  two others: unconfirmed).
+- **Resuming elsewhere keeps the folder.** `agy --conversation <id>` run in
+  another folder continues the conversation there, appending to the same
+  database, but `workspace_uris` still names the first folder;
+  `last_conversations.json` gains the new folder.
+- **The same file holds a full-text index**, `conversations_fts`, chunked per
+  conversation (`chunk_index` −1 carries title and workspace name, 0… carry
+  `user_body` and `agent_body`). It lags: a conversation seconds old, or the
+  newest turns of one, are not in it yet. Not a source of facts.
+
+### `conversations/<id>.db` — the transcript
+
+Tables `steps`, `trajectory_meta`, `gen_metadata`, `executor_metadata`,
+`parent_references`, `trajectory_metadata_blob`, `battle_mode_infos`. Each
+step is a row: `idx`, `step_type`, `status`, and protobuf blobs (`metadata`,
+`step_payload`, `render_info`, …). Seen:
+
+- `step_type` 14 — **user input.** `step_payload` field 19.2 is the prompt
+  text (19.3.1 repeats it); field 5.1 is its timestamp (seconds, nanos).
+  The first type-14 step is the first prompt.
+- `step_type` 15 — the agent's reply; 101 — a slash command's record
+  (`/rename`).
+- `trajectory_meta`: `trajectory_id`, `cascade_id` (= the conversation id).
+
+### Subagents — separate conversations with a parent
+
+A subagent is its own conversation (database and summary row) in the same
+folder, with `parent_conversation_id` set to its parent, an empty title and a
+zero `last_user_input_time`. The parent's own row is ordinary.
+
+### `history.jsonl`
+
+`{"display":"…","timestamp":<ms>,"workspace":"<folder>"}` per prompt, plus
+`"conversationId"` and `"type":"slash_command"` on slash commands only. A
+plain prompt does not name its conversation, so this cannot title one.
+
+### Reading it
+
+Both databases are in **WAL mode** (header bytes 18–19 = `02 02`). How a
+reader opens them depends on the SQLite build:
+
+- **macOS's system SQLite (3.54.0, what GRDB links):** opened read-only
+  while no `-shm` exists (no CLI has the file open), the first statement
+  fails with `SQLITE_CANTOPEN` (14). While a CLI runs, the `-shm` exists
+  and a read-only open works. A read-write open works either way but
+  creates `-wal` and `-shm` and leaves them after closing.
+- **Stock SQLite (Python's 3.54.1):** a read-only open creates the `-wal`
+  and `-shm` itself (the folder must be writable) and leaves them behind.
+
+### Presence locks and processes
+
+Measured with `lsof` on the `agy` process the pty started (no wrapper):
+it holds exactly one file under `presence/` open, read-write:
+
+- on `agy --conversation <id>`, `<id>.lock` from launch;
+- on a bare `agy`, nothing until the first prompt, then the new id's lock;
+- after `/clear`, the new id's lock, and the old one's no longer.
+
+It also holds `conversation_summaries.db` (and its `-wal`/`-shm`) and each
+loaded conversation's database open, including a subagent's. The lock
+files are never deleted, so a lock *file* means nothing; only an open
+descriptor does. One `agy` process did the work; no child process held any
+of these.
+
+**Resume:** `agy --conversation <id>` (also `--conversation=<id>`).
+**New:** bare `agy`; there is no way to choose the id. `-c` continues the
+newest conversation (not used: it guesses). Other flags of note: `--model`,
+`--mode` (`accept-edits`, `auto`, `plan`), `--project`, `--add-dir`,
+`--dangerously-skip-permissions`.
+
+**`--version`** prints the bare version (`1.5.16`) and exits 0, and like
+`claude` it ignores an unknown flag: `agy --bogus-flag --version` exits 0.

@@ -62,7 +62,7 @@ struct ShortcutsView: View {
 
     private static let app: [Shortcut] = [
         .init(keys: "⌘,", action: "Settings"),
-        .init(keys: "⌘R", action: "Refresh History's list; on Settings, check for \(Agent.allCases.map(\.displayName).joined(separator: " and ")) again"),
+        .init(keys: "⌘R", action: "Refresh History's list; on Settings, check for \(Agent.allCases.map(\.displayName).formatted(.list(type: .and))) again"),
         .init(keys: "⌘/", action: "This panel"),
         .init(keys: "Esc", action: "Dismiss palette / dialogs / find bar"),
         .init(keys: "⌘Q", action: "Quit — closing the window does the same; asks if an agent is working"),

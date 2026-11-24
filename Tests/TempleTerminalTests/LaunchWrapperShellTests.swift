@@ -32,6 +32,7 @@ final class LaunchWrapperShellTests: XCTestCase {
         #!/bin/sh
         out="$PROBE_OUT"
         pwd -P > "$out.pwd"
+        printf '%s' "$$" > "$out.pid"
         printf '%s\\0' "$@" > "$out.argv"
         printf '%s\\n' "$TERM_PROGRAM" "$CUSTOM" "$PATH" > "$out.env"
         exit 7
@@ -39,6 +40,10 @@ final class LaunchWrapperShellTests: XCTestCase {
         try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
         return url
     }
+
+    /// The pid of the last process `run` started: the shell the terminal
+    /// spawns, which `exec`s its way to the agent.
+    private var spawnedPID: Int32 = 0
 
     /// Run a prepared launch as the terminal would; returns the exit status.
     private func run(_ launch: AgentLaunch, ghosttyCwd: String, extraEnv: [String: String]) throws -> Int32 {
@@ -53,6 +58,7 @@ final class LaunchWrapperShellTests: XCTestCase {
         environment.merge(spawn.env) { _, new in new }
         process.environment = environment
         try process.run()
+        spawnedPID = process.processIdentifier
         process.waitUntilExit()
         return process.terminationStatus
     }
@@ -86,7 +92,12 @@ final class LaunchWrapperShellTests: XCTestCase {
         XCTAssertEqual(env[0], "Temple", "the spawn's identity variables reach the agent")
         XCTAssertEqual(env[1], "own value", "a command's own variables reach the agent")
         XCTAssertEqual(env[2], "/weird/first:/usr/bin:/bin", "no login profile rewrote PATH")
-        XCTAssertEqual(collect(try XCTUnwrap(launch.result)), [.directoryEstablished(folder.path), .finished])
+        // The pid the wrapper reports is the agent's own (ADR-043): every
+        // step from the terminal's shell to the agent is an `exec`.
+        let agentPID = try XCTUnwrap(Int32(String(contentsOfFile: out + ".pid", encoding: .utf8)))
+        XCTAssertEqual(agentPID, spawnedPID)
+        XCTAssertEqual(collect(try XCTUnwrap(launch.result)),
+                       [.directoryEstablished(folder.path), .agentProcess(pid: agentPID), .finished])
     }
 
     /// The terminal falls back to its own cwd when the folder is gone; the

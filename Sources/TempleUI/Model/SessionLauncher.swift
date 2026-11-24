@@ -8,7 +8,7 @@ public enum SessionLauncher {
 
     /// The identity of a new session, before any host builds its command.
     public struct Spec: Equatable {
-        public var sessionID: String?     // known immediately for Claude; nil (provisional) for Codex
+        public var sessionID: String?     // known immediately for Claude; nil (provisional) for Codex and Antigravity
         public var agent: Agent
         public var projectPath: String
         public var title: String
@@ -18,6 +18,8 @@ public enum SessionLauncher {
     /// Prepare a new session.
     /// - Claude: mint a UUID (the launcher passes `--session-id`); id known at once.
     /// - Codex: launch bare; the id is adopted later by the reconciler (U4).
+    /// - Antigravity: launch bare; the id is the presence lock its process
+    ///   holds once the first prompt creates the conversation (ADR-043).
     public static func newSession(agent: Agent, projectPath: String,
                                   uuid: String = UUID().uuidString.lowercased()) -> Spec {
         switch agent {
@@ -27,6 +29,9 @@ public enum SessionLauncher {
         case .codex:
             return Spec(sessionID: nil, agent: .codex, projectPath: projectPath,
                         title: Agent.codex.newSessionTitle, isProvisional: true)
+        case .antigravity:
+            return Spec(sessionID: nil, agent: .antigravity, projectPath: projectPath,
+                        title: Agent.antigravity.newSessionTitle, isProvisional: true)
         }
     }
 
@@ -37,12 +42,17 @@ public enum SessionLauncher {
 
 }
 
-/// Adopts a freshly-launched Codex session's real id (ADR-008 reconcile).
+/// Adopts a freshly-launched provisional tab's real id: Codex's from the
+/// rollout file it writes (ADR-008 reconcile), Antigravity's from the lock
+/// its process holds (ADR-043).
 ///
 /// `CodexAdopter` asks the owning host's source; the protocol keeps
 /// launch-model tests deterministic.
 @MainActor
 public protocol CodexAdopting: AnyObject {
+    /// Which session the agent process `request` names has loaded, asked of
+    /// the owning host's source.
+    func identifyProcess(host: HostID, _ request: ProcessIdentityRequest) async -> ProcessIdentity
     /// Begin watching for the rollout file of a Codex session just started in
     /// `projectPath` on `host`; call `adopt` with the discovered id and the
     /// rollout it was found in.
@@ -73,6 +83,15 @@ public final class CodexAdopter: CodexAdopting {
             adopt(id, locator)
         }
     }
+
+    public func identifyProcess(host: HostID, _ request: ProcessIdentityRequest) async -> ProcessIdentity {
+        guard let source = registry().entry(for: host)?.source else { return .unsupported }
+        return await source.identifyProcess(request)
+    }
+}
+
+public extension CodexAdopting {
+    func identifyProcess(host: HostID, _ request: ProcessIdentityRequest) async -> ProcessIdentity { .unsupported }
 }
 
 /// No-op implementation for tests that do not exercise adoption.

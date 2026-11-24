@@ -74,8 +74,11 @@ public enum FileHolders {
         for fd in fds.prefix(Int(got) / stride) where fd.proc_fdtype == PROX_FDTYPE_VNODE {
             var info = vnode_fdinfowithpath()
             guard proc_pidfdinfo(pid, fd.proc_fd, PROC_PIDFDVNODEPATHINFO, &info, infoSize) == infoSize else {
-                // Closed since it was listed: not this file.
-                if errno == EBADF { continue }
+                // Closed since it was listed, or revoked (`revoke(2)`: the
+                // kernel answers ENOENT for its path; seen on Codex's app
+                // server daemon, which then blocked every fresh database
+                // open): not this file.
+                if errno == EBADF || errno == ENOENT { continue }
                 if try !unanswered() { return false }
                 continue
             }

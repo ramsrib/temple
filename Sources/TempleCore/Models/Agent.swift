@@ -4,11 +4,14 @@ import Foundation
 public enum Agent: String, Codable, CaseIterable, Sendable {
     case claude
     case codex
+    /// Google's Antigravity CLI, `agy` (ADR-043): Gemini models in a terminal.
+    case antigravity
 
     public var displayName: String {
         switch self {
         case .claude: return "Claude Code"
         case .codex: return "Codex"
+        case .antigravity: return "Antigravity"
         }
     }
 
@@ -22,6 +25,7 @@ public enum Agent: String, Codable, CaseIterable, Sendable {
         switch self {
         case .claude: return "New Claude session"
         case .codex: return "New Codex session"
+        case .antigravity: return "New Antigravity session"
         }
     }
 
@@ -41,9 +45,18 @@ public enum Agent: String, Codable, CaseIterable, Sendable {
         return title.caseInsensitiveCompare("\(binaryName): \(folder)") == .orderedSame
     }
 
+    /// The agents a host other than this Mac can run: Antigravity's store is
+    /// SQLite, read on this Mac only for now (ADR-043).
+    public static let remoteAgents: [Agent] = [.claude, .codex]
+
     /// The command the agent installs as, before any user override or `PATH`
     /// resolution (see `LoginShellEnvironment.locate`).
-    public var binaryName: String { rawValue }
+    public var binaryName: String {
+        switch self {
+        case .claude, .codex: return rawValue
+        case .antigravity: return "agy"
+        }
+    }
 
     /// argv to resume a session with this agent (run in the session's `cwd`).
     ///
@@ -53,6 +66,7 @@ public enum Agent: String, Codable, CaseIterable, Sendable {
         switch self {
         case .claude: return ["claude", "--resume", sessionID]
         case .codex: return ["codex", "resume", sessionID]
+        case .antigravity: return ["agy", "--conversation", sessionID]
         }
     }
 }

@@ -166,6 +166,7 @@ public final class SessionTab: ObservableObject, Identifiable {
     func setLaunch(_ launch: AgentLaunch) {
         command = launch.command
         displayArgv = launch.displayArgv
+        processAdoption?.cancel(); processAdoption = nil
         launchResult?.cancel()
         launchResult = launch.result
         launchFailure = nil
@@ -204,6 +205,7 @@ public final class SessionTab: ObservableObject, Identifiable {
         surface = nil
         spawnedAt = nil
         find.surface = nil
+        processAdoption?.cancel(); processAdoption = nil
         launchResult?.cancel()
         launchResult = nil
         launchFailure = nil
@@ -222,6 +224,9 @@ public final class SessionTab: ObservableObject, Identifiable {
     }
     /// Retained only after start succeeds; adoption can arrive much later.
     var launchObservation: LaunchObservation?
+    /// A provisional Antigravity tab asking which conversation its process
+    /// has loaded (ADR-043); cancelled with the launch it watches.
+    var processAdoption: Task<Void, Never>?
 
     func attach(surface: TerminalSurface, at: Date = Date()) {
         self.surface = surface

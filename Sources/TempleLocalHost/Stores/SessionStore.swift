@@ -134,6 +134,27 @@ protocol IncrementalSessionStore: SessionStore {
     /// The catalog's parse, saying what it came to (`CatalogParse`), so
     /// only an outcome every read of which succeeded is kept.
     func catalogReader() -> @Sendable (URL) -> CatalogParse
+    /// Whether the catalog may keep this store's summaries across reads
+    /// (ADR-032): only when a transcript's stamp moves with every change.
+    var keepsCatalogSummaries: Bool { get }
+    /// The transcript an event at `url` changed, or nil for a file that is
+    /// none of this store's (by default: the file itself, if a transcript).
+    func transcriptURL(forEvent url: URL) -> URL?
+    /// What a transcript's version is stamped with: the file's own
+    /// signature, by default.
+    func signature(at url: URL) throws -> FileSignature
+    /// Identity, then (when `facts` and verified) facts, from one read.
+    /// `sharedAcquired` runs once the shared facts are in hand (a test seam).
+    func readTranscript(at url: URL, expecting id: String, facts: Bool, shared: SharedFacts,
+                        sharedAcquired: () -> Void) throws -> StoreTranscriptRead
+}
+
+/// One read of a transcript through its store (`readTranscript`).
+struct StoreTranscriptRead {
+    let verdict: TranscriptVerification
+    let summary: TranscriptSummary?
+    let bytesRead: Int
+    var widerRead = false
 }
 
 /// What one catalog parse of a transcript came to. Only `summary` and
@@ -203,6 +224,22 @@ extension IncrementalSessionStore {
     func catalogReader() -> @Sendable (URL) -> CatalogParse {
         let parser = catalogParser()
         return { url in parser(url).map { .incomplete($0) } ?? .failed }
+    }
+
+    var keepsCatalogSummaries: Bool { true }
+    func transcriptURL(forEvent url: URL) -> URL? { acceptsTranscript(url) ? url : nil }
+    func signature(at url: URL) throws -> FileSignature { try FileSignature(url) }
+
+    func readTranscript(at url: URL, expecting id: String, facts: Bool, shared: SharedFacts,
+                        sharedAcquired: () -> Void) throws -> StoreTranscriptRead {
+        let identity = try StoreIO.identity(at: url, format: format, expecting: id)
+        guard facts, identity.verdict == .verified else {
+            return StoreTranscriptRead(verdict: identity.verdict, summary: nil, bytesRead: identity.bytesRead)
+        }
+        sharedAcquired()
+        let result = StoreIO.facts(at: url, format: format, shared: shared)
+        return StoreTranscriptRead(verdict: identity.verdict, summary: result.summary,
+                                   bytesRead: identity.bytesRead + result.bytesRead, widerRead: result.widerRead)
     }
 
 }

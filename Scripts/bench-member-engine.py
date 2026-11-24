@@ -49,7 +49,7 @@ def clone(source, destination):
 def environment(directory):
     env = os.environ.copy()
     env.update(TEMPLE_CLAUDE_ROOT=str(directory/'claude'), TEMPLE_CODEX_ROOT=str(directory/'codex'),
-               TEMPLE_STATE_DIR=str(directory/'state'))
+               TEMPLE_ANTIGRAVITY_ROOT=str(directory/'antigravity'), TEMPLE_STATE_DIR=str(directory/'state'))
     return env
 
 seed = base/'seed'

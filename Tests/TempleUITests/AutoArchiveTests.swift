@@ -282,7 +282,7 @@ final class AutoArchiveTests: XCTestCase {
         h.publish(["x": .confirmedAbsent])
         await h.settle()
         XCTAssertEqual(h.archived(["x"]), [])
-        XCTAssertEqual(Set(h.proofs.calls.map(\.1)), [.claude, .codex])
+        XCTAssertEqual(Set(h.proofs.calls.map(\.1)), Set(Agent.allCases))
         h.proofs.answers[.codex] = nil
         h.model.armArchiveSweep(); await h.settle()
         XCTAssertEqual(h.archived(["x"]), ["x"])
@@ -388,13 +388,13 @@ final class AutoArchiveTests: XCTestCase {
                        [Fixture.key("/gone"), Fixture.key("/here"), Fixture.key("/unknown")])
         let requests = AutoArchivePolicy.proofRequests(rows: rows.values, snapshot: snapshot, openSessions: [], now: clock)
         XCTAssertEqual(requests.mapValues { Set($0.keys) },
-                       [.init(host: .local, agent: .claude): ["a", "both"], .init(host: .local, agent: .codex): ["a", "both"]],
+                       Dictionary(uniqueKeysWithValues: Agent.allCases.map { (AutoArchivePolicy.ProofKey(host: .local, agent: $0), Set(["a", "both"])) }),
                        "no agent recorded: every agent's proof")
         XCTAssertEqual(requests[.init(host: .local, agent: .claude)]?["a"], ref("a"), "each with the membership it was asked for")
         let proven = AbsenceProof(exhaustive: true, quiescent: true, missing: ["a", "both"])
         let plan = AutoArchivePolicy.plan(
             rows: rows.values, snapshot: snapshot,
-            proofs: [.init(host: .local, agent: .claude): proven, .init(host: .local, agent: .codex): proven],
+            proofs: Dictionary(uniqueKeysWithValues: Agent.allCases.map { (AutoArchivePolicy.ProofKey(host: .local, agent: $0), proven) }),
             requested: requests,
             folders: [Fixture.key("/gone"): .missing, Fixture.key("/here"): .exists, Fixture.key("/unknown"): .unknown],
             openSessions: [], now: clock)

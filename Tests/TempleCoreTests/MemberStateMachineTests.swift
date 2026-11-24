@@ -176,7 +176,7 @@ final class MemberStateMachineTests: XCTestCase {
     }
 
     func testAReplacedFileIsReverified() async throws {
-        for agent in Agent.allCases {
+        for agent in Agent.remoteAgents {
             let (_, file, _, _, watcher, _) = try fixture(agent: agent, row: .complete)
             try await start(watcher)
             let old = try FileSignature(file)

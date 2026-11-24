@@ -66,6 +66,7 @@ Four traps, each hit for real:
 
 - **A demo's settings follow `TEMPLE_DEFAULTS_SUITE`; AppKit's autosaves follow
   the app's identity.** `TEMPLE_CLAUDE_ROOT` / `TEMPLE_CODEX_ROOT` /
+  `TEMPLE_ANTIGRAVITY_ROOT` /
   `TEMPLE_STATE_DIR` redirect the stores and the state (database, catalog cache,
   `ghostty.conf`), and `TEMPLE_DEFAULTS_SUITE` redirects Temple's settings:
   `TempleState.settingsDefaults` is the one place Temple gets its `UserDefaults`,

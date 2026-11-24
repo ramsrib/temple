@@ -126,7 +126,7 @@ struct LocalSessionCatalog: Sendable {
             // thread never shows an older rollout while the one the agent
             // would resume exists.
             let urls = Dictionary(files.map { ($0.path, $0) }, uniquingKeysWith: { first, _ in first })
-            let cacheRoot = cache == nil ? nil : root
+            let cacheRoot = cache == nil || !incremental.keepsCatalogSummaries ? nil : root
             if let cache, let cacheRoot {
                 cache.waitUntilLoaded(deadline: loadDeadline) { cancelled.isCancelled }
                 if cancelled.isCancelled { return }

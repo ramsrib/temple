@@ -161,6 +161,7 @@ public enum TranscriptFormats {
         switch agent {
         case .claude: ClaudeFormat()
         case .codex: CodexFormat()
+        case .antigravity: AntigravityFormat()
         }
     }
 

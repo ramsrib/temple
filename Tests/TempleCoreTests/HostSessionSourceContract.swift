@@ -6,6 +6,10 @@ import TempleTestSupport
 
 /// A host under test, with the means to change what is on it.
 protocol SourceFixture: AnyObject {
+    /// The agents a completed catalog read covers: the agents this host has
+    /// a store for (a local source lists none for an agent it has no store
+    /// for; the fake host covers every agent asked about).
+    var catalogAgents: Set<Agent> { get }
     var source: any HostSessionSource { get }
     /// Signatures carry a file identity (an inode).
     var hasInodes: Bool { get }
@@ -176,7 +180,7 @@ class HostSessionSourceContract: XCTestCase {
     func test01NoTranscriptMeansNoCandidateAndACompleteListing() async throws {
         let result = try await locate([LocateRequest(id: uuid(), agent: .claude), LocateRequest(id: uuid())])
         XCTAssertTrue(result.candidates.values.allSatisfy(\.isEmpty))
-        XCTAssertEqual(result.complete, [.claude, .codex])
+        XCTAssertEqual(result.complete, Set(Agent.allCases))
     }
 
     func test02AFailedListingLeavesOnlyThatAgentIncompleteAndTransportFailuresThrow() async throws {
@@ -184,7 +188,7 @@ class HostSessionSourceContract: XCTestCase {
         try plantClaude(id)
         try fixture.breakListing(.codex)
         let result = try await locate([LocateRequest(id: id, refresh: true)])
-        XCTAssertEqual(result.complete, [.claude])
+        XCTAssertEqual(result.complete, Set(Agent.allCases).subtracting([.codex]))
         XCTAssertEqual(result.candidates[id]?.map(\.agent), [.claude])
         guard fixture.canBreakTransport else { return }
         try fixture.breakTransport()
@@ -401,7 +405,7 @@ class HostSessionSourceContract: XCTestCase {
             }
         }
         let found = try await locate([LocateRequest(id: claudeID), LocateRequest(id: codexID)])
-        XCTAssertEqual(found.complete, [.claude, .codex])
+        XCTAssertEqual(found.complete, Set(Agent.allCases))
         XCTAssertEqual(found.candidates[claudeID]?.map(\.locator), [claude])
         XCTAssertEqual(found.candidates[codexID]?.map(\.locator), [codex])
         XCTAssertEqual(found.candidates[codexID]?.first?.role, .selected)
@@ -414,7 +418,7 @@ class HostSessionSourceContract: XCTestCase {
         } }
         let gone = try await locate([LocateRequest(id: claudeID)])
         XCTAssertEqual(gone.candidates[claudeID]?.count, 0, "a removed file leaves the listing")
-        XCTAssertEqual(gone.complete, [.claude, .codex])
+        XCTAssertEqual(gone.complete, Set(Agent.allCases))
     }
 
     func test10ADroppedStreamResetsCoverageForward() async throws {
@@ -560,16 +564,16 @@ class HostSessionSourceContract: XCTestCase {
         try plantClaude(kept)
         try plantCodex(uuid())
         let all = try await catalogRead()
-        XCTAssertEqual(all.events.last?.completedAgents, [.claude, .codex])
+        XCTAssertEqual(all.events.last?.completedAgents, fixture.catalogAgents)
         let value1 = try await catalogRead(CatalogQuery(agents: [.claude])).events.last
         XCTAssertEqual(value1?.completedAgents, [.claude])
         try fixture.remove(goneFile)
         let after = try await catalogRead()
         XCTAssertEqual(Set(after.summaries.map(\.id)).intersection([gone, kept]), [kept])
-        XCTAssertEqual(after.events.last?.completedAgents, [.claude, .codex], "the deletion is proven within completed coverage")
+        XCTAssertEqual(after.events.last?.completedAgents, fixture.catalogAgents, "the deletion is proven within completed coverage")
         try fixture.breakListing(.codex)
         let value2 = try await catalogRead().events.last
-        XCTAssertEqual(value2?.completedAgents, [.claude])
+        XCTAssertEqual(value2?.completedAgents, fixture.catalogAgents.subtracting([.codex]))
     }
 
     /// The work-count half of the cache contract: an unchanged store is
@@ -672,7 +676,7 @@ class HostSessionSourceContract: XCTestCase {
         try plantCodex(rollout)
         let first = try await catalogRead()
         guard case .completed(let candidates)? = first.events.last else { return XCTFail("no completion") }
-        XCTAssertEqual(Set(candidates.keys), [.claude, .codex])
+        XCTAssertEqual(Set(candidates.keys), fixture.catalogAgents)
         XCTAssertTrue(candidates[.claude, default: []].isSuperset(of: [good, unreadable, named]))
         XCTAssertEqual(candidates[.codex], [rollout])
         XCTAssertEqual(first.summaries.map(\.id).filter { [unreadable, named].contains($0) }, [], "listed as candidates, shown as nothing")
@@ -995,6 +999,7 @@ final class LocalSourceContractTests: HostSessionSourceContract {
 }
 
 private final class LocalFixture: SourceFixture {
+    var catalogAgents: Set<Agent> { [.claude, .codex] }
     let root = URL(fileURLWithPath: "/private/tmp/temple-contract-\(UUID().uuidString)")
     private let local: LocalSessionSource
     var source: any HostSessionSource { local }
@@ -1149,6 +1154,7 @@ final class FakeRemoteSourceContractTests: HostSessionSourceContract {
 }
 
 private final class FakeFixture: SourceFixture {
+    var catalogAgents: Set<Agent> { Set(Agent.allCases) }
     let fake = FakeHostSource(host: HostID(rawValue: "build-box"))
     var source: any HostSessionSource { fake }
     var hasInodes: Bool { fake.hasInodes }

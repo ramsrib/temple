@@ -208,7 +208,7 @@ struct HistoryTabView: View {
         }
         // No counts (design audit, 2026-11): they repeated the tabs, and the
         // list says how much there is.
-        return "Every Claude Code and Codex session on this Mac"
+        return "Every \(Agent.allCases.map(\.displayName).formatted(.list(type: .and))) session on this Mac"
     }
 
     /// Search, the two tabs, Filter and More (design audit, 2026-11: seven
@@ -546,7 +546,7 @@ struct HistoryTabView: View {
         let others = Agent.allCases.filter { !failed.contains($0) }
         let byAgent = history.snapshot.counts.hostAgents[failure.host] ?? [:]
         let shown = others.reduce(0) { $0 + (byAgent[$1] ?? 0) }
-        let names = others.map(\.displayName).joined(separator: " and ")
+        let names = others.map(\.displayName).formatted(.list(type: .and))
         let place = failure.host.isLocal ? "" : " on \(failure.host.displayName)"
         var text = "Couldn't read the \(failure.agent.displayName) session store\(place): \(failure.message)"
         if !others.isEmpty { text += " Showing \(shown.formatted()) \(names) sessions." }
@@ -818,7 +818,7 @@ struct HistoryTabView: View {
         if history.allRows.isEmpty {
             return EmptyCopy(
                 title: "No sessions yet",
-                detail: "Sessions you run with Claude Code or Codex, here or in any terminal, appear here.")
+                detail: "Sessions you run with \(Agent.allCases.map(\.displayName).formatted(.list(type: .or))), here or in any terminal, appear here.")
         }
         let otherFilters = history.agentFilter != nil || history.projectKeyFilter != nil
         if history.scope == .archived {

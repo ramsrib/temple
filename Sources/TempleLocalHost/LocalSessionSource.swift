@@ -23,6 +23,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     public let capabilities: Set<HostCapability> = [.liveChanges, .revealInFinder, .catalog]
     private var changeContinuations: [UUID: AsyncThrowingStream<SourceChange, Error>.Continuation] = [:]
     private let stores: [any IncrementalSessionStore]
+    /// The Antigravity store, if this source has one: process identity
+    /// reads its presence folder (`ProcessLocks`).
+    var antigravityStore: AntigravitySessionStore? { stores.lazy.compactMap { $0 as? AntigravitySessionStore }.first }
     private let debounceInterval: TimeInterval
     private let queue = DispatchQueue(label: "com.sriramb.temple.local-source")
     private var stream: FSEventStreamRef?
@@ -115,12 +118,12 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         return formatter
     }()
 
-    /// This Mac's two stores, at their real roots or the `TEMPLE_*_ROOT`
+    /// This Mac's stores, at their real roots or the `TEMPLE_*_ROOT`
     /// overrides. `monitorChanges: false` never arms FSEvents (templectl's
     /// one-shot reads). The catalog's summaries are kept on disk too, in
     /// the state directory (`TEMPLE_STATE_DIR`), read on the first catalog.
     public convenience init(monitorChanges: Bool = true) {
-        self.init(stores: [ClaudeSessionStore(), CodexSessionStore()], monitorChanges: monitorChanges,
+        self.init(stores: [ClaudeSessionStore(), CodexSessionStore(), AntigravitySessionStore()], monitorChanges: monitorChanges,
                   catalogDisk: CatalogDiskCache(directory: CatalogDiskCache.defaultDirectory))
     }
 
@@ -375,7 +378,9 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             return
         }
         // Codex sqlite/WAL/log traffic is rejected before stat or resolution.
-        let isTranscript = stores.contains { $0.acceptsTranscript(url) }
+        // A store may name another file as the one an event changed (an
+        // Antigravity database's `-wal`: the database).
+        let transcript = stores.lazy.compactMap { $0.transcriptURL(forEvent: url) }.first
         let directory = has(kFSEventStreamEventFlagItemIsDir)
         let scan = has(kFSEventStreamEventFlagMustScanSubDirs)
         if directory || scan {
@@ -386,6 +391,12 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                     let sessionsRoot = SessionPaths.normalized(codex.sessionsRoot.path)
                     return path == sessionsRoot || path.hasPrefix(sessionsRoot + "/")
                 }
+                // Antigravity's root churns (logs, caches, `brain/`); only
+                // its conversations folder holds transcripts.
+                if let antigravity = store as? AntigravitySessionStore {
+                    let conversations = SessionPaths.normalized(antigravity.conversationsRoot.path)
+                    return path == conversations || path.hasPrefix(conversations + "/")
+                }
                 return store.watchedURLs.contains {
                     let root = SessionPaths.normalized($0.path)
                     return path == root || path.hasPrefix(root + "/")
@@ -394,10 +405,10 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             if relevant { rescanLocked(subtree: path) }
             return
         }
-        guard isTranscript else { return }
+        guard let transcript else { return }
         // Every transcript write is reported, member or not: which ids are
         // members is the engine's business.
-        rawPaths.insert(path)
+        rawPaths.insert(transcript.path)
         scheduleLocked()
     }
 
@@ -452,7 +463,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     private func observeTranscriptPathLocked(_ path: String) {
         let url = URL(fileURLWithPath: path)
         guard let store = stores.first(where: { $0.acceptsTranscript(url) }) else { return }
-        if Self.candidateStat(path) != .missing {
+        if Self.candidateStat(path, store: store) != .missing {
             files[path] = (url, store.agent)
             _ = recordFilenameLocked(path, store: store)
             return
@@ -805,10 +816,10 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
                             let path = self.logicalPath(hint.path) ?? RootMapping.alias(hint.path)
                             if store.acceptsTranscript(URL(fileURLWithPath: path)) { hintPath = path }
                         }
-                        let hintPresent = hintPath.map { Self.candidateStat($0) != .missing } ?? false
+                        let hintPresent = hintPath.map { Self.candidateStat($0, store: store) != .missing } ?? false
                         for assignment in TranscriptCandidates.assign(id: request.id, format: store.format, listed: listed.sorted(),
                                                                      hint: hintPath, hintPresent: hintPresent) {
-                            let stat = Self.candidateStat(assignment.path)
+                            let stat = Self.candidateStat(assignment.path, store: store)
                             // A hint whose file is gone is no candidate (and walks nothing).
                             if assignment.role == .hinted, stat == .missing { continue }
                             list.append(TranscriptCandidate(locator: TranscriptLocator(host: self.host, path: assignment.path),
@@ -861,36 +872,29 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
         readCounts.read()
         for _ in 0..<Self.readAttempts {
             let before: FileSignature
-            do { before = try FileSignature(url) } catch { throw failure(error) }
-            let identity: (verdict: TranscriptVerification, bytesRead: Int)
-            do { identity = try StoreIO.identity(at: url, format: store.format, expecting: id) }
-            catch { throw failure(error) }
-            var bytes = identity.bytesRead
-            var summary: TranscriptSummary?
-            var revision: UInt64?
-            if facts, identity.verdict == .verified {
-                // Facts and revision come as one value: whatever changes after
-                // this, these facts keep the revision they were read at.
-                let shared = store.sharedFactsSnapshot()
-                revision = shared.revision
-                readPhaseHook?(.sharedFactsAcquired, url)
-                let result = StoreIO.facts(at: url, format: store.format, shared: shared.facts)
-                readCounts.parse(wider: result.widerRead)
-                summary = result.summary
-                bytes += result.bytesRead
-            }
+            do { before = try store.signature(at: url) } catch { throw failure(error) }
+            // Facts and revision come as one value: whatever changes after
+            // this, these facts keep the revision they were read at.
+            let shared = facts ? store.sharedFactsSnapshot() : (facts: SharedFacts.empty, revision: nil)
+            let read: StoreTranscriptRead
+            do {
+                let hook = readPhaseHook
+                read = try store.readTranscript(at: url, expecting: id, facts: facts, shared: shared.facts,
+                                                sharedAcquired: { hook?(.sharedFactsAcquired, url) })
+            } catch { throw failure(error) }
+            if facts, read.verdict == .verified { readCounts.parse(wider: read.widerRead) }
             readPhaseHook?(.bytesRead, url)
             let after: FileSignature
-            do { after = try FileSignature(url) } catch { throw failure(error) }
+            do { after = try store.signature(at: url) } catch { throw failure(error) }
             guard after == before else { continue }
-            return TranscriptRead(identity: identity.verdict, summary: summary, signature: after.transcript,
-                                  bytesRead: bytes, sharedRevision: revision)
+            return TranscriptRead(identity: read.verdict, summary: read.summary, signature: after.transcript,
+                                  bytesRead: read.bytesRead, sharedRevision: facts && read.verdict == .verified ? shared.revision : nil)
         }
         throw TranscriptReadError.changedDuringRead
     }
 
-    private static func candidateStat(_ path: String) -> CandidateStat {
-        do { return .present(try FileSignature(URL(fileURLWithPath: path)).transcript) }
+    private static func candidateStat(_ path: String, store: any IncrementalSessionStore) -> CandidateStat {
+        do { return .present(try store.signature(at: URL(fileURLWithPath: path)).transcript) }
         catch { return isMissing(error) ? .missing : .unreadable }
     }
 
@@ -1129,6 +1133,9 @@ struct FileSignature: Equatable {
         date = Date(timeIntervalSince1970: TimeInterval(info.st_mtimespec.tv_sec) + TimeInterval(info.st_mtimespec.tv_nsec) / 1_000_000_000)
         size = Int(info.st_size)
         fileNumber = UInt64(info.st_ino)
+    }
+    init(date: Date, size: Int, fileNumber: UInt64) {
+        self.date = date; self.size = size; self.fileNumber = fileNumber
     }
 }
 

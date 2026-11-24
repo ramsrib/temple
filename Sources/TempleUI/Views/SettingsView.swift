@@ -57,8 +57,7 @@ struct SettingsView: View {
                     // was last, under three agent sections and Hosts).
                     appearanceSection
                     agentsSection
-                    agentSection(.claude)
-                    agentSection(.codex)
+                    ForEach(Agent.allCases, id: \.self) { agentSection($0) }
                     // Hosts: always shown, the one way to add a host. The
                     // ssh config is read only once it appears.
                     HostsSettingsSection(hosts: model.remoteHosts,
@@ -510,8 +509,7 @@ struct SettingsView: View {
     }
 
     private func commitAll() {
-        for field in [SettingsField.command(.claude), .arguments(.claude), .command(.codex), .arguments(.codex),
-                      .fontFamily, .fontSize] {
+        for field in Agent.allCases.flatMap({ [SettingsField.command($0), .arguments($0)] }) + [.fontFamily, .fontSize] {
             commit(field)
         }
     }

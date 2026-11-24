@@ -68,9 +68,11 @@ public final class SettingsStore: ObservableObject {
     /// Empty = "detect it" (see `ToolchainModel`). Only ever set by the user.
     @Published public var claudePath: String { didSet { write(claudePath, Key.claudePath) } }
     @Published public var codexPath: String { didSet { write(codexPath, Key.codexPath) } }
+    @Published public var antigravityPath: String { didSet { write(antigravityPath, Key.antigravityPath) } }
     /// Extra CLI arguments appended to every launch (new + resume).
     @Published public var claudeExtraArgs: String { didSet { write(claudeExtraArgs, Key.claudeExtraArgs) } }
     @Published public var codexExtraArgs: String { didSet { write(codexExtraArgs, Key.codexExtraArgs) } }
+    @Published public var antigravityExtraArgs: String { didSet { write(antigravityExtraArgs, Key.antigravityExtraArgs) } }
 
     /// Temple's settings domain. Internal so the Hosts connection manager
     /// keeps its list in the same one (`RemoteHostsModel`).
@@ -95,8 +97,10 @@ public final class SettingsStore: ObservableObject {
         theme = ThemePreference(rawValue: defaults.string(forKey: Key.theme) ?? "") ?? .system
         claudePath = defaults.string(forKey: Key.claudePath) ?? ""
         codexPath = defaults.string(forKey: Key.codexPath) ?? ""
+        antigravityPath = defaults.string(forKey: Key.antigravityPath) ?? ""
         claudeExtraArgs = defaults.string(forKey: Key.claudeExtraArgs) ?? Self.shippedExtraArgs(for: .claude)
         codexExtraArgs = defaults.string(forKey: Key.codexExtraArgs) ?? Self.shippedExtraArgs(for: .codex)
+        antigravityExtraArgs = defaults.string(forKey: Key.antigravityExtraArgs) ?? Self.shippedExtraArgs(for: .antigravity)
         loading = false
     }
 
@@ -126,24 +130,34 @@ public final class SettingsStore: ObservableObject {
     /// The user's explicit choice of binary for an agent, or `""` for "detect it"
     /// — which is the default, and what `ToolchainModel` then answers.
     public func overridePath(for agent: Agent) -> String {
-        agent == .claude ? claudePath : codexPath
+        switch agent {
+        case .claude: claudePath
+        case .codex: codexPath
+        case .antigravity: antigravityPath
+        }
     }
 
     public func setOverridePath(_ path: String, for agent: Agent) {
         switch agent {
         case .claude: claudePath = path
         case .codex: codexPath = path
+        case .antigravity: antigravityPath = path
         }
     }
 
     public func extraArgsText(for agent: Agent) -> String {
-        agent == .claude ? claudeExtraArgs : codexExtraArgs
+        switch agent {
+        case .claude: claudeExtraArgs
+        case .codex: codexExtraArgs
+        case .antigravity: antigravityExtraArgs
+        }
     }
 
     public func setExtraArgsText(_ text: String, for agent: Agent) {
         switch agent {
         case .claude: claudeExtraArgs = text
         case .codex: codexExtraArgs = text
+        case .antigravity: antigravityExtraArgs = text
         }
     }
 
@@ -152,6 +166,7 @@ public final class SettingsStore: ObservableObject {
         switch agent {
         case .claude: return "--dangerously-skip-permissions"
         case .codex: return "--dangerously-bypass-approvals-and-sandbox"
+        case .antigravity: return "--dangerously-skip-permissions"
         }
     }
 
@@ -159,7 +174,7 @@ public final class SettingsStore: ObservableObject {
     /// writing the default's text into the key: absent means "Temple's
     /// default", so a later change to the shipped flags reaches this user too.
     public func resetExtraArgs(for agent: Agent) {
-        let key = agent == .claude ? Key.claudeExtraArgs : Key.codexExtraArgs
+        let key = Key.extraArgs(agent)
         loading = true
         setExtraArgsText(Self.shippedExtraArgs(for: agent), for: agent)
         loading = false
@@ -195,5 +210,14 @@ public final class SettingsStore: ObservableObject {
         static let codexPath = "temple.settings.codexPath"
         static let claudeExtraArgs = "temple.settings.claudeExtraArgs"
         static let codexExtraArgs = "temple.settings.codexExtraArgs"
+        static let antigravityPath = "temple.settings.antigravityPath"
+        static let antigravityExtraArgs = "temple.settings.antigravityExtraArgs"
+        static func extraArgs(_ agent: Agent) -> String {
+            switch agent {
+            case .claude: claudeExtraArgs
+            case .codex: codexExtraArgs
+            case .antigravity: antigravityExtraArgs
+            }
+        }
     }
 }

@@ -296,7 +296,7 @@ final class SettingsEditingTests: XCTestCase {
         XCTAssertFalse(toolchain.isCheckingUserSettings(for: .codex))
         XCTAssertEqual(toolchain.overrideVerdict(for: .claude), .checking)
         XCTAssertEqual(toolchain.overrideVerdict(for: .codex), .runs(version: "9.9.9"), "Codex isn't being checked")
-        XCTAssertEqual(toolchain.summary()?.map(\.state), [.checking, .runs])
+        XCTAssertEqual(toolchain.summary()?.map(\.state), [.checking, .runs, .missing])
 
         // A second commit replaces the first check; both stay marked until it lands.
         editor.write(.arguments(.codex), "--fine")
@@ -326,8 +326,8 @@ final class SettingsEditingTests: XCTestCase {
 
     func testSummaryStatesWhatWillRun() {
         configure(broken: ["/broken/claude"])
-        XCTAssertEqual(toolchain.summary()?.map(\.text), ["Claude Code 2.1.287", "Codex not found"])
-        XCTAssertEqual(toolchain.summary()?.map(\.state), [.runs, .missing])
+        XCTAssertEqual(toolchain.summary()?.map(\.text), ["Claude Code 2.1.287", "Codex not found", "Antigravity not found"])
+        XCTAssertEqual(toolchain.summary()?.map(\.state), [.runs, .missing, .missing])
 
         editor.write(.command(.claude), "/broken/claude")
         XCTAssertEqual(toolchain.summary()?.first?.text, "Claude Code: checking…")

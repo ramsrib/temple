@@ -64,6 +64,8 @@ final class OpenByIDSheetModel: ObservableObject {
     @Published var folder = ""
     @Published private(set) var check: Check = .idle
     @Published private(set) var showsAgent = false
+    /// The agents that have the id, when it is more than one's.
+    @Published private(set) var agentChoices: [Agent] = []
     @Published private(set) var showsFolder = false
 
     let dependencies: Dependencies
@@ -205,6 +207,7 @@ final class OpenByIDSheetModel: ObservableObject {
             agent = found[0]
         default:
             guard let chosenAgent, found.contains(chosenAgent) else {
+                agentChoices = found
                 showsAgent = true
                 check = .chooseAgent
                 return
@@ -262,8 +265,8 @@ final class OpenByIDSheetModel: ObservableObject {
     static func notFoundLine(_ lookup: SessionLookup, id: String, host: String) -> String {
         let short = id.count > 8 ? String(id.prefix(8)) + "…" : id
         if lookup.notFoundAnywhere { return "No session \(short) on \(host)." }
-        let searched = Agent.allCases.filter { lookup[$0] == .notFound }.map(\.displayName)
-        let reasons = Agent.allCases.compactMap { agent -> String? in
+        let searched = lookup.asked.filter { lookup[$0] == .notFound }.map(\.displayName)
+        let reasons = lookup.asked.compactMap { agent -> String? in
             guard case .cannotTell(let why) = lookup[agent] else { return nil }
             return uncertainty(why, agent: agent.displayName, host: host)
         }

@@ -2,7 +2,7 @@
 """Seed a fake session store so Temple can be demoed or screenshotted without
 exposing real projects.
 
-    ./Scripts/demo-data.py          # writes /tmp/temple-demo/{claude,codex}-store
+    ./Scripts/demo-data.py          # writes /tmp/temple-demo/{claude,codex,antigravity}-store
     ./Scripts/demo-data.py --prune  # deletes the sessions recorded in pruned.txt
     make demo                       # seeds, imports, prunes, launches Temple
 
@@ -11,7 +11,8 @@ imported first (so they are Temple's), then their transcripts deleted, and
 Temple archives them on launch (ADR-030). A copy of each is kept beside it
 (`<file>.kept`), so copying one back shows that only Restore brings it back.
 
-The app reads its index from TEMPLE_CLAUDE_ROOT / TEMPLE_CODEX_ROOT, and keeps
+The app reads its index from TEMPLE_CLAUDE_ROOT / TEMPLE_CODEX_ROOT /
+TEMPLE_ANTIGRAVITY_ROOT, and keeps
 its own state (index cache, SQLite) in TEMPLE_STATE_DIR, so a demo run neither
 reads nor clobbers real data.
 
@@ -23,6 +24,7 @@ writes that one to the real ~/.claude store, and demo-clean removes it.
 import json
 import os
 import shutil
+import sqlite3
 import sys
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -30,6 +32,7 @@ from datetime import datetime, timedelta, timezone
 DEMO = "/private/tmp/temple-demo"
 CLAUDE_STORE = f"{DEMO}/claude-store"
 CODEX_STORE = f"{DEMO}/codex-store"
+ANTIGRAVITY_STORE = f"{DEMO}/antigravity-store"
 PROJECTS = f"{DEMO}/projects"
 
 CLAUDE_SESSIONS = {
@@ -81,6 +84,64 @@ CODEX_SESSIONS = [
     ("storefront", "convert the legacy sass to css modules", 1200),
 ]
 
+# Antigravity CLI conversations (ADR-043): SQLite, shaped like `agy`'s own
+# (SESSION-FORMATS.md) — a summaries table and a database per conversation.
+ANTIGRAVITY_SESSIONS = [
+    ("pipeline", "Backfill Parallelization", "split the backfill by partition and run them in parallel", 150),
+    ("notes-app", "", "profile the sync engine on a 10k note account", 2400),
+]
+
+
+def _varint(n):
+    out = bytearray()
+    while True:
+        byte = n & 0x7F
+        n >>= 7
+        out.append(byte | (0x80 if n else 0))
+        if not n:
+            return bytes(out)
+
+
+def _field(number, payload):
+    """A length-delimited protobuf field."""
+    return _varint(number << 3 | 2) + _varint(len(payload)) + payload
+
+
+def _varint_field(number, value):
+    return _varint(number << 3) + _varint(value)
+
+
+def user_step_payload(text, when):
+    """A user-input step: field 5.1 its time, field 19.2 its text."""
+    stamp = _varint_field(1, int(when.timestamp())) + _varint_field(2, when.microsecond * 1000)
+    return _varint_field(1, 14) + _field(5, _field(1, stamp)) + _field(19, _field(2, text.encode()))
+
+
+def write_antigravity_store():
+    conversations = f"{ANTIGRAVITY_STORE}/conversations"
+    os.makedirs(conversations, exist_ok=True)
+    summaries = sqlite3.connect(f"{ANTIGRAVITY_STORE}/conversation_summaries.db")
+    summaries.execute("""CREATE TABLE conversation_summaries (conversation_id text PRIMARY KEY,
+        title text NOT NULL DEFAULT '', preview text NOT NULL DEFAULT '', step_count integer NOT NULL DEFAULT 0,
+        last_modified_time datetime NOT NULL, workspace_uris text NOT NULL,
+        parent_conversation_id text NOT NULL DEFAULT '')""")
+    for name, title, prompt, minutes_ago in ANTIGRAVITY_SESSIONS:
+        cid = str(uuid.uuid4())
+        when = now - timedelta(minutes=minutes_ago)
+        path = f"{conversations}/{cid}.db"
+        db = sqlite3.connect(path)
+        db.execute("CREATE TABLE trajectory_meta (trajectory_id text PRIMARY KEY, cascade_id text)")
+        db.execute("CREATE TABLE steps (idx integer PRIMARY KEY, step_type integer NOT NULL, step_payload blob)")
+        db.execute("INSERT INTO trajectory_meta VALUES (?, ?)", (str(uuid.uuid4()), cid))
+        db.execute("INSERT INTO steps VALUES (0, 14, ?)", (user_step_payload(prompt, when),))
+        db.commit(); db.close()
+        os.utime(path, (when.timestamp(), when.timestamp()))
+        summaries.execute("INSERT INTO conversation_summaries VALUES (?, ?, ?, 2, ?, ?, '')",
+                          (cid, title, title, when.strftime("%Y-%m-%d %H:%M:%S.%f+00:00"),
+                           json.dumps([f"file://{PROJECTS}/{name}"])))
+    summaries.commit(); summaries.close()
+
+
 # The sidebar footer's Codex meter reads the newest rollout's last
 # `rate_limits` record (CodexUsageReader); without one the demo shows no meter.
 # Shaped like Codex's own token_count event: a 5-hour and a weekly window.
@@ -113,6 +174,7 @@ def write(path, lines, when):
 def main():
     shutil.rmtree(CLAUDE_STORE, ignore_errors=True)
     shutil.rmtree(CODEX_STORE, ignore_errors=True)
+    shutil.rmtree(ANTIGRAVITY_STORE, ignore_errors=True)
 
     for name, sessions in CLAUDE_SESSIONS.items():
         cwd = f"{PROJECTS}/{name}"
@@ -170,7 +232,10 @@ def main():
         for entry in history:
             fh.write(json.dumps(entry) + "\n")
 
-    total = sum(len(v) for v in CLAUDE_SESSIONS.values()) + len(PRUNED_SESSIONS) + len(CODEX_SESSIONS)
+    write_antigravity_store()
+
+    total = (sum(len(v) for v in CLAUDE_SESSIONS.values()) + len(PRUNED_SESSIONS) + len(CODEX_SESSIONS)
+             + len(ANTIGRAVITY_SESSIONS))
     print(f"seeded {total} sessions across {len(CLAUDE_SESSIONS) + 1} projects in {DEMO}")
 
 

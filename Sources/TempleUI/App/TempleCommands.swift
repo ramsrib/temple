@@ -188,7 +188,7 @@ public struct TempleCommands: Commands {
     }
 
     private var agentNames: String {
-        Agent.allCases.map(\.displayName).joined(separator: " and ")
+        Agent.allCases.map(\.displayName).formatted(.list(type: .and))
     }
 
     private var settingsActive: Bool {

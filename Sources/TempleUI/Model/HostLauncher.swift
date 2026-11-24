@@ -59,6 +59,9 @@ public enum LaunchFailureCategory: String, Sendable, Equatable {
 public enum LaunchEvent: Sendable, Equatable {
     /// The spawned process is running in this folder.
     case directoryEstablished(String)
+    /// The agent's own process: the wrapper's pid, which its `exec` keeps.
+    /// Reported by a local launch only (ADR-043).
+    case agentProcess(pid: Int32)
     case failed(LaunchFailureCategory, message: String)
     /// The launch is over; nothing further will be reported.
     case finished
@@ -208,7 +211,7 @@ public final class LocalHostLauncher: HostLauncher {
         return AgentLaunch(command: command, displayArgv: argv, result: LaunchResultChannel(source: marker))
     }
 
-    nonisolated static let wrapperScript = #"cd -- "$1" || { printf 'failed\tcd\t%s\n' "$?" > "$2"; exit 1; }; printf 'ok\n' > "$2"; shift 2; exec "$@""#
+    nonisolated static let wrapperScript = #"cd -- "$1" || { printf 'failed\tcd\t%s\n' "$?" > "$2"; exit 1; }; printf 'ok\t%s\n' "$$" > "$2"; shift 2; exec "$@""#
     /// The same enforcement with nothing reported: `cd` or exit, then exec.
     nonisolated static let unreportedWrapperScript = #"cd -- "$1" || exit 1; shift; exec "$@""#
 }
@@ -265,16 +268,20 @@ final class LocalLaunchMarker: LaunchResultSource {
         guard lines.count > consumedLines else { return [] }
         let fresh = lines[consumedLines...]
         consumedLines = lines.count
-        return fresh.compactMap(event)
+        return fresh.flatMap(events)
     }
 
-    private func event(_ line: Substring) -> LaunchEvent? {
+    /// `ok` (then the shell's pid, which the agent's `exec` keeps), or a
+    /// failure record.
+    private func events(_ line: Substring) -> [LaunchEvent] {
         let fields = line.split(separator: "\t", omittingEmptySubsequences: false)
         switch fields.first {
-        case "ok": return .directoryEstablished(folder)
+        case "ok":
+            guard fields.count > 1, let pid = Int32(fields[1]), pid > 0 else { return [.directoryEstablished(folder)] }
+            return [.directoryEstablished(folder), .agentProcess(pid: pid)]
         case "failed":
-            return .failed(.cdFailed, message: "Temple couldn't enter the folder \(folder).")
-        default: return nil
+            return [.failed(.cdFailed, message: "Temple couldn't enter the folder \(folder).")]
+        default: return []
         }
     }
 

@@ -69,6 +69,7 @@ cd /Users/sriram/Projects/active/temple
 run_dir=$(mktemp -d /private/tmp/temple-ui-run.XXXXXX)
 export TEMPLE_CLAUDE_ROOT=/private/tmp/temple-demo/claude-store
 export TEMPLE_CODEX_ROOT=/private/tmp/temple-demo/codex-store
+export TEMPLE_ANTIGRAVITY_ROOT=/private/tmp/temple-demo/antigravity-store
 export TEMPLE_STATE_DIR=/private/tmp/temple-demo/state
 export TEMPLE_DEFAULTS_SUITE=com.sriramb.temple.demo.settings
 ./Scripts/demo-data.py

@@ -2,19 +2,19 @@ import SwiftUI
 import AppKit
 import TempleCore
 
-/// Loads + caches the bundled brand marks (`Resources/claude.svg`,
-/// `codex.svg`). Codex's OpenAI mark is monochrome → rendered as a template so
-/// it tints to the foreground; Claude keeps its brand terracotta.
+/// Loads + caches the bundled marks (`Resources/claude.svg`, `codex.svg`,
+/// `antigravity.svg`). Codex's OpenAI mark and Antigravity's arch are
+/// monochrome → rendered as templates so they tint to the foreground; Claude
+/// keeps its brand terracotta.
 enum AgentIcon {
     private static var cache: [Agent: NSImage] = [:]
 
     @MainActor
     static func image(for agent: Agent) -> NSImage? {
         if let cached = cache[agent] { return cached }
-        let name = (agent == .claude) ? "claude" : "codex"
-        guard let url = Bundle.module.url(forResource: name, withExtension: "svg"),
+        guard let url = Bundle.module.url(forResource: agent.rawValue, withExtension: "svg"),
               let image = NSImage(contentsOf: url) else { return nil }
-        image.isTemplate = (agent == .codex)
+        image.isTemplate = agent.markIsTemplate
         cache[agent] = image
         return image
     }
@@ -27,7 +27,7 @@ struct AgentBadge: View {
 
     var body: some View {
         if let image = AgentIcon.image(for: agent) {
-            if agent == .codex {
+            if agent.markIsTemplate {
                 Image(nsImage: image)
                     .resizable()
                     .renderingMode(.template)
@@ -49,6 +49,11 @@ struct AgentBadge: View {
     }
 }
 
+extension Agent {
+    /// A one-colour mark, drawn in the text's colour.
+    var markIsTemplate: Bool { self != .claude }
+}
+
 extension AgentIcon {
     private static var menuCache: [Agent: NSImage] = [:]
 
@@ -64,7 +69,7 @@ extension AgentIcon {
         if let cached = menuCache[agent] { return cached }
         guard let copy = image(for: agent)?.copy() as? NSImage else { return nil }
         copy.size = NSSize(width: 14, height: 14)
-        copy.isTemplate = (agent == .codex)
+        copy.isTemplate = agent.markIsTemplate
         menuCache[agent] = copy
         return copy
     }

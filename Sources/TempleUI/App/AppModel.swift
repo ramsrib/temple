@@ -1681,7 +1681,9 @@ public final class AppModel: ObservableObject {
         let title = sessionTabTitle(tab)
         if tab.remote?.phase == .endedPending { return "\(title) (ended)" }
         if tab.remote != nil, tab.inputSubmitted { return title }
-        return tab.isProvisional ? "\(title) (starting…)" : title
+        // An Antigravity tab stays provisional until its first prompt (its
+        // conversation does not exist before), while the agent is ready.
+        return tab.isProvisional && tab.agent != .antigravity ? "\(title) (starting…)" : title
     }
 
     public func projectName(_ key: ProjectKey) -> String { key.displayName }
@@ -2240,6 +2242,14 @@ public final class AppModel: ObservableObject {
         newSessionPickerPresented = false
         cancelProjectSwitcher()
         cancelTabSwitcher()
+    }
+
+    /// The agents `host` can run, the default agent first (the row most
+    /// clicks want). Antigravity runs on this Mac only (ADR-043).
+    public func agents(on host: HostID) -> [Agent] {
+        let available = host.isLocal ? Agent.allCases : Agent.remoteAgents
+        let preferred = settings.defaultAgent
+        return available.contains(preferred) ? [preferred] + available.filter { $0 != preferred } : available
     }
 
     /// The agent that isn't the default: what ⌥ asks for in ⌥⌘T and ⌥⌘N.

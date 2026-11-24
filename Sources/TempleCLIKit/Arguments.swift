@@ -190,7 +190,7 @@ public enum ArgumentParser {
             Flags:
               --project <dir>    ls: only this project
               --cli <name>       ls, search: only this CLI; new: start this CLI
-                                 (claude or codex; default: Temple's setting)
+                                 (claude, codex or antigravity; default: Temple's setting)
               --force            close: even while its agent is working
               --host <name>      get, open, close: a session on another machine
                                  (default: this Mac)
@@ -206,7 +206,7 @@ public enum ArgumentParser {
 
             Flags:
               --project <dir>    ls: only this project
-              --cli <name>       ls, search: only this CLI (claude or codex)
+              --cli <name>       ls, search: only this CLI (claude, codex or antigravity)
               --host <name>      get: a session on another machine (default: this Mac)
               --json             Machine-readable output
 

@@ -181,6 +181,7 @@ final class RemoteSourceContractTests: HostSessionSourceContract {
 /// A stand-in host: a temp `HOME` with both stores, the scripts run by this
 /// Mac's `/bin/sh`.
 private final class RemoteFixture: SourceFixture {
+    var catalogAgents: Set<Agent> { [] }
     let root = URL(fileURLWithPath: "/private/tmp/temple-remote-contract-\(UUID().uuidString)")
     private let exec: BreakableExec
     private let remote: RemoteSessionSource

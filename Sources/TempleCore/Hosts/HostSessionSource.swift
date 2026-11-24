@@ -65,6 +65,9 @@ public protocol HostSessionSource: Sendable {
     /// nothing of the source's runs on into `exit()`. A source with nothing
     /// running in the background has nothing to do (the default).
     func shutDown() async
+    /// The session a running agent process has loaded, from the files it
+    /// holds open (ADR-043).
+    func identifyProcess(_ request: ProcessIdentityRequest) async -> ProcessIdentity
 }
 
 public struct LocateRequest: Sendable, Equatable {
@@ -155,7 +158,7 @@ public struct CatalogQuery: Sendable {
     public let agents: Set<Agent>
     public let newestFirst: Bool
     public let batchSize: Int
-    public init(agents: Set<Agent> = [.claude, .codex], newestFirst: Bool = true, batchSize: Int = 200) {
+    public init(agents: Set<Agent> = Set(Agent.allCases), newestFirst: Bool = true, batchSize: Int = 200) {
         self.agents = agents; self.newestFirst = newestFirst; self.batchSize = max(1, batchSize)
     }
 }
@@ -245,4 +248,40 @@ public enum DirectoryEvidence: Sendable, Equatable {
 
 public extension HostSessionSource {
     func shutDown() async {}
+    /// No host but this Mac can read a process (ADR-043).
+    func identifyProcess(_ request: ProcessIdentityRequest) async -> ProcessIdentity { .unsupported }
+}
+
+/// When a process started, as the kernel records it: with its pid, the
+/// process's identity (a pid can be reused, a start time with it cannot).
+public struct ProcessStart: Hashable, Sendable {
+    public let seconds: UInt64
+    public let microseconds: UInt64
+    public init(seconds: UInt64, microseconds: UInt64) { self.seconds = seconds; self.microseconds = microseconds }
+}
+
+/// Which session a running agent process has loaded (ADR-043).
+public struct ProcessIdentityRequest: Sendable, Equatable {
+    public let agent: Agent
+    public let pid: Int32
+    /// The start time an earlier answer reported, so a reused pid is caught.
+    public let started: ProcessStart?
+    public init(agent: Agent, pid: Int32, started: ProcessStart?) {
+        self.agent = agent; self.pid = pid; self.started = started
+    }
+}
+
+public enum ProcessIdentity: Sendable, Equatable {
+    /// The process holds exactly this session's lock open. `createdAt` is
+    /// when its transcript came to be, if known: a session older than the
+    /// launch was loaded, not created by it.
+    case session(id: String, locator: TranscriptLocator, createdAt: Date?, started: ProcessStart)
+    /// The process is running and has no session loaded yet.
+    case none(started: ProcessStart)
+    /// The process is gone, or the pid is another process's now.
+    case ended
+    /// It could not be told (several locks, a read that failed): ask again.
+    case inconclusive(String)
+    /// This host cannot read processes, or the agent has no such lock.
+    case unsupported
 }

@@ -6,14 +6,15 @@ rationale lives in [DECISIONS.md](./DECISIONS.md); session-store details live in
 
 ## What Temple is
 
-> A session manager for your CLI coding agents. Every Claude Code or Codex
-> session is a resumable piece of work, grouped by project and searchable. Open
+> A session manager for your CLI coding agents. Every Claude Code, Codex or
+> Antigravity session is a resumable piece of work, grouped by project and searchable. Open
 > one and Temple resumes it in a real terminal tab. One home for everything you
 > are working on across agents and repositories.
 
 Temple has three primitives:
 
-- **Agent** — Claude Code, Codex, or another CLI coding agent.
+- **Agent** — Claude Code, Codex, Antigravity (Google's `agy`, for Gemini
+  models), or another CLI coding agent.
 - **Project** — the working directory in which an agent runs.
 - **Session** — one resumable agent run, titled from its first human prompt when
   no CLI summary is available.
@@ -41,8 +42,9 @@ truth; Temple supplies the index, navigation, lifecycle, and attention layer.
 ## Sidebar & session index
 
 The sidebar is the browse index; it is not the set of running processes. Temple
-discovers Claude Code sessions under `~/.claude` and Codex sessions under
-`~/.codex`, reads their true working directories, and groups them by project.
+discovers Claude Code sessions under `~/.claude`, Codex sessions under
+`~/.codex` and Antigravity CLI conversations under `~/.gemini/antigravity-cli`,
+reads their true working directories, and groups them by project.
 Session titles prefer the title an agent gives itself as the work moves on;
 Temple records that title, because the CLIs write it nowhere on disk and it would
 otherwise be lost when the session closes. A session with no such title yet falls
@@ -137,8 +139,9 @@ open tabs; any other session returns the next time it is opened
   a time, and **Show fewer** folds the list back.
 - Filesystem watching, an index cache, and retries for files caught mid-write
   keep the index current without blocking launch.
-- Agent badges distinguish Claude Code and Codex. Ambient and automation noise
-  is hidden by the default noise filter. Subagent transcripts of either CLI are
+- Agent badges distinguish Claude Code, Codex and Antigravity. Ambient and
+  automation noise is hidden by the default noise filter. Subagent transcripts
+  of any CLI are
   never listed: they belong to the session that spawned them
   ([ADR-024](./DECISIONS.md#adr-024--subagent-transcripts-are-not-sessions)).
 - Sessions can be renamed, pinned, and color-marked. Pinned sessions appear in a
@@ -215,7 +218,8 @@ separate actions. Arrow keys move the sidebar highlight without spawning
 anything. Enter, double-click, or click opens the highlighted session; if it is
 already open, Temple focuses its existing tab instead of creating a duplicate.
 The sidebar highlight follows the active tab, and that tab's session as it
-changes: a new Codex session highlights no row until Temple learns its ID, then
+changes: a new Codex or Antigravity session highlights no row until Temple
+learns its ID, then
 its own; Settings and History leave the highlight where it was.
 
 ## Terminal tabs & the working surface
@@ -299,7 +303,7 @@ the terminal; there is no bottom composer and no intervening shell.
   preview; the sidebar row carries it as a leading capsule and the palette,
   switcher and history rows as a wash. Marks are keyed to the session, so they
   survive closing the tab and relaunching Temple.
-- The trailing `+` menu starts a new Claude or Codex session in the active
+- The trailing `+` menu starts a new Claude, Codex or Antigravity session in the active
   project. `⌘T` takes the default-agent fast path, `⌥⌘T` the other agent's.
 - Tabs are drag-reorderable within their project. Temple persists each
   project's open-tab set and order.
@@ -372,9 +376,26 @@ prompt, including for sessions Codex's shared app server writes; the
 instructions block Codex injects for a folder's `AGENTS.md` is never taken
 for a prompt.
 
+**Antigravity** is Google's Antigravity CLI, `agy`, which runs Gemini models
+([ADR-043](./DECISIONS.md#adr-043--antigravitys-cli-is-a-third-agent-identified-by-the-lock-its-process-holds)).
+Temple finds `agy` on your PATH like the other agents and launches it in a
+tab; a conversation is resumed with `agy --conversation <id>`. `agy` creates a
+conversation only when you send its first prompt, so a new Antigravity tab
+reads "New Antigravity session" until then, and Temple learns its ID from the
+`agy` process itself: the conversation that process has loaded, never a guess
+from the folder or the time. A conversation `agy` loads in the tab with its
+own `/resume` is linked as opened, not created. Titles are the ones `agy`
+writes (it names a conversation as you send the first prompt, and `/rename`
+renames it), else the first prompt. Subagent conversations, and ones nothing
+was ever asked in (left by `/clear`), are not listed. `agy` asks whether to
+trust a folder the first time it runs there; answer it in the tab. Antigravity
+runs on this Mac only: on a host the menus don't offer it, and `⌘T` there
+starts the host's first agent instead.
+
 ### Sessions on a host
 
-Temple runs Claude Code and Codex on another machine you reach with ssh, in a
+Temple runs Claude Code and Codex (not Antigravity, yet) on another machine
+you reach with ssh, in a
 tab that works like a local one
 ([ADR-036](./DECISIONS.md#adr-036--sessions-on-another-machine-through-the-users-own-ssh)).
 Hosts are set up in the hosts manager (**Manage Hosts…**, in the Temple menu
@@ -822,6 +843,8 @@ Changes apply live where applicable.
   arguments are `--dangerously-skip-permissions`.
 - **Codex:** configurable Command and Arguments fields. The shipped default
   arguments are `--dangerously-bypass-approvals-and-sandbox`.
+- **Antigravity:** configurable Command and Arguments fields for `agy`. The
+  shipped default arguments are `--dangerously-skip-permissions`.
 - **Appearance:** System, Light, or Dark theme.
 
 - **Hosts:** the machines you can start sessions on
@@ -956,7 +979,7 @@ New Window, each new-session item beside its `⌥` other-agent variant; **Edit**
 (`⌘F`, retitled Find in History on the History tab), Find Next and Find
 Previous, disabled when no terminal is showing; **View** owns Toggle Sidebar
 at `⌘B` plus the palette, Session History, Refresh History (`⌘R`, on the
-History tab; Check for Claude Code and Codex Again on Settings; plain Refresh, disabled, elsewhere), Archived Sessions, home, and shortcuts card; a **Project** menu mirrors the switcher and project
+History tab; Check for Claude Code, Codex, and Antigravity Again on Settings; plain Refresh, disabled, elsewhere), Archived Sessions, home, and shortcuts card; a **Project** menu mirrors the switcher and project
 cycling; **Window** carries Show Previous / Next Tab; **Settings…** and **Manage Hosts…** sit in the app menu. Menu items call the same actions
 as the shortcuts below — the in-app key monitor remains the keyboard's source
 of truth.
@@ -1094,6 +1117,6 @@ and System / Light / Dark appearance.
 | Session lineage | Follow a Temple session that Claude continues under a new id (`←` / `/bg` writes `continued-in` into the old transcript) and hand its row and tab to the child; open live background sessions with `claude attach`; optionally show subagents under their parent. Each becomes Temple's through the same `join`, with lineage kept apart from how it joined (ADR-023); on-disk hooks in [SESSION-FORMATS](./SESSION-FORMATS.md). |
 | Terminal & tabs | Split panes; copy mode; terminal cursor controls; tab-bar overflow handling. `⌘⇧T` reopen-closed-tab shipped. |
 | Windowing | Multi-window support. |
-| Agents | Third-agent adapters such as Gemini CLI and aider; surface agent-specific capabilities such as models and permission modes. |
+| Agents | Antigravity on hosts (it needs SQLite there, and the remote process walk Codex uses); following an Antigravity tab across `/clear`, which its process already reveals; more adapters such as Gemini CLI and aider; surface agent-specific capabilities such as models and permission modes. |
 | Proxied backends | Opt-in launch through a local [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) endpoint, so a session can run on a pooled or non-Anthropic backend (`claude --model gpt-5.6-sol`) without touching the direct-login path. Per-session and per-project, never a global default: Claude takes `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` in `TerminalCommand.env`, Codex ignores `OPENAI_BASE_URL` and needs `-c model_providers.…` flags instead. Endpoint URL is a settings key; the token is not, and belongs in the Keychain or an env lookup rather than `UserDefaults`. Model list comes from the endpoint's `/v1/models`, and a proxied session wants a visible mark in the tab and sidebar, because API-key auth makes Claude Code ignore the claude.ai login and disable its connectors. |
 | Platforms | Linux build with a GTK libghostty host. |

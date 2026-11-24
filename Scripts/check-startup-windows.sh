@@ -61,6 +61,7 @@ check_window() {
   local state="$1" expected="$2" action="${3:-quit}"
   TEMPLE_CLAUDE_ROOT="$DEMO/claude-store" \
     TEMPLE_CODEX_ROOT="$DEMO/codex-store" \
+    TEMPLE_ANTIGRAVITY_ROOT="$DEMO/antigravity-store" \
     TEMPLE_STATE_DIR="$state" \
     "$BINARY" > "$CHECK_DIR/$expected-$action.log" 2>&1 &
   CHECK_PID=$!

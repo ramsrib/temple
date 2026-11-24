@@ -809,6 +809,8 @@ public final class RemoteSessions {
         case (.claude, let id?, false): tail = ["--session-id", id]
         case (.claude, let id?, true): tail = ["--resume", id]
         case (.codex, let id?, _): tail = ["resume", id]
+        // Never offered on a host (ADR-043); the resume form, should it be.
+        case (.antigravity, let id?, _): tail = ["--conversation", id]
         }
         return [agent.binaryName] + extra + tail
     }

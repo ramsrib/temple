@@ -316,7 +316,7 @@ extension AppModel {
             return .failure(.refused, OpenByIDSheetModel.notFoundLine(lookup, id: id, host: host.displayName))
         }
         guard found.count == 1 else {
-            return .failure(.ambiguous, "\(id) is both a Claude Code and a Codex session on \(host.displayName). "
+            return .failure(.ambiguous, "\(id) is \(found.map { "a \($0.displayName)" }.formatted(.list(type: .and))) session on \(host.displayName). "
                             + "Open it from File ▸ Open Session by ID…, which asks which.")
         }
         guard case .found(let locator, let recorded) = lookup[agent], let directory = recorded, !directory.isEmpty else {

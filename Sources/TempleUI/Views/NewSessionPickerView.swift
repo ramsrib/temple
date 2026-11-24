@@ -11,13 +11,15 @@ struct NewSessionPickerView: View {
     @FocusState private var fieldFocused: Bool
 
     private var projects: [SessionRowProject] {
-        Array(model.projectPickerResults(query).prefix(40))
+        let agent = model.newSessionPickerAgent
+        return Array(model.projectPickerResults(query)
+            .filter { model.agents(on: $0.key.host).contains(agent) }.prefix(40))
     }
 
     var body: some View {
         // One filter pass per render (the palettes' discipline).
         let projects = self.projects
-        let hosts = model.remoteLaunchHosts
+        let hosts = Agent.remoteAgents.contains(model.newSessionPickerAgent) ? model.remoteLaunchHosts : []
         // The trailing pseudo-rows: "Choose folder…" is always reachable by
         // keyboard, so a project Temple has never indexed is never mouse-only;
         // below it, "Choose folder on <host>…" per host a session can start on.

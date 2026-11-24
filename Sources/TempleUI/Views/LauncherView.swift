@@ -235,7 +235,7 @@ struct LauncherView: View {
 
     /// Start `agent` in the last-used project; if none is known, ask for a folder.
     private var launcherAgents: [Agent] {
-        [model.settings.defaultAgent] + Agent.allCases.filter { $0 != model.settings.defaultAgent }
+        model.agents(on: model.launcherDefaultProjectKey?.host ?? .local)
     }
 
     private func newSession(_ agent: Agent) {

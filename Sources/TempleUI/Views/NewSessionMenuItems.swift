@@ -35,8 +35,7 @@ struct NewSessionMenuItems: View {
     /// Default agent first: the row most clicks want, in the position the
     /// pointer is already closest to.
     private var orderedAgents: [Agent] {
-        let preferred = model.settings.defaultAgent
-        return [preferred] + Agent.allCases.filter { $0 != preferred }
+        model.agents(on: project.host)
     }
 
     @ViewBuilder

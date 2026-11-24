@@ -105,7 +105,7 @@ public struct RemoteSessionSource: HostSessionSource {
         guard let access else { throw LocateError.transport("Temple doesn't read transcripts on \(host.rawValue).") }
         let listed = try await access.lookupListing(id)
         var agents: [Agent: AgentLookup] = [:]
-        for agent in Agent.allCases {
+        for agent in Agent.remoteAgents {
             let entry = listed[agent] ?? ([], .storeUnknown)
             agents[agent] = try await SessionLookup.resolve(id: id, agent: agent, candidates: entry.candidates,
                                                             listed: entry.shortfall, source: self)
@@ -555,6 +555,8 @@ actor RemoteTranscriptAccess {
         switch agent {
         case .claude: return inside.count == 2
         case .codex: return inside.last?.starts(with: Array("rollout-".utf8)) == true
+        // Not read on hosts yet (ADR-043): no SQLite there to ask.
+        case .antigravity: return false
         }
     }
 

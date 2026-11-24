@@ -73,7 +73,7 @@ claude_line "$A" "Bundled Claude prompt" > "$A_FILE"
 printf '{"type":"session_meta","payload":{"id":"%s","cwd":"%s","timestamp":"2026-10-04T10:00:00Z"}}\n{"type":"event_msg","payload":{"type":"user_message","message":"Bundled Codex prompt"}}\n' \
   "$B" "$PROJECT" > "$B_FILE"
 
-run_env=(TEMPLE_CLAUDE_ROOT="$CLAUDE" TEMPLE_CODEX_ROOT="$CODEX" TEMPLE_STATE_DIR="$STATE")
+run_env=(TEMPLE_CLAUDE_ROOT="$CLAUDE" TEMPLE_CODEX_ROOT="$CODEX" TEMPLE_ANTIGRAVITY_ROOT="$CODEX/no-antigravity" TEMPLE_STATE_DIR="$STATE")
 env "${run_env[@]}" "$CTL" --init-db >/dev/null
 for id in "$A" "$B" "$C"; do
   sqlite3 "$DB" "INSERT INTO session_state (id, joined_via, host) VALUES ('$id', 'imported', '');"

@@ -29,11 +29,13 @@ demo: build ## Run against a fake session store (screenshots, demos — no real 
 	@./Scripts/demo-data.py
 	@TEMPLE_CLAUDE_ROOT=/private/tmp/temple-demo/claude-store \
 	 TEMPLE_CODEX_ROOT=/private/tmp/temple-demo/codex-store \
+	 TEMPLE_ANTIGRAVITY_ROOT=/private/tmp/temple-demo/antigravity-store \
 	 TEMPLE_STATE_DIR=/private/tmp/temple-demo/state \
 	 .build/debug/templectl --import-all
 	@./Scripts/demo-data.py --prune
 	@TEMPLE_CLAUDE_ROOT=/private/tmp/temple-demo/claude-store \
 	 TEMPLE_CODEX_ROOT=/private/tmp/temple-demo/codex-store \
+	 TEMPLE_ANTIGRAVITY_ROOT=/private/tmp/temple-demo/antigravity-store \
 	 TEMPLE_STATE_DIR=/private/tmp/temple-demo/state \
 	 TEMPLE_DEFAULTS_SUITE=com.sriramb.temple.demo.settings \
 	 .build/debug/temple-app

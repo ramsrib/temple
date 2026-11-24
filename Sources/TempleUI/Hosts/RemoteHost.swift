@@ -63,7 +63,11 @@ final class RemoteHostLauncher: RemoteSessionHost {
     var host: HostID { sessions.host }
     var hostName: String { sessions.record.name }
 
-    func availability(_ agent: Agent) -> LaunchAvailability { check(agent) }
+    func availability(_ agent: Agent) -> LaunchAvailability {
+        // Temple reads Antigravity's store on this Mac only (ADR-043).
+        guard Agent.remoteAgents.contains(agent) else { return .unavailable(reason: "Temple runs \(agent.displayName) on this Mac only.") }
+        return check(agent)
+    }
 
     /// Remote tabs open asynchronously (`open`); this synchronous path is
     /// never taken for them.

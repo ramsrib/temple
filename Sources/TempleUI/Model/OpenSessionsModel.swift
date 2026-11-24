@@ -410,9 +410,11 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         if let sid = spec.sessionID {
             _ = openedHandler?(SessionOpen(id: sid, host: project.host, via: .created, agent: spec.agent, locator: nil))
         }
-        if spec.isProvisional, !(launcherForHost(project.host) is RemoteSessionHost) {
+        if spec.isProvisional, spec.agent == .codex, !(launcherForHost(project.host) is RemoteSessionHost) {
             // Codex: adopt the real id once its rollout file appears (ADR-008).
             // On an ssh host the run is identified by `RemoteTabController`.
+            // Antigravity's comes from its process, once the launch reports
+            // it (`watchProcess`).
             reconciler.reconcile(host: tab.host, projectPath: projectPath, startedAt: Date()) { [weak self, weak tab] id, locator in
                 guard let self, let tab else { return }
                 self.adopt(sessionID: id, for: tab.id, locator: locator)
@@ -434,15 +436,23 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             TempleUILog.launch.notice("new session refused on \(key.host.rawValue, privacy: .public): tmux unusable")
             return nil
         }
-        return newSession(agent: defaultAgent(), project: key)
+        // The default agent, unless the project's host can't run it (an
+        // Antigravity default on a project on another machine): then the
+        // first agent it can.
+        let preferred = defaultAgent()
+        let agent = key.host.isLocal || Agent.remoteAgents.contains(preferred) ? preferred : Agent.remoteAgents[0]
+        return newSession(agent: agent, project: key)
     }
 
-    /// Codex reconcile seam (ADR-008): rebind a provisional tab to its real id.
-    public func adopt(sessionID: String, for tabID: SessionTab.ID, locator: TranscriptLocator? = nil) {
-        guard let tab = tabs.first(where: { $0.id == tabID }) else { return }
-        // Join before binding: an id Temple already has on this host as the
-        // other agent's is never bound to this tab, which stays provisional.
-        let open = SessionOpen(id: sessionID, host: tab.host, via: .created, agent: .codex,
+    /// Reconcile seam (ADR-008, ADR-043): rebind a provisional tab to its
+    /// real id. `via` is `.opened` when the session existed before the launch
+    /// (an Antigravity tab that loaded an older conversation).
+    public func adopt(sessionID: String, for tabID: SessionTab.ID, locator: TranscriptLocator? = nil,
+                      via: JoinedVia = .created) {
+        guard let tab = tabs.first(where: { $0.id == tabID }), tab.isProvisional else { return }
+        // Join before binding: an id Temple already has on this host as
+        // another agent's is never bound to this tab, which stays provisional.
+        let open = SessionOpen(id: sessionID, host: tab.host, via: via, agent: tab.agent,
                                locator: locator?.host == tab.host ? locator : nil)
         if let conflict = openedHandler?(open).conflict {
             TempleUILog.launch.notice("adoption refused for \(sessionID, privacy: .public): \(conflict.message, privacy: .public)")
@@ -681,8 +691,57 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         case .failed(let category, let message):
             TempleUILog.launch.notice("launch failed before the agent ran: \(category.rawValue, privacy: .public)")
             tab.launchFailure = LaunchFailure(category: category, message: message)
+        case .agentProcess(let pid):
+            if tab.isProvisional, tab.sessionID == nil, tab.agent == .antigravity { watchProcess(tab, pid: pid) }
         case .finished:
             break
+        }
+    }
+
+    /// How often a provisional Antigravity tab asks which conversation its
+    /// process has loaded. Its conversation exists only from the first
+    /// prompt, which may be minutes after the launch, or never.
+    var processAdoptionInterval: TimeInterval = 1
+
+    /// Ask the tab's host, until the process names a conversation, ends, or
+    /// the tab stops being provisional (ADR-043). Only the launch's own
+    /// process is asked about, by pid and start time.
+    private func watchProcess(_ tab: SessionTab, pid: Int32) {
+        tab.processAdoption?.cancel()
+        let launchedAt = tab.launchObservation?.at ?? now()
+        let tabID = tab.id
+        let host = tab.host
+        let agent = tab.agent
+        tab.processAdoption = Task { @MainActor [weak self] in
+            var started: ProcessStart?
+            var lastReason: String?
+            while !Task.isCancelled {
+                guard let interval = self?.processAdoptionInterval else { return }
+                try? await Task.sleep(for: .seconds(interval))
+                guard !Task.isCancelled, let model = self,
+                      let tab = model.tabs.first(where: { $0.id == tabID }), tab.isProvisional else { return }
+                let answer = await model.reconciler.identifyProcess(
+                    host: host, ProcessIdentityRequest(agent: agent, pid: pid, started: started))
+                guard !Task.isCancelled else { return }
+                switch answer {
+                case .session(let id, let locator, let createdAt, _):
+                    // A conversation older than the launch was loaded (an
+                    // in-TUI resume), not created by it.
+                    let loaded = createdAt.map { $0 < launchedAt.addingTimeInterval(-2) } ?? false
+                    model.adopt(sessionID: id, for: tabID, locator: locator, via: loaded ? .opened : .created)
+                    TempleUILog.launch.notice("Antigravity tab adopted \(id, privacy: .public)\(loaded ? " (loaded)" : "", privacy: .public)")
+                    return
+                case .none(let processStart):
+                    started = processStart
+                case .ended, .unsupported:
+                    return
+                case .inconclusive(let reason):
+                    if reason != lastReason {
+                        TempleUILog.launch.notice("Antigravity process \(pid) not identified yet: \(reason, privacy: .public)")
+                        lastReason = reason
+                    }
+                }
+            }
         }
     }
 
