@@ -36,6 +36,18 @@ struct AntigravitySessionStore: TranscriptSummaryStore {
     }
 
     var watchedURLs: [URL] { [root, conversationsRoot] }
+    /// The summaries file and its log: a change to them alone (the title
+    /// `agy` generates, the row written a moment after the database) moves
+    /// the shared revision, and the engine reads again every member still
+    /// wanting a title. No facts are shared through it: each read takes the
+    /// row as it is then.
+    var sharedFactURLs: [URL] { [summariesFile, URL(fileURLWithPath: summariesFile.path + "-wal")] }
+    private let summaries = CodexSharedFactsCache()
+    func sharedRevision() -> UInt64? { summaries.revision(currentKey: { sharedFactURLs.map(SharedInputSignature.init) }) }
+    func sharedFactsSnapshot() -> (facts: SharedFacts, revision: UInt64?) {
+        let snapshot = summaries.snapshot(currentKey: { sharedFactURLs.map(SharedInputSignature.init) }, load: { .empty })
+        return (snapshot.facts, snapshot.revision)
+    }
     var catalogRoot: URL? { conversationsRoot }
     /// A commit can change only a database's `-wal`, which the catalog's
     /// stamps do not see: nothing is kept across reads (ADR-043).
@@ -70,9 +82,11 @@ struct AntigravitySessionStore: TranscriptSummaryStore {
                                expecting: expectedID)
     }
 
-    func readTranscript(at url: URL, expecting id: String, facts: Bool, shared: SharedFacts,
-                        sharedAcquired: () -> Void) throws -> StoreTranscriptRead {
-        sharedAcquired()
+    func readTranscript(at url: URL, expecting id: String, facts: Bool,
+                        shared: () -> SharedFacts) throws -> StoreTranscriptRead {
+        // The summaries' revision before they are read: what is read is at
+        // least as new as the revision these facts are stamped with.
+        if facts { _ = shared() }
         let conversation = try conversationRows(url, firstStep: facts)
         let identityLine = AntigravityFormat.Record(ids: conversation.ids, summary: nil, firstUserStep: nil).encoded()
         let verdict = format.identity(lines: [identityLine], expecting: id)
@@ -143,7 +157,10 @@ struct AntigravitySessionStore: TranscriptSummaryStore {
         let main = try FileSignature(url)
         let wal = URL(fileURLWithPath: url.path + "-wal")
         guard let log = try? FileSignature(wal) else { return main }
-        return FileSignature(date: max(main.date, log.date), size: main.size + log.size, fileNumber: main.fileNumber)
+        // The log's identity too: a log replaced by one of the same size and
+        // time is still another version.
+        return FileSignature(date: max(main.date, log.date), size: main.size &+ log.size &* 0x1_0000_0000,
+                             fileNumber: main.fileNumber &* 1_000_003 &+ log.fileNumber)
     }
 
     // MARK: Listing

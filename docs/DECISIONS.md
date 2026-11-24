@@ -2872,7 +2872,7 @@ every row and heading on every redraw.
 ---
 
 ## ADR-043 — Antigravity's CLI is a third agent, identified by the lock its process holds
-**Date:** 2026-11-24 · **Status:** Proposed (design; nothing built yet). Amends ADR-008 (a third way to learn a new session's id)
+**Date:** 2026-11-24 · **Status:** Accepted. Amends ADR-008 (a third way to learn a new session's id)
 
 The owner wants Gemini models in Temple. Google ships them in two terminal
 tools: the open-source Gemini CLI and the Antigravity CLI, `agy`, the
@@ -2881,154 +2881,150 @@ app itself is out; `agy` is what the owner installed and uses. Its store was
 measured on 1.5.15–1.5.16 ([SESSION-FORMATS](./SESSION-FORMATS.md),
 "Antigravity CLI"), and it differs from both existing agents in the two
 places Temple leans on hardest: how a new session's id is learned, and the
-transcript's format. Reviewed by gpt-6.2-astra before acceptance; its
-findings are folded in below.
+transcript's format. The design was reviewed by gpt-6.2-astra before it was
+built and the build by gpt-6.2-sol and gpt-6.2-astra; their findings are
+folded in.
 
 **Decisions.**
 
 - **One more `Agent` case: `antigravity`.** Shown as "Antigravity", run as
-  `agy`, placeholder "New Antigravity session", and `--cli antigravity` on
-  the `temple` command line (ADR-034). The raw value names the product, not
-  the model family: `agy` runs whatever model its settings pick, and Gemini
-  CLI, if it comes, is a different store and a different case. Older
-  Temples read an unknown raw value as Claude in places (`TabPersistence`,
-  `RemoteStateStore`); the owner accepted that (2026-11-24) rather than
-  guard it. Every place that does the same today goes through the new case
-  instead: `SettingsStore`'s getters send every non-Claude agent to Codex's
-  path and arguments, and `agy` gets keys of its own.
-- **Agents are per host, not `Agent.allCases`.** A host says which agents it
-  supports, and History, Open by ID, the launcher, the menus, the
-  default-agent shortcuts and launch validation ask it. `CatalogQuery`'s
-  default (Claude and Codex) and the remote lookup's `Agent.allCases` would
-  otherwise leave Antigravity out of this Mac's History and offer it on
-  hosts that cannot run it.
-- **A new session's id comes from the process, not from folder and time.**
+  `agy`, resumed with `agy --conversation <id>`, placeholder "New
+  Antigravity session", `--cli antigravity` on the `temple` command line
+  (ADR-034), its own Settings keys (`antigravityPath`,
+  `antigravityExtraArgs`, shipped `--dangerously-skip-permissions`). The raw
+  value names the product, not the model family: `agy` runs whatever model
+  its settings pick, and Gemini CLI, if it comes, is another store and
+  another case. Older Temples read an unknown raw value as Claude in places
+  (`TabPersistence`, `RemoteStateStore`); the owner accepted that
+  (2026-11-24) rather than guard it.
+- **This Mac only, for now.** `Agent.remoteAgents` (Claude, Codex) is what
+  a host runs: a host's launcher reports Antigravity unavailable, the
+  project menu, the home page and the `⌘N` picker offer it on this Mac's
+  projects only (`AppModel.agents(on:)`), `⌘T` with an Antigravity default
+  on a host's project starts the host's first agent, and a host's lookup by
+  id asks only its agents (`SessionLookup.asked`). Every way onto a host
+  refuses it as well: `RemoteSessions.open`, a remote tab's open (which
+  would otherwise take an id-less tab for a pending Codex run), and opening
+  another Temple's row from History. A host needs SQLite and the process
+  walk `CodexIdentity` does before this can change.
+- **⌘T and ⌥⌘T start the first two agents a project's host runs**
+  (`AppModel.keyedAgents(on:)`, default first); a third has no key and is
+  in the menus, which show each key only on the row it starts.
+- **A new session's id comes from its process, not from folder and time.**
   `agy` cannot be given an id (ADR-008's Claude rule) and creates none at
   launch, only at the first prompt, which may come minutes later or never,
-  so Codex's ±5 s launch window (`CodexAdopter`) does not fit. A running
-  `agy` holds exactly one file under `presence/` open: `<id>.lock` for the
-  conversation it has loaded, from launch on a resume and from the first
-  prompt on a new one; after `/clear` it holds the new id's lock instead.
-  - *The pid.* Temple does not know a tab's pid today:
-    `GhosttyTerminalSurface.start` reports `.running(pid: 0)`, because
-    libghostty spawns through `login` and a shell and does not hand the pid
-    back. The launch wrapper (`HostLauncher.wrapperScript`) already writes a
-    per-launch marker before its `exec "$@"`; it also writes `$$`, which the
-    `exec` keeps, so that pid is `agy`'s. Temple records it with the
-    process's start time, so a reused pid is caught.
-  - *The check.* Read that one process's open files (by pid, not
-    `FileHolders.others(holding:)`, which starts from a known file and
-    scans every process), re-reading the start time after the descriptors.
-    Exactly one open lock under the store's `presence/` names the id. None,
-    several, a lock held only by a child, a changed start time or a failed
-    read leave the tab provisional and are retried; never a guess and never
-    an absence. A launch through the unreported wrapper (no marker) has no
-    pid and stays provisional.
-  - *The request.* Adoption becomes a launch-scoped request to the owning
-    host, carrying the agent and the launch's identity, started when the
-    launch's evidence arrives and cancelled when the tab exits or is
-    replaced. Today every local provisional tab starts the Codex reconciler
-    before its surface spawns, and the join hardcodes `.codex`; reusing it
-    unchanged could bind a Codex rollout to an `agy` tab. The join names the
-    real agent and checks `(id, host)` (ADR-041).
-  - *What it joined.* A lock names the conversation loaded, not one created:
-    an in-TUI `/resume` before the first prompt loads an existing one. A
-    conversation created before the launch joins as opened, not as created.
-- **`/clear` is seen, and followed later.** Because the lock moves with
-  `/clear`, Temple can see an `agy` tab change conversation, which it
-  cannot for Claude (ADR-029's known limitation). The first cut adopts
-  once, and after a switch it stops crediting titles and activity to the
-  old row; moving the tab to the new row is ADR-029's rebind, "next", done
-  for this agent first.
-- **The store is read with SQLite, in `TempleLocalHost`.** Listing and facts
-  come from `conversation_summaries.db` (id, `workspace_uris`,
-  `last_modified_time`, `step_count`, `parent_conversation_id`, `title`);
-  the first prompt from the conversation's own database (the first
-  `step_type` 14 row's payload). The SQL lives in a store beside
-  `CodexSessionStore`; `TempleCore/Formats` gains an `AntigravityFormat`
-  that decodes only what it is handed (the protobuf payload, the
-  `workspace_uris` JSON), so the formats boundary (`ModuleBoundaryTests`)
-  holds. A `workspace_uris` with more than one folder gives no folder until
-  its order is understood.
-- **Reading a WAL database Temple does not own.** Both files are WAL. On
-  the system SQLite (3.54.0, the one GRDB links) a read-only open fails
-  with `SQLITE_CANTOPEN` when no `-shm` exists, that is, when no `agy` has
-  the file open; with one running it works. So: open `mode=ro` and read in
-  one short transaction. On `SQLITE_CANTOPEN` only, read with
-  `immutable=1`, but only as a checked snapshot: before and after the read,
-  the database's size, modification time and file number match and no
-  `-wal` exists. `agy` changes the main file only by checkpointing (the
-  WAL takes every commit), so an unchanged file with no WAL is a consistent
-  read; any mismatch discards the result and retries, and a read that never
-  settles is `unreadable`. Temple never opens either file read-write: on
-  the system SQLite that creates the WAL files and leaves them behind, in a
-  store that is not Temple's.
-- **The reader is per store, not per file.** `LocalSessionSource.readNow`,
-  the engine's signature reuse and History's catalog cache (ADR-032) all
-  assume one JSONL file whose stamp changes when its facts do. A commit to
-  `agy` can change only a `-wal`. So the store maps `conversations/<id>.db`
-  and its `-wal` to that conversation's locator, and
-  `conversation_summaries.db` and its `-wal` to the facts of every
-  conversation it covers; the engine's revision covers both; and History
-  does not cache `agy` entries, positive or negative, until both can be
-  validated. FSEvents on `conversations/` and the summaries file, under
-  ADR-027's rules: a dropped or coalesced event is a coverage reset.
-- **Titles follow ADR-011: the CLI's own title first.** ADR-011 prefers a
-  title the CLI records, and `agy` always records one, generated as the
-  first prompt is sent; `/rename` writes the same column, which is the
-  name a person gave it, so it is wanted too. The first prompt is the
-  fallback. ADR-029 still holds: the terminal's live title and Temple's
-  own rename come first.
+  so Codex's ±5 s launch window does not fit. A running `agy` holds exactly
+  one file under `presence/` open: `<id>.lock` for the conversation it has
+  loaded, from launch on a resume and from the first prompt on a new one,
+  and the new id's after `/clear`.
+  - *The pid.* libghostty spawns through `login` and a shell and does not
+    hand the pid back (`GhosttyTerminalSurface` reports 0). The local
+    launch wrapper writes `ok<TAB>$$` to its marker before `exec "$@"`; every
+    step from the terminal's shell to the agent is an `exec`, so that is
+    the agent's pid (`LaunchWrapperShellTests` runs the real chain and
+    compares; a real `agy` run through the wrapper held its lock under that
+    pid). It arrives as `LaunchEvent.agentProcess`.
+  - *The check.* `HostSessionSource.identifyProcess` (`.unsupported` but on
+    this Mac; `ProcessLocks`): the process's start time, its open files by
+    pid, its start time again. Exactly one open lock directly under the
+    store's `presence/` names the session; none is "not yet"; several, or a
+    read that failed, is inconclusive; a changed start time or a gone
+    process is ended. A descriptor whose path the kernel won't give (closed,
+    revoked) is skipped. Only the process itself counts, never a child.
+  - *The asking.* `OpenSessionsModel.watchProcess`, once the launch reports
+    the pid, asks the tab's host at once and then every second (through
+    `CodexAdopting`, whose Codex half is unchanged). The first answer's
+    start time pins every later ask to that process. It stops at a session,
+    the process's end (its exit cancels it too), or the tab's launch going
+    away. A launch with no marker reports no pid, and the tab stays
+    provisional. Codex's reconciler is now started for Codex tabs only.
+  - *What it joined.* A lock names the conversation loaded, not one
+    created: one `agy`'s own `/resume` loaded, older than the launch (by its
+    database's birth time, 2 s of slack), joins as `opened`, and so does one
+    whose creation can't be told. `adopt` names the tab's agent (it
+    hardcoded Codex), binds only a provisional tab, and only once the join
+    was written: a join that failed leaves it provisional (for Codex too),
+    and an Antigravity tab asks again.
+  - A provisional Antigravity tab does not say "(starting…)": `agy` is
+    ready, it just has no conversation until the first prompt.
+- **`/clear` is not followed yet.** The lock moves with it, so following is
+  possible, unlike Claude's (ADR-029's known limitation); until it is done,
+  titles and activity after a `/clear` land on the tab's first row, as for
+  Claude.
+- **The store is read with SQLite, in `TempleLocalHost`.**
+  `AntigravitySessionStore` queries the conversation's database
+  (`trajectory_meta.cascade_id` for identity, the first `step_type` 14
+  row's payload) and its `conversation_summaries` row, and hands one JSON
+  record (`AntigravityFormat.Record`, the columns as stored) to the pure
+  `AntigravityFormat`, which decides everything: the id (the database's
+  name), the folder (exactly one `workspace_uris` entry, else none), the
+  title, the first prompt (protobuf field 19.2), the times. A remote store
+  that ran the same queries could hand it the same record.
+- **Reading a WAL database Temple does not own** (`ReadOnlySQLite`): `mode=ro`
+  in one transaction. On the system SQLite (3.54.0, the one GRDB links) that
+  fails with `SQLITE_CANTOPEN` only when there is neither `-wal` nor `-shm`,
+  that is, when no `agy` has the file open and the last one checkpointed;
+  with a `-wal` left behind it opens and reads the log. For that error alone
+  the read is made `immutable=1` as a checked snapshot: no `-wal`, and the
+  same size, modification time and file number, before and after. Temple
+  never opens either file read-write: the system SQLite then creates and
+  keeps `-wal`/`-shm` in a store that is not Temple's.
+- **The store's seams** (`IncrementalSessionStore`): `readTranscript`
+  (identity then facts in one read; JSONL stores keep `StoreIO`'s),
+  `signature` (the database and its `-wal` together, since a commit changes
+  only the log), `transcriptURL(forEvent:)` (a write to `<id>.db-wal` is a
+  write to the conversation; `-shm` is not: readers write it), and
+  `keepsCatalogSummaries` (false here: History keeps nothing across reads,
+  ADR-032, since the catalog's stamps see only the main file). The
+  signature folds in the log's file number, so a replaced log is another
+  version. A lock or a log in transition (`SQLITE_BUSY` and kin) is read
+  again within the read's retry budget, never answered as unreadable.
+- **The summaries file is a shared input.** Its row is written a moment
+  after the database, and `agy`'s generated title can land in it alone. The
+  file and its log move the agent's shared revision (`sharedFactURLs`), and
+  the engine reads again every member still wanting a title (ADR-032's
+  shared-facts path). Until a conversation's row exists its first prompt is
+  a display hint, not a title fact, so a NULL-only fill never keeps the
+  prompt where `agy`'s name was coming.
+- **Titles follow ADR-011: the CLI's own first.** `agy` names a conversation
+  as its first prompt is sent, and `/rename` writes the same column, so the
+  `title` column is `recordedTitle`; the first prompt is the fallback.
 - **What is listed, and what is proven gone.** History does not list a
-  subagent (a `parent_conversation_id`, ADR-024) or a conversation with
-  `step_count` 0 (left by `/clear` or a slash command alone). Hiding is not
-  absence: an empty conversation still has a database, so the candidate
-  set is the directory `conversations/` enumerated on its own, each
-  database's internal id (`trajectory_meta.cascade_id`) verified, not the
-  summaries table. Absence needs that enumeration completed and the
-  database proven missing (ADR-030), with a missing store root a failure.
-  ADR-038's discard applies unchanged and adds nothing for this agent: a
-  provisional tab that never got an id has no row to discard.
-- **Resume is `agy --conversation <id>`, run in the tab's folder.** A
-  conversation resumed elsewhere keeps its first folder in
-  `workspace_uris`; the tab's folder still wins (ADR-029). A first launch in
-  a folder `agy` does not yet trust stops at its own trust question; Temple
-  does not answer it.
-- **Detection as for the others (ADR-025):** run `agy --version`, retried
-  on failure. It ignores unknown flags, as `claude` does, so pre-flight can
-  prove a failure but not a success. It updates its own binary in place;
-  ADR-025 retries only a failed probe, so after a successful one Temple
-  keeps the path (still right) and may show a stale version. Accepted.
-- **Demo and tests never touch the real store.** `TEMPLE_ANTIGRAVITY_ROOT`
-  joins the other roots in both `make demo` invocations, the bundled demo
-  fixture and `templectl`'s temporary-root guard, and the store is composed
-  in the shared local source, so both `@main` entry points get it. A reader
-  override cannot move where a real `agy` writes, so the demo and the
-  pid/lock integration tests launch a fixture executable, not `agy`.
-- **Local only, at first.** A host's `agy` sessions need SQLite on the host
-  and the remote process walk `CodexIdentity` does. Until then no host
-  lists Antigravity among its agents.
+  subagent (a `parent_conversation_id`, ADR-024) or a conversation with no
+  steps and no prompt (left by `/clear` or a slash command alone). Hiding is
+  not absence: the candidate set is the `conversations/` folder enumerated
+  under `ListingAudit`, and absence proofs work as for the other agents
+  (ADR-030), with a missing folder a failed listing. A proof hears a
+  database's `-wal` as its database, as a live read does.
+- **Detection as for the others (ADR-025):** `agy --version` prints the bare
+  version and exits 0, and ignores unknown flags as `claude` does. It
+  updates its own binary in place; ADR-025 retries only a failed probe, so
+  after a successful one Temple may show a stale version. Accepted.
+- **Demo and tests never read the real store.** `TEMPLE_ANTIGRAVITY_ROOT`
+  joins the other roots in `make demo`, the UI-scenario recipe, the bench
+  and bundle checks and `templectl`'s guard, and the demo seeds an
+  Antigravity store. A reader override cannot move where a real `agy`
+  writes, so a session started from the demo lands in the real store, as a
+  Claude one does.
 - **Keyboard: no clash.** `agy`'s keys are Ctrl, Alt (⌥ as Alt, already
   sent), Esc, Shift+Tab and F5/F6; it binds no ⌘ chord, and ⌃⇥ / ⌃⇧⇥ are
   not documented. Its Ctrl+K (approve a subagent's action) is not Temple's
   ⌘K.
 - **No usage meter** for it; there is no documented quota endpoint.
 
+**Also fixed on the way.** `FileHolders` threw on a descriptor whose path
+the kernel won't give: Codex's app server daemon holds a revoked one, and
+every fresh database open (the v14 sole-access check) failed while it ran,
+in tests and on a new install alike. Such a descriptor is skipped.
+
 **Rejected.** Folder-and-time adoption (Codex's rule): the conversation
 appears at the first prompt, so the window would have to stay open
 indefinitely, and any `agy` started outside Temple in the same folder would
-be taken. `cache/last_conversations.json` (the folder's newest
-conversation): two tabs in one folder share an entry, and it moves only at
-a prompt. `history.jsonl` for titles: a plain prompt does not name its
-conversation. The full-text index in the summaries file: it lags by seconds
-to turns. `agy -c`: it resumes whatever is newest, a guess.
-`cache/conversation_metadata.json`: a lagging copy of the summaries table.
-An `immutable=1` read without the before-and-after check: `SQLITE_CANTOPEN`
-says no `agy` had the file open when Temple looked, not that none started
-during the read. A read-write open: see above.
-
-**To verify while building.** That `$$` in the wrapper is the pid that
-holds the lock through libghostty's `login` and shell (it should be: both
-`exec`s keep it). That a crashed `agy` leaves no open lock (a stale lock
-*file* is normal; only an open descriptor counts). That a mode-`ro` open
-while `agy` runs never fails for a reason the fallback would hide.
+be taken. `cache/last_conversations.json`: two tabs in one folder share an
+entry, and it moves only at a prompt. `history.jsonl` for titles: a plain
+prompt does not name its conversation. The full-text index in the summaries
+file: it lags by seconds to turns. `agy -c`: it resumes whatever is newest.
+An unchecked `immutable=1` read, and a read-write open: see above. Sharing
+the summaries as facts (Codex's titles path): each read takes the row as it
+is then, so only the revision is shared. A fixture `agy` for the demo: a
+Claude or Codex session started from the demo writes the real store too.

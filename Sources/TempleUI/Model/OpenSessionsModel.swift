@@ -447,16 +447,24 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Reconcile seam (ADR-008, ADR-043): rebind a provisional tab to its
     /// real id. `via` is `.opened` when the session existed before the launch
     /// (an Antigravity tab that loaded an older conversation).
+    @discardableResult
     public func adopt(sessionID: String, for tabID: SessionTab.ID, locator: TranscriptLocator? = nil,
-                      via: JoinedVia = .created) {
-        guard let tab = tabs.first(where: { $0.id == tabID }), tab.isProvisional else { return }
+                      via: JoinedVia = .created) -> JoinResult? {
+        guard !isQuitting, let tab = tabs.first(where: { $0.id == tabID }), tab.isProvisional else { return nil }
         // Join before binding: an id Temple already has on this host as
-        // another agent's is never bound to this tab, which stays provisional.
+        // another agent's is never bound to this tab, which stays
+        // provisional; nor is one whose join failed to be written.
         let open = SessionOpen(id: sessionID, host: tab.host, via: via, agent: tab.agent,
                                locator: locator?.host == tab.host ? locator : nil)
-        if let conflict = openedHandler?(open).conflict {
+        let joined = openedHandler?(open) ?? .joined
+        switch joined {
+        case .joined: break
+        case .refused(let conflict):
             TempleUILog.launch.notice("adoption refused for \(sessionID, privacy: .public): \(conflict.message, privacy: .public)")
-            return
+            return joined
+        case .failed(let error):
+            TempleUILog.launch.error("adoption of \(sessionID, privacy: .public) not recorded: \(error.localizedDescription, privacy: .public)")
+            return joined
         }
         tab.sessionID = sessionID
         tab.isProvisional = false
@@ -469,6 +477,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             registry.register(pid: pid, session: key)
         }
         persist()
+        return joined
     }
 
     // MARK: Activation & lazy surface spawn
@@ -713,29 +722,45 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
         let host = tab.host
         let agent = tab.agent
         tab.processAdoption = Task { @MainActor [weak self] in
+            // The process's start time, from the first answer: asked at once,
+            // while the launch that reported the pid is fresh, so every later
+            // answer is about that same process and never a reused pid.
             var started: ProcessStart?
             var lastReason: String?
+            var first = true
             while !Task.isCancelled {
-                guard let interval = self?.processAdoptionInterval else { return }
-                try? await Task.sleep(for: .seconds(interval))
+                if !first {
+                    guard let interval = self?.processAdoptionInterval else { return }
+                    try? await Task.sleep(for: .seconds(interval))
+                }
+                first = false
                 guard !Task.isCancelled, let model = self,
                       let tab = model.tabs.first(where: { $0.id == tabID }), tab.isProvisional else { return }
                 let answer = await model.reconciler.identifyProcess(
                     host: host, ProcessIdentityRequest(agent: agent, pid: pid, started: started))
                 guard !Task.isCancelled else { return }
                 switch answer {
-                case .session(let id, let locator, let createdAt, _):
+                case .session(let id, let locator, let createdAt, let processStart):
+                    started = started ?? processStart
                     // A conversation older than the launch was loaded (an
-                    // in-TUI resume), not created by it.
-                    let loaded = createdAt.map { $0 < launchedAt.addingTimeInterval(-2) } ?? false
-                    model.adopt(sessionID: id, for: tabID, locator: locator, via: loaded ? .opened : .created)
-                    TempleUILog.launch.notice("Antigravity tab adopted \(id, privacy: .public)\(loaded ? " (loaded)" : "", privacy: .public)")
-                    return
+                    // in-TUI resume), not created by it; one whose creation
+                    // can't be told is not claimed as created either.
+                    let loaded = createdAt.map { $0 < launchedAt.addingTimeInterval(-2) } ?? true
+                    switch model.adopt(sessionID: id, for: tabID, locator: locator, via: loaded ? .opened : .created) {
+                    case .joined:
+                        TempleUILog.launch.notice("Antigravity tab adopted \(id, privacy: .public)\(loaded ? " (loaded)" : "", privacy: .public)")
+                        return
+                    case .failed:
+                        continue // the write failed: ask again, and join again
+                    case .refused, nil:
+                        return
+                    }
                 case .none(let processStart):
-                    started = processStart
+                    started = started ?? processStart
                 case .ended, .unsupported:
                     return
-                case .inconclusive(let reason):
+                case .inconclusive(let reason, let processStart):
+                    started = started ?? processStart
                     if reason != lastReason {
                         TempleUILog.launch.notice("Antigravity process \(pid) not identified yet: \(reason, privacy: .public)")
                         lastReason = reason
@@ -1448,6 +1473,8 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
             // Whatever the launch reported is read now, before deciding: a
             // launcher failure written just before the exit is not missed.
             tab.launchResult?.finish()
+            // Its process is gone: nothing more to ask it (ADR-043).
+            tab.processAdoption?.cancel(); tab.processAdoption = nil
             tab.launchResult = nil
             let userClosed = closingTabIDs.remove(tab.id) != nil
             // The launcher said the agent never ran: that is the failure to

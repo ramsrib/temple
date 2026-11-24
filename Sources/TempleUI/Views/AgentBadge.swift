@@ -52,6 +52,16 @@ struct AgentBadge: View {
 extension Agent {
     /// A one-colour mark, drawn in the text's colour.
     var markIsTemplate: Bool { self != .claude }
+
+    /// "a Claude Code session", "an Antigravity session".
+    var aSession: String { (self == .antigravity ? "an " : "a ") + displayName + " session" }
+
+    /// One sentence for an ID several agents have on a host: "Both a Claude
+    /// Code session and a Codex session on mac-b have this ID."
+    static func sharedIDSentence(_ agents: [Agent], host: String) -> String {
+        let list = agents.map(\.aSession).formatted(.list(type: .and))
+        return agents.count == 2 ? "Both \(list) on \(host) have this ID." : "\(list.prefix(1).uppercased() + list.dropFirst()) on \(host) all have this ID."
+    }
 }
 
 extension AgentIcon {

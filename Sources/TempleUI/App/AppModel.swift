@@ -2252,9 +2252,32 @@ public final class AppModel: ObservableObject {
         return available.contains(preferred) ? [preferred] + available.filter { $0 != preferred } : available
     }
 
-    /// The agent that isn't the default: what ⌥ asks for in ⌥⌘T and ⌥⌘N.
-    public var alternateAgent: Agent {
-        Agent.allCases.first { $0 != settings.defaultAgent } ?? settings.defaultAgent
+    /// What ⌘T and ⌥⌘T start in a project on `host`: the first two of
+    /// `agents(on:)`. A third agent has no key; it is in the menus.
+    public func keyedAgents(on host: HostID) -> (primary: Agent, alternate: Agent) {
+        let list = agents(on: host)
+        return (list[0], list.count > 1 ? list[1] : list[0])
+    }
+
+    /// The key that starts `agent` in a project on `host`, if it has one.
+    public func newSessionKey(for agent: Agent, on host: HostID) -> NewSessionKey? {
+        let keyed = keyedAgents(on: host)
+        if agent == keyed.primary { return .primary }
+        return agent == keyed.alternate ? .alternate : nil
+    }
+
+    public enum NewSessionKey { case primary, alternate
+        public var label: String { self == .primary ? "⌘T" : "⌥⌘T" }
+    }
+
+    /// The agent ⌥ asks for in ⌥⌘N, and in ⌥⌘T with no active project: the
+    /// second on this Mac.
+    public var alternateAgent: Agent { keyedAgents(on: .local).alternate }
+
+    /// What the menu bar's ⌘T and ⌥⌘T items start: the active project's host
+    /// decides (Antigravity runs on this Mac only).
+    public var commandAgents: (primary: Agent, alternate: Agent) {
+        keyedAgents(on: openSessions.activeProjectKey?.host ?? .local)
     }
 
     /// ⌥⌘T — ⌘T with the other agent: a new session in the active project.
@@ -2265,7 +2288,7 @@ public final class AppModel: ObservableObject {
         guard let project = openSessions.activeProjectKey else {
             return toggleNewSessionPicker(alternateAgent: true)
         }
-        openSessions.newSession(agent: alternateAgent, project: project)
+        openSessions.newSession(agent: keyedAgents(on: project.host).alternate, project: project)
     }
 
     /// ⌘N — pick a project, start a new session in it with the default agent.

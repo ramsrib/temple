@@ -281,7 +281,8 @@ public enum ProcessIdentity: Sendable, Equatable {
     /// The process is gone, or the pid is another process's now.
     case ended
     /// It could not be told (several locks, a read that failed): ask again.
-    case inconclusive(String)
+    /// `started` when the process itself was read.
+    case inconclusive(String, started: ProcessStart?)
     /// This host cannot read processes, or the agent has no such lock.
     case unsupported
 }

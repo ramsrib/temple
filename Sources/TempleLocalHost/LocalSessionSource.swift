@@ -757,7 +757,11 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             if lostEverywhere || touchesRoot {
                 event = ScopeEvent(path: path ?? "", kind: .lost)
             } else {
-                guard let path, store.inAuditScope(path) else { continue }
+                guard let raw = path, store.inAuditScope(raw) else { continue }
+                // A write to a transcript's companion file is a write to the
+                // transcript (an Antigravity database's `-wal`), for a proof
+                // as for a live read.
+                let path = store.transcriptURL(forEvent: URL(fileURLWithPath: raw))?.path ?? raw
                 let kind: ScopeEvent.Kind = has(kFSEventStreamEventFlagItemIsSymlink) ? .link
                     : has(kFSEventStreamEventFlagItemIsDir) || has(kFSEventStreamEventFlagMustScanSubDirs) ? .directory
                     : has(kFSEventStreamEventFlagItemIsFile) ? .file : .unknown
@@ -875,12 +879,20 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             do { before = try store.signature(at: url) } catch { throw failure(error) }
             // Facts and revision come as one value: whatever changes after
             // this, these facts keep the revision they were read at.
-            let shared = facts ? store.sharedFactsSnapshot() : (facts: SharedFacts.empty, revision: nil)
+            var revision: UInt64?
             let read: StoreTranscriptRead
             do {
                 let hook = readPhaseHook
-                read = try store.readTranscript(at: url, expecting: id, facts: facts, shared: shared.facts,
-                                                sharedAcquired: { hook?(.sharedFactsAcquired, url) })
+                read = try store.readTranscript(at: url, expecting: id, facts: facts, shared: {
+                    let shared = store.sharedFactsSnapshot()
+                    revision = shared.revision
+                    hook?(.sharedFactsAcquired, url)
+                    return shared.facts
+                })
+            } catch let error as ReadOnlySQLite.Failure where error.isTransient {
+                // A lock or a log in transition: read again from a fresh open,
+                // within the same budget as a file that changed mid-read.
+                continue
             } catch { throw failure(error) }
             if facts, read.verdict == .verified { readCounts.parse(wider: read.widerRead) }
             readPhaseHook?(.bytesRead, url)
@@ -888,7 +900,7 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
             do { after = try store.signature(at: url) } catch { throw failure(error) }
             guard after == before else { continue }
             return TranscriptRead(identity: read.verdict, summary: read.summary, signature: after.transcript,
-                                  bytesRead: read.bytesRead, sharedRevision: facts && read.verdict == .verified ? shared.revision : nil)
+                                  bytesRead: read.bytesRead, sharedRevision: revision)
         }
         throw TranscriptReadError.changedDuringRead
     }

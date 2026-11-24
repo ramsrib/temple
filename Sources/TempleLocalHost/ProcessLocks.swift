@@ -70,11 +70,11 @@ enum ProcessLocks {
         if let expected = request.started, expected != before { return .ended }
         let paths: [String]
         do { paths = try openPaths(request.pid) } catch let error as Unreadable {
-            return start(request.pid) == before ? .inconclusive(error.reason) : .ended
-        } catch { return .inconclusive(error.localizedDescription) }
+            return start(request.pid) == before ? .inconclusive(error.reason, started: before) : .ended
+        } catch { return .inconclusive(error.localizedDescription, started: before) }
         guard start(request.pid) == before else { return .ended }
         let ids = lockedIDs(paths, presence: store.presenceRoot)
-        guard ids.count <= 1 else { return .inconclusive("the process holds \(ids.count) conversations' locks") }
+        guard ids.count <= 1 else { return .inconclusive("the process holds \(ids.count) conversations' locks", started: before) }
         guard let id = ids.first else { return .none(started: before) }
         let database = store.conversationsRoot.appendingPathComponent("\(id).db")
         var info = stat()

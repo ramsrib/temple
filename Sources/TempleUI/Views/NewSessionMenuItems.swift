@@ -69,8 +69,10 @@ struct NewSessionMenuItems: View {
     /// `⌘T` / `⌥⌘T` are only the truth in the *active* project.
     private func shortcut(_ agent: Agent) -> KeyboardShortcut? {
         guard project == model.openSessions.activeProjectKey else { return nil }
-        return agent == model.settings.defaultAgent
-            ? KeyboardShortcut("t")
-            : KeyboardShortcut("t", modifiers: [.command, .option])
+        switch model.newSessionKey(for: agent, on: project.host) {
+        case .primary: return KeyboardShortcut("t")
+        case .alternate: return KeyboardShortcut("t", modifiers: [.command, .option])
+        case nil: return nil
+        }
     }
 }

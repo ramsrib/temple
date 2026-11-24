@@ -35,6 +35,9 @@ enum ReadOnlySQLite {
         let message: String
         var errorDescription: String? { message }
         var isCantOpen: Bool { code & 0xff == SQLITE_CANTOPEN }
+        /// Another connection's lock, or a snapshot that kept changing:
+        /// worth reading again, never a verdict on the file.
+        var isTransient: Bool { [SQLITE_BUSY, SQLITE_LOCKED, SQLITE_PROTOCOL].contains(code & 0xff) }
     }
 
     /// A statement and the values bound to it.

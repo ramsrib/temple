@@ -25,7 +25,7 @@ public struct TempleCommands: Commands {
         CommandGroup(replacing: .newItem) {
             // Both agents by name: a bare "New Session" beside "New Codex
             // Session" left the default to be inferred (cold read).
-            Button("New \(model.settings.defaultAgent.displayName) Session") {
+            Button("New \(model.commandAgents.primary.displayName) Session") {
                 if model.openSessions.newSessionDefaultAgent() == nil {
                     model.openSessions.showHome()
                 }
@@ -33,7 +33,7 @@ public struct TempleCommands: Commands {
             .keyboardShortcut("t")
 
             // ⌥ is "the other agent" for both new-session commands.
-            Button("New \(model.alternateAgent.displayName) Session") { model.newSessionAlternateAgent() }
+            Button("New \(model.commandAgents.alternate.displayName) Session") { model.newSessionAlternateAgent() }
                 .keyboardShortcut("t", modifiers: [.command, .option])
 
             Button("New \(model.settings.defaultAgent.displayName) Session in Project…") { model.toggleNewSessionPicker() }

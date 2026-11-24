@@ -1578,7 +1578,7 @@ extension HistoryModel {
     /// and can resume, else a launch on its host in the other Temple's
     /// folder, carrying its name and colour into a row the launch makes.
     private func openPeer(_ peer: PeerRow, title: String) -> Bool {
-        guard peerIsCurrent(peer) else { return false }
+        guard peerIsCurrent(peer), Agent.remoteAgents.contains(peer.agent) else { return false }
         if let live = overlay.rows[peer.session], live.agent != nil && live.agent != peer.agent {
             return false
         }

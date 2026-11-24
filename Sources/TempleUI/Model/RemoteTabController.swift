@@ -131,6 +131,12 @@ public final class RemoteTabController {
         // would race it for the same run.
         if tab.remote?.phase == .opening { return }
         endRecheck(tab)
+        // Antigravity runs on this Mac only (ADR-043): nothing is started,
+        // and a tab without an id is never taken for a pending Codex run.
+        guard Agent.remoteAgents.contains(tab.agent) else {
+            tab.remote?.phase = .unknown(reason: "Temple starts \(tab.agent.displayName) only on this Mac, not on hosts.")
+            return
+        }
         guard let sid = tab.sessionID else {
             // A new Codex session: Codex mints the id, so the run starts
             // pending and is identified later (phase 1b).

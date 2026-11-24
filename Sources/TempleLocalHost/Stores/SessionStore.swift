@@ -144,9 +144,10 @@ protocol IncrementalSessionStore: SessionStore {
     /// signature, by default.
     func signature(at url: URL) throws -> FileSignature
     /// Identity, then (when `facts` and verified) facts, from one read.
-    /// `sharedAcquired` runs once the shared facts are in hand (a test seam).
-    func readTranscript(at url: URL, expecting id: String, facts: Bool, shared: SharedFacts,
-                        sharedAcquired: () -> Void) throws -> StoreTranscriptRead
+    /// `shared` is called at most once, only when facts are read: it takes
+    /// the shared facts (and the revision they belong to) at that moment.
+    func readTranscript(at url: URL, expecting id: String, facts: Bool,
+                        shared: () -> SharedFacts) throws -> StoreTranscriptRead
 }
 
 /// One read of a transcript through its store (`readTranscript`).
@@ -230,14 +231,13 @@ extension IncrementalSessionStore {
     func transcriptURL(forEvent url: URL) -> URL? { acceptsTranscript(url) ? url : nil }
     func signature(at url: URL) throws -> FileSignature { try FileSignature(url) }
 
-    func readTranscript(at url: URL, expecting id: String, facts: Bool, shared: SharedFacts,
-                        sharedAcquired: () -> Void) throws -> StoreTranscriptRead {
+    func readTranscript(at url: URL, expecting id: String, facts: Bool,
+                        shared: () -> SharedFacts) throws -> StoreTranscriptRead {
         let identity = try StoreIO.identity(at: url, format: format, expecting: id)
         guard facts, identity.verdict == .verified else {
             return StoreTranscriptRead(verdict: identity.verdict, summary: nil, bytesRead: identity.bytesRead)
         }
-        sharedAcquired()
-        let result = StoreIO.facts(at: url, format: format, shared: shared)
+        let result = StoreIO.facts(at: url, format: format, shared: shared())
         return StoreTranscriptRead(verdict: identity.verdict, summary: result.summary,
                                    bytesRead: identity.bytesRead + result.bytesRead, widerRead: result.widerRead)
     }

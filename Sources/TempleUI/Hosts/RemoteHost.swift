@@ -65,7 +65,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
 
     func availability(_ agent: Agent) -> LaunchAvailability {
         // Temple reads Antigravity's store on this Mac only (ADR-043).
-        guard Agent.remoteAgents.contains(agent) else { return .unavailable(reason: "Temple runs \(agent.displayName) on this Mac only.") }
+        guard Agent.remoteAgents.contains(agent) else { return .unavailable(reason: "Temple starts \(agent.displayName) only on this Mac, not on hosts.") }
         return check(agent)
     }
 

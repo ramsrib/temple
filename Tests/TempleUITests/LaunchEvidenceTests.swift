@@ -374,6 +374,34 @@ final class AntigravityAdoptionTests: XCTestCase {
         XCTAssertEqual(opens.first?.via, .opened, "an in-TUI resume loaded it; this launch did not create it")
     }
 
+    func testAConversationWhoseCreationCantBeToldIsNotClaimedAsCreated() async {
+        let locator = TranscriptLocator(localURL: URL(fileURLWithPath: "/s/conversations/\(id).db"))
+        let identity = ScriptedIdentity([.session(id: id, locator: locator, createdAt: nil, started: started)])
+        let model = model(identity, events: [.directoryEstablished("/p"), .agentProcess(pid: 4242)])
+        var opens: [SessionOpen] = []
+        model.openedHandler = { opens.append($0); return .joined }
+        let tab = model.newSession(agent: .antigravity, project: ProjectKey(host: .local, path: "/p"))
+        await settle { tab.sessionID != nil }
+        XCTAssertEqual(opens.first?.via, .opened)
+    }
+
+    func testAJoinThatFailedToBeWrittenBindsNothingAndIsTriedAgain() async {
+        let locator = TranscriptLocator(localURL: URL(fileURLWithPath: "/s/conversations/\(id).db"))
+        let answer = ProcessIdentity.session(id: id, locator: locator, createdAt: Date(), started: started)
+        let identity = ScriptedIdentity([answer, answer])
+        let model = model(identity, events: [.directoryEstablished("/p"), .agentProcess(pid: 4242)])
+        var attempts = 0
+        model.openedHandler = { _ in
+            attempts += 1
+            return attempts == 1 ? .failed(CocoaError(.fileWriteUnknown)) : .joined
+        }
+        let tab = model.newSession(agent: .antigravity, project: ProjectKey(host: .local, path: "/p"))
+        await settle { tab.sessionID != nil }
+        XCTAssertEqual(attempts, 2)
+        XCTAssertEqual(tab.sessionID, id)
+        XCTAssertEqual(identity.asked.map(\.started), [nil, started], "the second ask is pinned to the first answer's process")
+    }
+
     func testAnEndedProcessStopsTheAskingAndNoPidMeansNoAsking() async {
         let identity = ScriptedIdentity([.none(started: started), .ended])
         let model = model(identity, events: [.directoryEstablished("/p"), .agentProcess(pid: 4242)])

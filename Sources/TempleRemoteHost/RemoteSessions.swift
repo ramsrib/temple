@@ -466,6 +466,11 @@ public final class RemoteSessions {
     /// Temple never creates from a state where the original may be running.
     public func open(_ request: OpenRequest) async throws -> OpenOutcome {
         guard RemoteQuoting.isSafeToken(request.sessionID) else { throw OpenError.refused("This session id can't be sent to a host.") }
+        // Antigravity runs on this Mac only (ADR-043), however the open came
+        // (another Temple's History lists its sessions too).
+        guard Agent.remoteAgents.contains(request.agent) else {
+            throw OpenError.refused("Temple starts \(request.agent.displayName) only on this Mac, not on hosts.")
+        }
         // Codex mints its own ids: a new Codex session is a pending run
         // (`openPending`), never one started under an id Temple chose.
         if request.agent == .codex, request.mode == .new || request.startNew {

@@ -241,7 +241,8 @@ First measured **2026-11-24** against `agy` 1.5.15 and 1.5.16 on macOS (the
 CLI updated itself between two runs), by driving the TUI in a pty in scratch
 folders and reading the store before, during and after each step. Nothing
 here is documented upstream: the public reference covers flags, keys and
-`settings.json`, not storage. Not yet read by Temple (ADR-043).
+`settings.json`, not storage. Temple reads it on this Mac (ADR-043):
+`conversations/`, `conversation_summaries.db` and `presence/` **(read)**.
 
 **Binary:** `agy`, installed by Google's installer at `~/.local/bin/agy` (a
 single ~230 MB Mach-O). It updates itself in place (`updater/`,
@@ -347,10 +348,12 @@ Both databases are in **WAL mode** (header bytes 18–19 = `02 02`). How a
 reader opens them depends on the SQLite build:
 
 - **macOS's system SQLite (3.54.0, what GRDB links):** opened read-only
-  while no `-shm` exists (no CLI has the file open), the first statement
-  fails with `SQLITE_CANTOPEN` (14). While a CLI runs, the `-shm` exists
-  and a read-only open works. A read-write open works either way but
-  creates `-wal` and `-shm` and leaves them after closing.
+  with neither `-wal` nor `-shm` (no CLI has the file open), the first
+  statement fails with `SQLITE_CANTOPEN` (14). While a CLI runs, the `-shm`
+  exists and a read-only open works; with a `-wal` and no `-shm` (a writer
+  that crashed) it works too and reads the log, building its index in
+  memory. A read-write open works either way but creates `-wal` and `-shm`
+  and leaves them after closing.
 - **Stock SQLite (Python's 3.54.1):** a read-only open creates the `-wal`
   and `-shm` itself (the folder must be writable) and leaves them behind.
 

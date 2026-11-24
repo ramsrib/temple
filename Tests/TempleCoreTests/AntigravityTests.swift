@@ -86,7 +86,8 @@ final class AntigravityFormatTests: XCTestCase {
         guard case .summary(let bare) = facts(AntigravityFormat.Record(ids: [id], summary: nil, firstUserStep: Self.userStep("go", at: nil))) else { return XCTFail() }
         XCTAssertNil(bare.cwd)
         XCTAssertNil(bare.recordedTitle)
-        XCTAssertEqual(bare.firstPrompt, "go")
+        XCTAssertNil(bare.titleFact, "agy names it as the prompt is sent: no title until its row says")
+        XCTAssertEqual(bare.catalogTitle, "go", "the prompt is shown meanwhile")
     }
 
     func testTimesAreAgysColumnTextAndTheZeroTimeIsNever() throws {
@@ -202,7 +203,7 @@ final class AntigravityStoreTests: XCTestCase {
         try writeConversation(id, prompt: "hello", wal: true)
         try writeSummaries([(id, "Hello", "/w", "", 2)])
         let before = try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("conversations").path).sorted()
-        let read = try store.readTranscript(at: database(id), expecting: id, facts: true, shared: .empty, sharedAcquired: {})
+        let read = try store.readTranscript(at: database(id), expecting: id, facts: true, shared: { .empty })
         XCTAssertEqual(read.verdict, .verified)
         XCTAssertEqual(read.summary?.firstPrompt, "hello")
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.appendingPathComponent("conversations").path).sorted(), before,
@@ -233,12 +234,23 @@ final class AntigravityStoreTests: XCTestCase {
             try FileManager.default.copyItem(atPath: scratch.path + "-wal", toPath: url.path + "-wal")
         })
         XCTAssertFalse(FileManager.default.fileExists(atPath: url.path + "-shm"))
-        let read = try store.readTranscript(at: url, expecting: id, facts: true, shared: .empty, sharedAcquired: {})
+        try writeSummaries([(id, "", "/w", "", 1)])
+        let read = try store.readTranscript(at: url, expecting: id, facts: true, shared: { .empty })
         XCTAssertEqual(read.summary?.firstPrompt, "only in the log")
     }
 
+    func testTheSummariesFileAloneMovesTheSharedRevision() throws {
+        try writeSummaries([(id, "", "/w", "", 0)])
+        let store = self.store
+        let before = try XCTUnwrap(store.sharedRevision())
+        XCTAssertEqual(store.sharedRevision(), before, "nothing changed")
+        try SQLiteFixture.exec(store.summariesFile, ["UPDATE conversation_summaries SET title = 'Named'"])
+        XCTAssertGreaterThan(try XCTUnwrap(store.sharedRevision()), before)
+        XCTAssertEqual(store.sharedFactURLs.map(\.lastPathComponent), ["conversation_summaries.db", "conversation_summaries.db-wal"])
+    }
+
     func testAMissingDatabaseIsMissing() {
-        XCTAssertThrowsError(try store.readTranscript(at: database(id), expecting: id, facts: false, shared: .empty, sharedAcquired: {})) {
+        XCTAssertThrowsError(try store.readTranscript(at: database(id), expecting: id, facts: false, shared: { .empty })) {
             XCTAssertTrue(LocalSessionSource.isMissing($0), "\($0)")
         }
     }
@@ -299,7 +311,7 @@ final class ProcessLocksTests: XCTestCase {
         XCTAssertEqual(locator.path, "/s/agy/conversations/\(id).db")
         XCTAssertEqual(started, start)
         XCTAssertEqual(identify(["/s/agy/conversations/\(id).db"]), .none(started: start), "a database open is not a lock held")
-        guard case .inconclusive = identify(["/s/agy/presence/\(id).lock", "/s/agy/presence/0d8063b7-4be9-440a-80ca-5ea1d4ba5e98.lock"]) else {
+        guard case .inconclusive(_, started: start) = identify(["/s/agy/presence/\(id).lock", "/s/agy/presence/0d8063b7-4be9-440a-80ca-5ea1d4ba5e98.lock"]) else {
             return XCTFail("two locks: which is loaded can't be told")
         }
         XCTAssertEqual(identify([], starts: [nil]), .ended)

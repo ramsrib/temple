@@ -184,8 +184,8 @@ struct LauncherView: View {
                             title: "New \(agent.displayName) session" + (project == nil ? "…" : ""),
                             detail: project.map { "in " + $0.name },
                             detailTag: project.flatMap(ProjectNameLabel.hostTag),
-                            shortcut: model.openSessions.activeProjectKey == nil ? nil
-                                : agent == model.settings.defaultAgent ? "⌘T" : "⌥⌘T") {
+                            shortcut: model.openSessions.activeProjectKey.flatMap {
+                                model.newSessionKey(for: agent, on: $0.host)?.label }) {
                     newSession(agent)
                 }
             }

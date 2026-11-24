@@ -49,7 +49,7 @@ struct OpenByIDSheetView: View {
                     .labelsHidden()
                     .pickerStyle(.segmented)
                     .frame(maxWidth: 260, alignment: .leading)
-                    RemoteHint("This id is \(sheet.agentChoices.map { "a \($0.displayName)" }.formatted(.list(type: .and))) session on \(hostName). Choose which to open.")
+                    RemoteHint("\(Agent.sharedIDSentence(sheet.agentChoices, host: hostName)) Choose which to open.")
                 }
             }
             if sheet.showsFolder {
