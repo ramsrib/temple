@@ -447,10 +447,13 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
     /// Reconcile seam (ADR-008, ADR-043): rebind a provisional tab to its
     /// real id. `via` is `.opened` when the session existed before the launch
     /// (an Antigravity tab that loaded an older conversation).
+    /// `requireWrittenJoin`: bind only once the join was written (the
+    /// Antigravity watcher, which asks again); Codex's one-shot reconciler
+    /// binds as it always has, since nothing would deliver the id twice.
     @discardableResult
     public func adopt(sessionID: String, for tabID: SessionTab.ID, locator: TranscriptLocator? = nil,
-                      via: JoinedVia = .created) -> JoinResult? {
-        guard !isQuitting, let tab = tabs.first(where: { $0.id == tabID }), tab.isProvisional else { return nil }
+                      via: JoinedVia = .created, requireWrittenJoin: Bool = false) -> JoinResult? {
+        guard let tab = tabs.first(where: { $0.id == tabID }), tab.isProvisional else { return nil }
         // Join before binding: an id Temple already has on this host as
         // another agent's is never bound to this tab, which stays
         // provisional; nor is one whose join failed to be written.
@@ -464,7 +467,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             return joined
         case .failed(let error):
             TempleUILog.launch.error("adoption of \(sessionID, privacy: .public) not recorded: \(error.localizedDescription, privacy: .public)")
-            return joined
+            if requireWrittenJoin { return joined }
         }
         tab.sessionID = sessionID
         tab.isProvisional = false
@@ -746,7 +749,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
                     // in-TUI resume), not created by it; one whose creation
                     // can't be told is not claimed as created either.
                     let loaded = createdAt.map { $0 < launchedAt.addingTimeInterval(-2) } ?? true
-                    switch model.adopt(sessionID: id, for: tabID, locator: locator, via: loaded ? .opened : .created) {
+                    switch model.adopt(sessionID: id, for: tabID, locator: locator, via: loaded ? .opened : .created,
+                                       requireWrittenJoin: true) {
                     case .joined:
                         TempleUILog.launch.notice("Antigravity tab adopted \(id, privacy: .public)\(loaded ? " (loaded)" : "", privacy: .public)")
                         return
@@ -1050,6 +1054,8 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
 
     public func closeTab(_ tabID: SessionTab.ID) {
         guard !isQuitting, let tab = tabs.first(where: { $0.id == tabID }) else { return }
+        // A closing tab adopts nothing more (ADR-043).
+        tab.processAdoption?.cancel(); tab.processAdoption = nil
         if tab.kind == .session, let sessionID = tab.sessionID {
             if !unusedThisRun(tab) { touchHandler?(SessionKey(id: sessionID, host: tab.host), nil) }
             closedTabs.append(ClosedTabRecord(

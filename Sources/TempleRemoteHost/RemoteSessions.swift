@@ -469,7 +469,7 @@ public final class RemoteSessions {
         // Antigravity runs on this Mac only (ADR-043), however the open came
         // (another Temple's History lists its sessions too).
         guard Agent.remoteAgents.contains(request.agent) else {
-            throw OpenError.refused("Temple starts \(request.agent.displayName) only on this Mac, not on hosts.")
+            throw OpenError.refused("Temple can start \(request.agent.displayName) only on this Mac, not on hosts.")
         }
         // Codex mints its own ids: a new Codex session is a pending run
         // (`openPending`), never one started under an id Temple chose.

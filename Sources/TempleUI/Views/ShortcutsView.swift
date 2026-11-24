@@ -14,12 +14,15 @@ struct ShortcutsView: View {
     /// alone must say which agent it starts (cold read, docs/copy-review.md).
     var defaultAgent: Agent = .claude
     var otherAgent: Agent = .codex
+    /// What ⌘T and ⌥⌘T start in the current project (its host decides).
+    var projectAgents: (primary: Agent, alternate: Agent)? = nil
 
     private var newSessions: [Shortcut] {
         let usual = defaultAgent.displayName, other = otherAgent.displayName
+        let here = projectAgents.map { ($0.primary.displayName, $0.alternate.displayName) } ?? (usual, other)
         return [
-            .init(keys: "⌘T", action: "New \(usual) session in the current project"),
-            .init(keys: "⌥⌘T", action: "New \(other) session in the current project"),
+            .init(keys: "⌘T", action: "New \(here.0) session in the current project"),
+            .init(keys: "⌥⌘T", action: "New \(here.1) session in the current project"),
             .init(keys: "⌘N", action: "New \(usual) session in a project you pick"),
             .init(keys: "⌥⌘N", action: "New \(other) session in a project you pick"),
             .init(keys: "⌘O", action: "Open a project folder Temple hasn't seen yet"),

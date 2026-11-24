@@ -15,7 +15,7 @@ public enum JoinConflict: Equatable, Sendable {
     public var message: String {
         switch self {
         case .agent(let agent): "Already in Temple as a \(agent.displayName) session."
-        case .agentUnknown: "Already in Temple with no agent recorded, and more than one agent has a session with this ID."
+        case .agentUnknown: "Temple already lists this ID without knowing its agent, and more than one agent has a session with this ID, so it can't tell which this is."
         }
     }
 }

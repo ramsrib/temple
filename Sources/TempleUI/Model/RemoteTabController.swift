@@ -134,7 +134,9 @@ public final class RemoteTabController {
         // Antigravity runs on this Mac only (ADR-043): nothing is started,
         // and a tab without an id is never taken for a pending Codex run.
         guard Agent.remoteAgents.contains(tab.agent) else {
-            tab.remote?.phase = .unknown(reason: "Temple starts \(tab.agent.displayName) only on this Mac, not on hosts.")
+            let reason = "This is \(tab.agent.aSession). Temple can open \(tab.agent.displayName) sessions only on this Mac, not on hosts."
+            // A fresh tab has no remote state yet: the reason still shows.
+            if tab.remote == nil { tab.launchPreparationError = reason } else { tab.remote?.phase = .unknown(reason: reason) }
             return
         }
         guard let sid = tab.sessionID else {

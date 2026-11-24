@@ -285,6 +285,7 @@ public struct RootView: View {
                 PanelHost(focus: model.overlayFocus, token: model.overlayFocus.token) {
                     ShortcutsView(defaultAgent: model.settings.defaultAgent,
                                   otherAgent: model.alternateAgent,
+                                  projectAgents: model.commandAgents,
                                   maxHeight: max(200, geo.size.height - 2 * ShortcutsView.windowMargin),
                                   remoteNote: model.remoteHosts.hasHosts)
                 }

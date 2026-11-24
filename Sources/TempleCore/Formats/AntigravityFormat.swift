@@ -52,6 +52,9 @@ public struct AntigravityFormat: TranscriptFormat {
         if prompt == nil, (summary?.stepCount ?? 0) == 0 { return .unparseable }
         let lastModified = summary.flatMap { Self.date($0.lastModified) }
         let promptText = prompt?.text.map { TranscriptText.cleanTitle($0) }.flatMap { $0.isEmpty ? nil : $0 }
+        // No row yet, or the row as it was before the first prompt (no
+        // steps, no title): `agy` has not named it yet.
+        let named = summary.map { !($0.title.isEmpty && $0.stepCount == 0) } ?? false
         // Until its summary row is written (a moment after the database),
         // the conversation's title is not known: `agy` names it as the first
         // prompt is sent. The prompt is a display hint meanwhile, never a
@@ -59,11 +62,11 @@ public struct AntigravityFormat: TranscriptFormat {
         return .summary(TranscriptSummary(
             id: id, agent: .antigravity, locator: locator, modifiedAt: modifiedAt,
             cwd: summary.flatMap { Self.folder($0.workspaceURIs) },
-            firstPrompt: summary == nil ? nil : promptText,
+            firstPrompt: named ? promptText : nil,
             createdAt: prompt?.at,
             lastEntryAt: lastModified.map { min($0, modifiedAt) },
             recordedTitle: summary.flatMap { TranscriptText.cleanTitle($0.title) }.flatMap { $0.isEmpty ? nil : $0 },
-            laterPromptHint: summary == nil ? promptText : nil))
+            laterPromptHint: named ? nil : promptText))
     }
 
     // MARK: The record

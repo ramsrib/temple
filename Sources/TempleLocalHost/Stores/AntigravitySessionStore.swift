@@ -84,13 +84,13 @@ struct AntigravitySessionStore: TranscriptSummaryStore {
 
     func readTranscript(at url: URL, expecting id: String, facts: Bool,
                         shared: () -> SharedFacts) throws -> StoreTranscriptRead {
-        // The summaries' revision before they are read: what is read is at
-        // least as new as the revision these facts are stamped with.
-        if facts { _ = shared() }
         let conversation = try conversationRows(url, firstStep: facts)
         let identityLine = AntigravityFormat.Record(ids: conversation.ids, summary: nil, firstUserStep: nil).encoded()
         let verdict = format.identity(lines: [identityLine], expecting: id)
         guard facts, verdict == .verified else { return StoreTranscriptRead(verdict: verdict, summary: nil, bytesRead: identityLine.count) }
+        // The summaries' revision before their row is read: what is read is
+        // at least as new as the revision these facts are stamped with.
+        _ = shared()
         let record = AntigravityFormat.Record(ids: conversation.ids, summary: try summaryRow(for: url),
                                               firstUserStep: conversation.firstUserStep)
         return StoreTranscriptRead(verdict: verdict, summary: self.facts(of: record, at: url),
@@ -121,10 +121,14 @@ struct AntigravitySessionStore: TranscriptSummaryStore {
         return nil
     }
 
+    static let payloadLimit = 1 << 20
+
     private func conversationRows(_ url: URL, firstStep: Bool) throws -> (ids: [String], firstUserStep: String?) {
         var queries = [ReadOnlySQLite.Query(sql: "SELECT cascade_id FROM trajectory_meta")]
         if firstStep {
-            queries.append(.init(sql: "SELECT step_payload FROM steps WHERE step_type = 14 ORDER BY idx LIMIT 1"))
+            // Bounded: a pasted first prompt can be megabytes. A payload cut
+            // short is not a whole message, and states no prompt.
+            queries.append(.init(sql: "SELECT substr(step_payload, 1, \(Self.payloadLimit)) FROM steps WHERE step_type = 14 ORDER BY idx LIMIT 1"))
         }
         let results = try ReadOnlySQLite.read(url, queries)
         let ids = results[0].compactMap { $0.first?.text }.filter { !$0.isEmpty }

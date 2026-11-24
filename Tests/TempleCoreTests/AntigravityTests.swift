@@ -65,6 +65,14 @@ final class AntigravityFormatTests: XCTestCase {
         XCTAssertEqual(s.titleFact, "hi there")
     }
 
+    func testARowStillAsItWasBeforeThePromptNamesNothingYet() {
+        let pending = AntigravityFormat.Record(ids: [id], summary: summary(title: "", steps: 0, modified: "0001-01-01 00:00:00+00:00"),
+                                               firstUserStep: Self.userStep("first words", at: nil))
+        guard case .summary(let s) = facts(pending) else { return XCTFail() }
+        XCTAssertNil(s.titleFact, "a NULL-only fill must not keep the prompt where agy's name is coming")
+        XCTAssertEqual(s.catalogTitle, "first words")
+    }
+
     func testOnlyAConversationWithOneFolderHasOne() {
         for folders in [[], ["file:///a", "file:///b"], ["https://example.com/a"]] {
             let record = AntigravityFormat.Record(ids: [id], summary: summary(folders: folders), firstUserStep: Self.userStep("x", at: nil))

@@ -317,7 +317,7 @@ extension AppModel {
         }
         guard found.count == 1 else {
             return .failure(.ambiguous, "\(Agent.sharedIDSentence(found, host: host.displayName).replacingOccurrences(of: "this ID.", with: "the ID \(id).")) "
-                            + "Open it from File ▸ Open Session by ID…, which asks which.")
+                            + "Open it from File ▸ Open Session by ID…, where you choose the agent.")
         }
         guard case .found(let locator, let recorded) = lookup[agent], let directory = recorded, !directory.isEmpty else {
             return .failure(.refused, "The session's transcript on \(host.displayName) records no folder. "

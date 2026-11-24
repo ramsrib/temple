@@ -2942,9 +2942,10 @@ folded in.
     created: one `agy`'s own `/resume` loaded, older than the launch (by its
     database's birth time, 2 s of slack), joins as `opened`, and so does one
     whose creation can't be told. `adopt` names the tab's agent (it
-    hardcoded Codex), binds only a provisional tab, and only once the join
-    was written: a join that failed leaves it provisional (for Codex too),
-    and an Antigravity tab asks again.
+    hardcoded Codex) and binds only a provisional tab. An Antigravity tab
+    binds only once its join was written, and asks again otherwise; Codex's
+    one-shot reconciler binds as it always did, since nothing would deliver
+    its id twice. A closing tab's watcher is cancelled with the close.
   - A provisional Antigravity tab does not say "(starting…)": `agy` is
     ready, it just has no conversation until the first prompt.
 - **`/clear` is not followed yet.** The lock moves with it, so following is
@@ -2983,9 +2984,11 @@ folded in.
   after the database, and `agy`'s generated title can land in it alone. The
   file and its log move the agent's shared revision (`sharedFactURLs`), and
   the engine reads again every member still wanting a title (ADR-032's
-  shared-facts path). Until a conversation's row exists its first prompt is
-  a display hint, not a title fact, so a NULL-only fill never keeps the
-  prompt where `agy`'s name was coming.
+  shared-facts path). Until a conversation's row exists, or while it is
+  still as it was before the first prompt (no steps, no title), its first
+  prompt is a display hint, not a title fact, so a NULL-only fill never
+  keeps the prompt where `agy`'s name was coming. The prompt's payload is
+  read up to 1 MiB; one cut short states no prompt.
 - **Titles follow ADR-011: the CLI's own first.** `agy` names a conversation
   as its first prompt is sent, and `/rename` writes the same column, so the
   `title` column is `recordedTitle`; the first prompt is the fallback.
@@ -3011,6 +3014,16 @@ folded in.
   not documented. Its Ctrl+K (approve a subagent's action) is not Temple's
   ⌘K.
 - **No usage meter** for it; there is no documented quota endpoint.
+
+**Known gaps, kept** (the second review round's, judged against their
+cost): a member that already has a title is not read again when only its
+summary row's folder arrives (a tab records its folder from the launch, an
+import from the catalog); History verifies a conversation's identity and
+reads its facts in two transactions (the recorded id never changes) and
+drops one from a refresh on a transient lock; the first process sample can
+pin a pid reused in the milliseconds between the wrapper's `exec` and that
+sample; and `RemoteHostsTests`' no-host startup reads this Mac's real
+stores, Antigravity's now as Claude's and Codex's before.
 
 **Also fixed on the way.** `FileHolders` threw on a descriptor whose path
 the kernel won't give: Codex's app server daemon holds a revoked one, and
