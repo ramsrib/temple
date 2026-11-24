@@ -2999,6 +2999,11 @@ folded in.
   under `ListingAudit`, and absence proofs work as for the other agents
   (ADR-030), with a missing folder a failed listing. A proof hears a
   database's `-wal` as its database, as a live read does.
+- **A row with no agent recorded is Claude's or Codex's.** Such rows predate
+  Temple recording the agent (ADR-029); "every agent's proof" for one, in
+  the engine, the archive sweep and History's archived verdict, means those
+  two (`Agent.agentlessRowAgents`). Counting Antigravity would leave every
+  such row unprovable on a Mac without `agy` (the full suite caught it).
 - **Detection as for the others (ADR-025):** `agy --version` prints the bare
   version and exits 0, and ignores unknown flags as `claude` does. It
   updates its own binary in place; ADR-025 retries only a failed probe, so

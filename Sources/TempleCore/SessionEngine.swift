@@ -1116,7 +1116,7 @@ public actor SessionEngine: HostEngine {
     /// or every agent's when the row does not know it.
     private func eligibleAgentsComplete(_ member: Member) -> Bool {
         if let agent = member.agent { return complete.contains(agent) }
-        return Set(Agent.allCases).isSubset(of: complete)
+        return Set(Agent.agentlessRowAgents).isSubset(of: complete)
     }
 
     // MARK: Timers

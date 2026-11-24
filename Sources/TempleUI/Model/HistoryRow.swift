@@ -367,7 +367,7 @@ final class HistoryRowBuilder {
     /// member needs every agent's listing.
     private static func provenUnlisted(_ member: Session, context: Context) -> Bool {
         guard let complete = context.coverage[member.host] else { return false }
-        let agents = member.agent.map { [$0] } ?? Agent.allCases
+        let agents = member.agent.map { [$0] } ?? Agent.agentlessRowAgents
         return agents.allSatisfy { complete.provesAbsent(member.sessionID, agent: $0) }
     }
 

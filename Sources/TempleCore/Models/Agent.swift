@@ -49,6 +49,12 @@ public enum Agent: String, Codable, CaseIterable, Sendable {
     /// SQLite, read on this Mac only for now (ADR-043).
     public static let remoteAgents: [Agent] = [.claude, .codex]
 
+    /// The agents a row with no agent recorded can be: such rows predate
+    /// Temple recording one (ADR-029), and Antigravity came later (ADR-043),
+    /// so its absence is never needed for them. Asking for it would leave
+    /// every such row unprovable on a Mac without `agy`.
+    public static let agentlessRowAgents: [Agent] = [.claude, .codex]
+
     /// The command the agent installs as, before any user override or `PATH`
     /// resolution (see `LoginShellEnvironment.locate`).
     public var binaryName: String {

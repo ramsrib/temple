@@ -54,7 +54,7 @@ struct AutoArchivePolicy {
 
     /// Every agent whose store could hold the row: its own, or all of them
     /// when the row never recorded one.
-    static func agents(for state: SessionState) -> [Agent] { state.agent.map { [$0] } ?? Agent.allCases }
+    static func agents(for state: SessionState) -> [Agent] { state.agent.map { [$0] } ?? Agent.agentlessRowAgents }
 
     /// The proofs a sweep asks for: per host and agent, the hinted
     /// candidates that agent could hold, each with the membership it was
