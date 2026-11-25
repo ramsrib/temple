@@ -583,6 +583,172 @@ extension LinuxAcceptanceTests {
         }
     }
 
+    /// Antigravity on a real host (ADR-044), macOS or Linux: a new tab is a
+    /// pending run; `agy`'s trust question is answered, a prompt sent, and
+    /// the conversation is learned from the lock the pane's own process
+    /// holds; it is then located and read with the host's `sqlite3` while
+    /// `agy` has it open, and again once it has stopped. The host needs a
+    /// logged-in `agy`. Its conversation stays in `agy`'s store (one
+    /// prompt, in a temp folder that is removed).
+    ///
+    ///     TEMPLE_AGY_ACCEPTANCE=mac-mini-work swift test --filter testAntigravityOnEachHost
+    @MainActor
+    func testAntigravityOnEachHost() async throws {
+        let names = (ProcessInfo.processInfo.environment["TEMPLE_AGY_ACCEPTANCE"] ?? "")
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard !names.isEmpty else { throw XCTSkip("set TEMPLE_AGY_ACCEPTANCE=<alias>[,<alias>] to run") }
+        for name in names { try await antigravity(name) }
+    }
+
+    @MainActor
+    private func antigravity(_ name: String) async throws {
+        let state = TempTree("acceptance-agy")
+        var log: [String] = ["== \(name) (Antigravity)"]
+        defer { print(log.joined(separator: "\n")) }
+        let store = try RemoteStateStore(directory: state.url)
+        let sessions = RemoteSessions(record: .config(name), stateDirectory: state.url, sshPath: "/usr/bin/ssh", store: { store })
+        let connection = try await sessions.resolvedConnection()
+        defer {
+            let check = connection.masterCheckArgv
+            let exit = [check[0], check[1], check[2]] + SSHConnection.helperOptions + ["-O", "exit", "--", name]
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: exit[0])
+            process.arguments = Array(exit.dropFirst())
+            process.standardError = FileHandle.nullDevice
+            try? process.run()
+            process.waitUntilExit()
+        }
+        let exec = try await sessions.queryExec()
+        func sh(_ script: String, _ args: [String] = []) async throws -> String {
+            let out = try await exec.run(script: script, args: args, deadline: 30)
+            return out.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        log.append("agy: \(try await sh("command -v agy; agy --version 2>&1 | head -n 1")); \(try await sh("uname -sr"))")
+        let before = try await sh("tmux -L temple ls -F '#{session_name}' 2>/dev/null || true")
+        let recordsBefore = try await sh("[ -e \"$HOME/.temple\" ] && echo yes || echo no")
+        let folder = try await sh("mktemp -d /tmp/temple-accept-XXXXXX")
+        XCTAssertTrue(folder.hasPrefix("/tmp/temple-accept-"), folder)
+        let canonicalFolder = try await sh("cd -- \"$1\" && pwd -P", [folder])
+        var handles: [String] = []
+        var markers: [String] = []
+        var clients: [AcceptanceClient] = []
+        defer {
+            for client in clients { client.end() }
+            let cleanup = #"""
+            f=$1; noneBefore=$2; markers=$3; recordsBefore=$4; shift 4
+            for h in "$@"; do tmux -L temple kill-session -t "=temple-$h" 2>/dev/null; done
+            case $f in /tmp/temple-accept-*) rm -rf -- "$f" ;; esac
+            if [ "$noneBefore" = 1 ] && ! tmux -L temple ls >/dev/null 2>&1; then
+              rm -f "${TMUX_TMPDIR:-/tmp}/tmux-$(id -u)/temple"
+            fi
+            for mk in $markers; do rm -f "$HOME/.temple/launch/$mk" "$HOME/.temple/launch/$mk".*; done
+            if [ "$recordsBefore" = no ]; then rmdir "$HOME/.temple/launch" "$HOME/.temple" 2>/dev/null; fi
+            echo "left: tmux=$(tmux -L temple ls -F '#{session_name}' 2>/dev/null | grep -c . ) folder=$([ -e "$f" ] && echo yes || echo no)"
+            """#
+            let semaphore = DispatchSemaphore(value: 0)
+            let args = [folder, before.isEmpty ? "1" : "0", markers.joined(separator: " "), recordsBefore] + handles
+            var cleanupLog = ""
+            Task.detached {
+                cleanupLog = (try? await exec.run(script: cleanup, args: args, deadline: 30).stdout) ?? "(cleanup did not answer)"
+                semaphore.signal()
+            }
+            semaphore.wait()
+            log.append("cleanup: " + cleanupLog.trimmingCharacters(in: .whitespacesAndNewlines))
+        }
+
+        let outcome = try await sessions.openPending(agent: .antigravity, handle: nil, directory: folder,
+                                                     extraArguments: ["--dangerously-skip-permissions"])
+        let plan = try pendingPlan(outcome)
+        handles.append(plan.handle)
+        markers.append(RecordDirectory.marker(from: try XCTUnwrap(store.run(plan.handle)).recordPath) ?? "")
+        XCTAssertEqual(plan.agentArgv, ["agy", "--dangerously-skip-permissions"], "agy mints its own id")
+        clients.append(try AcceptanceClient(plan.argv))
+        if !plan.staged {
+            let staged = await sessions.stage(plan.stage)
+            XCTAssertEqual(staged, .staged, name)
+        }
+        var collected = RemoteSessions.Collected.nothing
+        for _ in 0..<40 {
+            collected = await sessions.collect(plan.handle)
+            if case .ok = collected { break }
+            try await Task.sleep(for: .milliseconds(500))
+        }
+        guard case .ok(let directory) = collected else {
+            return XCTFail("\(name): no ok record: \(collected)\n\(clients.last?.diagnosis ?? "")")
+        }
+        XCTAssertEqual(directory, canonicalFolder)
+        let run = try XCTUnwrap(store.run(plan.handle))
+        let socket = try XCTUnwrap(run.socketPath)
+        let session = "temple-\(plan.handle)"
+        func screen() async throws -> String { try await sh("tmux -S \"$1\" capture-pane -p -t \"=$2:\"", [socket, session]) }
+        func keys(_ words: String...) async throws { _ = try await sh("s=$1; t=$2; shift 2; tmux -S \"$s\" send-keys -t \"=$t:\" \"$@\"", [socket, session] + words) }
+
+        // agy asks to trust a new folder; then its composer.
+        var ready = false
+        var shown = ""
+        for _ in 0..<40 {
+            try await Task.sleep(for: .seconds(1))
+            shown = try await screen()
+            if shown.contains("Do you trust") { log.append("agy asked about trust; answered yes"); try await keys("Enter"); continue }
+            if shown.contains("for shortcuts") { ready = true; break }
+        }
+        XCTAssertTrue(ready, "\(name): agy's composer never came; screen:\n\(shown)")
+
+        // No conversation before the first prompt.
+        let early = await sessions.identify(plan.handle)
+        log.append("before the prompt: \(early)")
+        guard case .inconclusive(.retry) = early else { return XCTFail("\(name): \(early)") }
+
+        try await keys("-l", "Reply with only the word ok")
+        try await Task.sleep(for: .seconds(1))
+        try await keys("Enter")
+        var identity = RemoteSessions.Identity.inconclusive(.retry("not checked"))
+        var tries: [String] = []
+        for _ in 0..<30 {
+            try await Task.sleep(for: .seconds(2))
+            identity = await sessions.identify(plan.handle)
+            if case .adopted = identity { break }
+            if case .inconclusive(let why) = identity { tries.append(why.reason) }
+        }
+        log.append("after the prompt: \(identity) after \(tries.count) inconclusive checks \(Set(tries).sorted())")
+        guard case .adopted(let id) = identity else {
+            return XCTFail("\(name): never adopted: \(identity)\nscreen:\n\(try await screen())")
+        }
+        XCTAssertEqual(try store.run(plan.handle)?.claim, .verified)
+        let held = try await sh(#"""
+            p=$1; L=$(command -v lsof || echo /usr/sbin/lsof)
+            "$L" -n -P -w -a -p "$p" -Ffn 2>/dev/null | grep -c "presence/$2.lock"
+            """#, [String(run.panePID ?? 0), id])
+        log.append("pane pid \(run.panePID ?? 0) holds \(id).lock: \(held)")
+
+        // Located and read with the host's sqlite3 while agy has it open.
+        let source = RemoteSessionSource(sessions: sessions)
+        func readIt(_ label: String) async throws -> TranscriptSummary? {
+            let located = try await source.locate([LocateRequest(id: id, agent: .antigravity, refresh: true)])
+            let candidate = try XCTUnwrap(located.candidates[id]?.first, "\(name): \(label): not located")
+            let read = try await source.read(candidate.locator, agent: .antigravity, expecting: id, facts: true)
+            XCTAssertEqual(read.identity, .verified, "\(name): \(label)")
+            XCTAssertEqual(candidate.stat, .present(read.signature), "\(name): \(label): lookup and read agree on the version")
+            log.append("\(label): \(candidate.locator.path) title=\(read.summary?.titleFact ?? "-") prompt=\(read.summary?.firstPrompt ?? read.summary?.laterPromptHint ?? "-") cwd=\(read.summary?.cwd ?? "-")")
+            return read.summary
+        }
+        // agy records the folder as the pane entered it (`/tmp/…` on macOS,
+        // which the pane's `pwd -P` resolves to `/private/tmp/…`); the tab's
+        // recorded folder wins over a fill either way.
+        var summary = try await readIt("live")
+        XCTAssertTrue([folder, canonicalFolder].contains(summary?.cwd ?? ""), "\(name): \(summary?.cwd ?? "-")")
+
+        // Stopped: read again, from a database no agy has open.
+        clients.removeLast().end()
+        let stopped = try await sessions.stop(plan.handle, fromAttachedTab: true).outcome
+        log.append("stop: \(stopped)")
+        try await Task.sleep(for: .seconds(2))
+        summary = try await readIt("stopped")
+        XCTAssertTrue([folder, canonicalFolder].contains(summary?.cwd ?? ""), "\(name): \(summary?.cwd ?? "-")")
+        let sidecars = try await sh("ls \"$HOME/.gemini/antigravity-cli/conversations/$1.db\"* 2>/dev/null | sed 's|.*/||' | tr '\n' ' '", [id])
+        log.append("files after the stop: \(sidecars)")
+    }
+
     /// The walk's ownership rule on each box's real `/proc` and `sh`
     /// (round 1), with processes this test starts in a tmux server of its
     /// own and fake rollouts under a temp Codex home: a pane process that

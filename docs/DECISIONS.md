@@ -3129,7 +3129,17 @@ log read from a copy with nothing created), a `/proc` fixture, and a real
 process holding a lock read through `lsof`; `RemoteCodexIdentityTests`
 covers a new Antigravity tab on a host through adoption and its chip's
 restore. The scripts also passed in Debian (dash) and Alpine (busybox sh
-with GNU findutils) containers during development.
+with GNU findutils) containers during development. End to end on a real
+Mac host (`mac-mini-work`, macOS 27.2, tmux 3.8, `agy` 1.5.x;
+`LinuxAcceptanceTests.testAntigravityOnEachHost`, opt-in with
+`TEMPLE_AGY_ACCEPTANCE=<alias>`): the pending run starts `agy`, the trust
+question is answered, nothing is claimed before the first prompt, the lock
+the pane's own process holds is adopted at the first check after it, and
+the conversation is located and read with the host's `sqlite3` while `agy`
+runs (lookup and read agree on its version) and after the stop (nothing
+created beside the database). `agy` records the folder as the pane entered
+it (`/tmp/…`, which the pane resolves to `/private/tmp/…`); the tab's
+recorded folder wins over that fill. Not yet run on a Linux host.
 
 **Known gaps.** `/clear` is still not followed (ADR-043). A host whose
 `find` is busybox's cannot read any agent's transcripts (task 6482421f).
