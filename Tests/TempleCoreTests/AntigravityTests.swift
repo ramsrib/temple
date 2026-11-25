@@ -293,34 +293,6 @@ final class AntigravityStoreTests: XCTestCase {
     }
 }
 
-/// Open by id on a Mac: `agy` keeps every conversation under its one folder
-/// and nothing moves it, so no folder there is no conversation there.
-final class AntigravityLookupTests: XCTestCase {
-    func testAMacWithoutAgysFolderHasNoAntigravitySession() async throws {
-        let root = URL(fileURLWithPath: "/private/tmp/temple-agy-none-\(UUID().uuidString)")
-        let source = LocalSessionSource(stores: [AntigravitySessionStore(root: root)], monitorChanges: false)
-        let lookup = try await source.lookup(id: "502dbaf1-4ae5-4f7c-ab0f-53dfb69d6efd")
-        XCTAssertEqual(lookup[.antigravity], .notFound)
-    }
-
-    /// Absence is proven only from a folder this user can search, with no
-    /// dangling link on the way (an unmounted volume).
-    func testOnlyAProvenAbsenceIsNotFound() throws {
-        let base = "/private/tmp/temple-absent-\(UUID().uuidString)"
-        try FileManager.default.createDirectory(atPath: base + "/home", withIntermediateDirectories: true)
-        defer { chmod(base + "/home", 0o755); try? FileManager.default.removeItem(atPath: base) }
-        XCTAssertTrue(LocalSessionSource.provenAbsent(base + "/home/.gemini/antigravity-cli/conversations"))
-        try FileManager.default.createSymbolicLink(atPath: base + "/home/.gemini", withDestinationPath: "/Volumes/not-mounted-\(UUID().uuidString)")
-        XCTAssertFalse(LocalSessionSource.provenAbsent(base + "/home/.gemini/antigravity-cli/conversations"), "a dangling link")
-        try FileManager.default.removeItem(atPath: base + "/home/.gemini")
-        try FileManager.default.createDirectory(atPath: base + "/home/.gemini", withIntermediateDirectories: true)
-        chmod(base + "/home/.gemini", 0)
-        XCTAssertFalse(LocalSessionSource.provenAbsent(base + "/home/.gemini/antigravity-cli/conversations"), "a folder it can't search")
-        chmod(base + "/home/.gemini", 0o755)
-        XCTAssertFalse(LocalSessionSource.provenAbsent(base + "/home"), "there")
-    }
-}
-
 /// Which conversation a process has loaded: the one `presence/<id>.lock`
 /// the process itself holds open.
 final class ProcessLocksTests: XCTestCase {

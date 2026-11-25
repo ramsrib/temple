@@ -402,17 +402,14 @@ public struct HostTestSummary: Sendable, Equatable {
     public var claude: ToolCheck?
     public var codex: ToolCheck?
     public var antigravity: ToolCheck?
-    /// What reads Antigravity's conversations there (`sqlite3`, `python3`),
-    /// checked only when `agy` runs; nil when not checked.
-    public var sqliteReader: SQLiteReaderCheck?
     public var tmux: TmuxCheck?
     public var logind: LogindCheck?
 
     public init(failure: SSHFailure? = nil, connectedAs: String? = nil, environment: RemoteEnvironment? = nil,
                 claude: ToolCheck? = nil, codex: ToolCheck? = nil, antigravity: ToolCheck? = nil,
-                sqliteReader: SQLiteReaderCheck? = nil, tmux: TmuxCheck? = nil, logind: LogindCheck? = nil) {
+                tmux: TmuxCheck? = nil, logind: LogindCheck? = nil) {
         self.failure = failure; self.connectedAs = connectedAs; self.environment = environment
-        self.claude = claude; self.codex = codex; self.antigravity = antigravity; self.sqliteReader = sqliteReader
+        self.claude = claude; self.codex = codex; self.antigravity = antigravity
         self.tmux = tmux; self.logind = logind
     }
 
@@ -444,7 +441,6 @@ public struct HostTestSummary: Sendable, Equatable {
         for agent in Agent.allCases where Self.isProblem(agent, check(agent)) {
             if let problem = check(agent).flatMap({ Self.problem(agent, $0) }) { sentences.append(problem) }
         }
-        if sqliteReader == SQLiteReaderCheck.none { sentences.append(SQLiteReaderCheck.noneProblem) }
         if let problem = tmux.flatMap(Self.problem) { sentences.append(problem) }
         if logind == .killsUserProcesses(true) {
             sentences.append("Sessions here end when you log out (logind KillUserProcesses=yes); run loginctl enable-linger on the host.")
@@ -527,42 +523,6 @@ public struct HostTestSummary: Sendable, Equatable {
         guard failure == nil else { return false }
         let proven = Agent.allCases.contains { Self.isProblem($0, check($0)) && unavailableReason(for: $0) != nil }
             || (tmux?.provesUnavailable ?? false)
-        return proven || sqliteReader == SQLiteReaderCheck.none || environment?.path == nil || logind == .killsUserProcesses(true)
-    }
-}
-
-/// What reads Antigravity's conversations on a host (ADR-044): its store is
-/// SQLite, read with the host's `sqlite3`, else `python3`'s sqlite module.
-public enum SQLiteReaderCheck: Sendable, Equatable {
-    case found(String)
-    case none
-    case notChecked(reason: String)
-
-    /// The reads' own choice (`AntigravityRemote.sqlite`): a reader that
-    /// ran a query just now, and never `python3` on macOS.
-    static var script: String {
-        AntigravityRemote.sqlite + "\n" + #"printf '%s\n' "${AGY_SQ:-${AGY_PY:-none}}""#
-    }
-
-    /// The Test connection's `agy` row, after its version.
-    public static let rowNote = "no working sqlite3 or python3 here, so Temple can't read its sessions' titles and folders"
-
-    public static let noneProblem =
-        "Antigravity is here, but without a working sqlite3 or python3 Temple can't read the titles and folders of its sessions."
-
-    public static func run(using exec: RemoteExec) async -> SQLiteReaderCheck {
-        do {
-            let output = try await exec.run(script: script, args: [], deadline: ToolCheck.deadline)
-            guard output.reachedCommand, output.status == 0 else {
-                return .notChecked(reason: output.firstErrorLine ?? "ssh exited with status \(output.status)")
-            }
-            switch output.stdout.trimmingCharacters(in: .whitespacesAndNewlines) {
-            case "none": return .none
-            case let name where name == "sqlite3" || name == "python3": return .found(name)
-            case let other: return .notChecked(reason: "the check printed something Temple didn't expect: \(other)")
-            }
-        } catch {
-            return .notChecked(reason: error.localizedDescription)
-        }
+        return proven || environment?.path == nil || logind == .killsUserProcesses(true)
     }
 }

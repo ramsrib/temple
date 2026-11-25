@@ -767,10 +767,7 @@ final class RemoteScriptsTests: XCTestCase {
         XCTAssertEqual(evidence.socketPath, "/tmp/tmux-1000/te,mp le")
         XCTAssertEqual(evidence.serverPID, 77)
         XCTAssertLessThan(abs(evidence.epoch - Int(Date().timeIntervalSince1970)), 60)
-        // No /proc on this Mac: the pane's start as `ps` says it (ADR-044).
-        let started = try XCTUnwrap(evidence.paneStart, "no /proc: ps's start time")
-        XCTAssertFalse(started.contains("  "), "spaces collapsed, as the identity check compares it")
-        XCTAssertNotNil(Int(started.split(separator: " ").last ?? ""), started)
+        XCTAssertNil(evidence.paneStart, "no /proc on this Mac")
         XCTAssertEqual(try String(contentsOfFile: pidFile + ".env", encoding: .utf8), "\n", "the agent never sees the record path")
         XCTAssertFalse(FileManager.default.fileExists(atPath: record + ".tmp"), "atomic: written beside, then moved")
     }

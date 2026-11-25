@@ -612,18 +612,17 @@ it. What follows appears for an enabled host only.
   The session's row sits at the top of its project, titled with that first
   prompt until Codex's own title arrives; opening it resumes it.
 - **New Antigravity sessions**
-  ([ADR-044](./DECISIONS.md#adr-044--antigravity-on-hosts-its-lock-read-through-proc-or-lsof-its-store-through-the-hosts-sqlite)).
+  ([ADR-044](./DECISIONS.md#adr-044--antigravity-on-hosts-as-claude-and-codex-run-there)).
   `agy` starts a conversation at your first prompt, so a new Antigravity tab
-  on a host reads "New Antigravity session" until then. Within seconds of
-  that prompt Temple learns which conversation it is from the `agy` process
-  the tab started (the conversation it holds open), and the tab becomes that
-  session; nothing is asked. If the tab ended before Temple could look, it
-  asks as a Codex tab does, with the conversations started in that folder
-  while the tab ran ("Antigravity ended on <host> before Temple learned
-  which session this was. Is it “<first prompt>” (<time>)?"). Its title,
-  folder and first prompt are read from the host with its own `sqlite3`
-  (or `python3`), never by copying files to this Mac, and nothing is written
-  to `agy`'s files.
+  on a host reads "New Antigravity session" until then. Once you have sent
+  it, Temple learns which conversation it is from the `agy` process the tab
+  started (the conversation it holds open), on the same schedule as a new
+  Codex tab, and the tab becomes that session; nothing is asked. A tab that
+  ends before Temple could look says "Antigravity ended on <host> before
+  Temple learned which session this was.", with **Start a new session
+  here** and **Remove from Temple**. Its title, folder and first prompt are
+  read on the host with its own `sqlite3`, and nothing is written to
+  `agy`'s files.
 - **Banners.** A tab's banner puts its answers (Reconnect, Resume anyway…,
   Start a new session here, Yes and No) right after its sentence as small
   buttons; only a dismiss-type link (Remove from Temple, Archive session,
@@ -909,9 +908,8 @@ Changes apply live where applicable.
   light or dark, where your own ssh connects and asks what it needs (a
   host key, a password, a second factor), then checks the login shell's
   PATH, Claude Code, Codex, Antigravity (optional: a host without `agy` is
-  not flagged, though Antigravity is greyed out there; with `agy` but neither
-  `sqlite3` nor `python3`, it says Temple can't read its sessions' titles and
-  folders), whether tmux can start a session (by running the
+  not flagged, though Antigravity is greyed out there), whether tmux can
+  start a session (by running the
   exact commands a launch sends) and whether the host ends your processes
   when you log out (`KillUserProcesses`), each with **Show output**. The
   status line says what it found ("Connected as <user@address>. Found

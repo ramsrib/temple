@@ -75,10 +75,7 @@ enum RemoteTranscripts {
     /// (status 2) here and marked so in a listing: a link's own stat says
     /// nothing about the file a read would take (its size, its growth), and
     /// no agent writes its transcript as one, so it is unreadable rather
-    /// than followed. `temple_absent <path>`: the path is not there, and
-    /// that is known (its nearest existing ancestor is a folder this user
-    /// can search, with no dangling link on the way); a folder that can't
-    /// be searched, or an unmounted volume behind a link, proves nothing.
+    /// than followed.
     /// GNU `find` on Linux; BSD `stat -f` elsewhere (tested here, not an
     /// acceptance target).
     static let common = #"""
@@ -98,17 +95,6 @@ enum RemoteTranscripts {
       [ -e "$1" ] || [ -L "$1" ] && return 1
       _d=${1%/*}; [ -n "$_d" ] || _d=/
       [ -d "$_d" ] && [ -x "$_d" ]
-    }
-    temple_absent() {
-      _p=$1
-      while :; do
-        [ -e "$_p" ] || [ -L "$_p" ] && return 1
-        _q=${_p%/*}; [ -n "$_q" ] || _q=/
-        if [ -L "$_q" ] && [ ! -e "$_q" ]; then return 1; fi
-        if [ -e "$_q" ]; then [ -d "$_q" ] && [ -x "$_q" ]; return; fi
-        [ "$_q" = / ] && return 1
-        _p=$_q
-      done
     }
     """#
 
@@ -160,12 +146,12 @@ enum RemoteTranscripts {
         unset) d=$HOME/$def ;;
       esac
       if [ -z "$d" ]; then printf 'root\t%s\tunknown\n' "$i"
-      elif temple_absent "$d"; then printf 'root\t%s\tnone\n' "$i"
+      elif [ ! -e "$d" ] && [ ! -L "$d" ]; then printf 'root\t%s\tnone\n' "$i"
       elif h=$(cd -- "$d" 2>/dev/null && pwd -P && printf x); then
         h=${h%x}; h=${h%"$NL"}
         printf 'root\t%s\tok\t%s\n' "$i" "$(printf '%s' "$h" | temple_hex)"
         case $h in /) p=/$sub ;; *) p=$h/$sub ;; esac
-        if temple_absent "$p"; then
+        if [ ! -e "$p" ] && [ ! -L "$p" ]; then
           printf 'list\t%s\t%s\n' "$i" "$(printf 'S0' | temple_hex)"
           printf 'nostore\t%s\n' "$i"
         else

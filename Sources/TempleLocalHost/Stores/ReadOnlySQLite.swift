@@ -82,19 +82,33 @@ enum ReadOnlySQLite {
     }
 
     /// A database and the log a dead writer left, copied and read; nil when
-    /// either changed (or a `-shm` appeared) while they were copied.
+    /// either changed, went, or a `-shm` appeared while they were copied
+    /// (the read starts over and picks its way again). A database or log
+    /// that is a link is refused: a copy of the link would lead back.
     private static func copied(_ url: URL, _ queries: [Query]) throws -> [[[Value]]]? {
         let wal = URL(fileURLWithPath: url.path + "-wal")
+        guard !isLink(url.path), !isLink(wal.path) else {
+            throw Failure(code: SQLITE_CANTOPEN, message: "\(url.lastPathComponent) or its log is a link")
+        }
         guard let before = MainFileStamp(url), let logBefore = MainFileStamp(wal) else { return nil }
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("temple-sqlite-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
                                                 attributes: [.posixPermissions: 0o700])
         defer { try? FileManager.default.removeItem(at: folder) }
         let copy = folder.appendingPathComponent("c.db")
-        try FileManager.default.copyItem(at: url, to: copy)
-        try FileManager.default.copyItem(at: wal, to: URL(fileURLWithPath: copy.path + "-wal"))
+        do {
+            try FileManager.default.copyItem(at: url, to: copy)
+            try FileManager.default.copyItem(at: wal, to: URL(fileURLWithPath: copy.path + "-wal"))
+        } catch {
+            return nil
+        }
         guard MainFileStamp(url) == before, MainFileStamp(wal) == logBefore, !there(url.path + "-shm") else { return nil }
         return try run(copy, immutable: false, readOnly: false, queries)
+    }
+
+    private static func isLink(_ path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0 && (info.st_mode & S_IFMT) == S_IFLNK
     }
 
     private static func snapshot(_ url: URL, _ queries: [Query]) throws -> [[[Value]]] {

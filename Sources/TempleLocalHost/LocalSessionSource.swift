@@ -850,42 +850,6 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     }
 
     /// Off the source's queue, so reads run side by side.
-    /// Open by id. On a Mac where `agy` has never kept a conversation (its
-    /// folder isn't there), Antigravity has none: `agy` keeps every
-    /// conversation under that one folder, and nothing moves it. Claude's
-    /// and Codex's roots can be moved, so theirs stays "can't tell".
-    public func lookup(id: String) async throws -> SessionLookup {
-        let lookup = try await SessionLookup.standard(id: id, source: self)
-        // Proven after the listing it speaks for: a folder this user can't
-        // search, or a link to an unmounted volume, proves nothing.
-        guard let store = antigravityStore, lookup[.antigravity] == .cannotTell(.listingFailed),
-              Self.provenAbsent(store.conversationsRoot.path) else { return lookup }
-        var agents = lookup.agents
-        agents[.antigravity] = .notFound
-        return SessionLookup(agents: agents)
-    }
-
-    /// The path is not there, and that is known: its nearest existing
-    /// ancestor is a folder this user can search, with no dangling link on
-    /// the way (as `temple_absent` decides on a host).
-    static func provenAbsent(_ path: String) -> Bool {
-        var info = stat()
-        var current = path
-        while true {
-            if lstat(current, &info) == 0 { return false }
-            guard errno == ENOENT else { return false }
-            let parent = (current as NSString).deletingLastPathComponent
-            guard !parent.isEmpty, parent != current else { return false }
-            if lstat(parent, &info) == 0 {
-                // A link that leads nowhere, or not a searchable folder.
-                guard stat(parent, &info) == 0, (info.st_mode & S_IFMT) == S_IFDIR else { return false }
-                return access(parent, X_OK) == 0
-            }
-            guard errno == ENOENT else { return false }
-            current = parent
-        }
-    }
-
     public func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead {
         guard locator.host == host, let store = stores.first(where: { $0.agent == agent }) else {
             throw TranscriptReadError.unreadable("not a \(agent.displayName) transcript on this Mac")

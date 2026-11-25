@@ -45,7 +45,12 @@ final class RemoteLookupTests: XCTestCase {
     func testNeitherStoreHasItIsNotFoundAnywhere() async throws {
         let box = Box()
         let lookup = try await source(box).lookup(id: uuid())
-        XCTAssertTrue(lookup.notFoundAnywhere)
+        XCTAssertEqual(lookup[.claude], .notFound)
+        XCTAssertEqual(lookup[.codex], .notFound)
+        // Antigravity is asked too (ADR-044), and a store Temple doesn't know
+        // is "can't tell", as Claude's and Codex's are.
+        XCTAssertEqual(lookup[.antigravity], .cannotTell(.storeUnknown))
+        XCTAssertFalse(lookup.notFoundAnywhere)
     }
 
     func testMissingStoreIsCannotTellNeverNotFound() async throws {

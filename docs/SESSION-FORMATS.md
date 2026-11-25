@@ -351,11 +351,19 @@ reader opens them depends on the SQLite build:
   with neither `-wal` nor `-shm` (no CLI has the file open), the first
   statement fails with `SQLITE_CANTOPEN` (14). While a CLI runs, the `-shm`
   exists and a read-only open works; with a `-wal` and no `-shm` (a writer
-  that crashed) it works too and reads the log, building its index in
-  memory. A read-write open works either way but creates `-wal` and `-shm`
+  that crashed) it works too and reads the log, but **creates the `-shm`**
+  (measured 2026-11-25; an earlier note here said it built the index in
+  memory). A read-write open works either way but creates `-wal` and `-shm`
   and leaves them after closing.
-- **Stock SQLite (Python's 3.54.1):** a read-only open creates the `-wal`
-  and `-shm` itself (the folder must be writable) and leaves them behind.
+- **Stock SQLite (Python's 3.54.1; sqlite3 3.46 and 3.53 on Linux):** a
+  read-only open creates the `-wal` and `-shm` itself (the folder must be
+  writable) and leaves them behind; beside a crashed writer's `-wal` it
+  creates the `-shm`.
+- **Every build:** `mode=ro&immutable=1` creates nothing. Temple reads with
+  that (a checked snapshot) when there is no `-wal`, `mode=ro` when a writer
+  has both files, and a private copy of the database and log when a `-wal`
+  has no `-shm` (`ReadOnlySQLite`; `AntigravityRemote` on a host, with the
+  host's `sqlite3`; ADR-044).
 
 ### Presence locks and processes
 

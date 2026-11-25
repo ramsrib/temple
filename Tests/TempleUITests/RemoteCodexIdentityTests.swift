@@ -259,8 +259,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
     /// process then holds its lock. The run is opened for Antigravity, the
     /// claim joins core as an Antigravity session, and the tab becomes it.
     func testANewAntigravitySessionOnAHostIsPendingThenAdoptedByItsLock() async throws {
-        model.remoteTabs.identitySchedule = [60]
-        model.remoteTabs.inputIdentityDelay = 0.02
+        remote.identityAnswers = [.inconclusive("Antigravity starts a conversation at the first prompt", lasting: false, ended: false)]
         remote.identityResult = .adopted("a9", directory: "/home/u/project")
         let tab = model.newSession(agent: .antigravity, project: Fixture.key("~/project", host: hostID))
         await settle(tab.hasLiveProcess, "the pending run's tab connects")
@@ -268,58 +267,13 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(tab.title, Agent.antigravity.newSessionTitle)
         XCTAssertEqual(remote.pendingOpenAgents, [.antigravity])
         XCTAssertTrue(joins.isEmpty, "nothing reaches core before the id is known")
-        XCTAssertTrue(remote.identifies.isEmpty, "the schedule's first check is a minute away")
-        // The first prompt: checked within moments, not at the next minute.
-        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
-        await settle(tab.sessionID == "a9", "adopted after the first prompt")
+        await settle(tab.sessionID == "a9", "adopted on schedule, once its lock is held")
         XCTAssertEqual(joins.map(\.agent), [.antigravity])
         XCTAssertEqual(joins.first?.via, .created)
         XCTAssertEqual(directories.last?.2, "/home/u/project")
         XCTAssertEqual(tab.agent, .antigravity)
         XCTAssertFalse(tab.isProvisional)
         XCTAssertEqual(persistence.load().map(\.sessionID), ["a9"])
-    }
-
-    /// A live Antigravity tab's lock is its evidence: typing (a trust
-    /// prompt, a slash command) asks nothing, and a lone candidate is never
-    /// linked on Temple's own say-so, as a Codex tab's is (ADR-044).
-    func testAnAntigravityTabIsNeverLinkedToACandidateOnItsOwn() async throws {
-        model.remoteTabs.identitySchedule = [0.02]
-        model.remoteTabs.inputIdentityDelay = 0.02
-        remote.identityResult = .inconclusive("Antigravity starts a conversation at the first prompt", lasting: false, ended: false)
-        remote.suggestionsResult = .candidates([suggestion("a7")])
-        let tab = model.newSession(agent: .antigravity, project: Fixture.key("~/project", host: hostID))
-        await settle(tab.hasLiveProcess)
-        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
-        await settle(self.remote.identifies.count >= 2)
-        try await Task.sleep(for: .milliseconds(150))
-        XCTAssertTrue(remote.confirms.isEmpty)
-        XCTAssertTrue(remote.automaticConfirms.isEmpty)
-        XCTAssertNil(tab.sessionID)
-        XCTAssertTrue(tab.remote?.suggestions.isEmpty ?? true, "nothing asked while its lock can still be read")
-    }
-
-    /// An ended Antigravity tab whose candidates couldn't be looked up says
-    /// why, with Try again, never a bare band.
-    func testAnEndedAntigravityTabSaysWhyItCouldntAsk() async throws {
-        model.remoteTabs.identitySchedule = [60]
-        remote.identityResult = .inconclusive("the session's process has ended", lasting: false, ended: true)
-        remote.suggestionsResult = .unavailable("this host has no working sqlite3 or python3 to read Antigravity's sessions with")
-        let tab = model.newSession(agent: .antigravity, project: Fixture.key("~/project", host: hostID))
-        await settle(tab.hasLiveProcess)
-        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
-        try await Task.sleep(for: .milliseconds(350))
-        remote.liveness = .absent
-        factory.created.last?.simulateExit(status: 0)
-        await settle(tab.remote?.phase == .endedPending)
-        await settle(tab.remote?.lookupFailed == true)
-        XCTAssertEqual(tab.remote?.identityNote,
-                       "Temple couldn't look for which session this was: this host has no working sqlite3 or python3 to read Antigravity's sessions with.")
-        remote.suggestionsResult = .candidates([suggestion("a7")])
-        model.remoteTabs.retryIdentity(tab)
-        await settle(tab.remote?.suggestions.count == 1)
-        XCTAssertFalse(tab.remote?.lookupFailed ?? true)
-        XCTAssertNil(tab.remote?.identityNote)
     }
 
     /// A pending Antigravity run comes back at launch as an Antigravity chip,

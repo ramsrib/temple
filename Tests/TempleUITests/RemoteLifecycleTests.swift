@@ -437,9 +437,6 @@ final class FakeRemoteHost: RemoteSessionHost {
         unjoined.removeAll { $0.handle == handle }
     }
 
-    var claimViaAnswer: JoinedVia = .created
-    func claimVia(_ handle: String) async -> JoinedVia { claimViaAnswer }
-
     private(set) var joinedMarks: [String] = []
     func markJoined(_ handle: String) async throws {
         joinedMarks.append(handle)

@@ -5,8 +5,8 @@ import TempleCore
 @testable import TempleRemoteHost
 
 /// Antigravity on a host (ADR-044): the scripts run under `/bin/sh` against
-/// real SQLite files shaped like `agy`'s, with the host's own `sqlite3` (and
-/// `python3`'s module where there is none), a `/proc`-style fixture, and a
+/// real SQLite files shaped like `agy`'s, with the host's own `sqlite3`,
+/// a `/proc`-style fixture, and a
 /// real process holding a lock (read with `lsof`, as on a host without
 /// `/proc`). Nothing in a store is ever written by a read.
 @MainActor
@@ -122,11 +122,8 @@ final class AntigravityRemoteTests: XCTestCase {
         XCTAssertNil(identity.firstUserStep)
     }
 
-    /// A macOS host without a working `sqlite3`: `python3` is never tried
-    /// there (it may be a stub that offers to install developer tools), so
-    /// the read says why it can't read. (`python3` itself is read through
-    /// in `LinuxContainerAcceptance`.)
-    func testOnMacOSWithoutSqlite3NothingReads() async throws {
+    /// A host without `sqlite3`: the read says why it can't read.
+    func testWithoutSqlite3NothingReads() async throws {
         let store = Store()
         try store.conversation(id, prompt: "hello there", at: sent)
         let bin = store.host.tree.directory("nosqlite").path
@@ -140,8 +137,6 @@ final class AntigravityRemoteTests: XCTestCase {
         let exec = LocalShellExec(path: nil, environment: environment)
         let answer = try await read(store, id, exec: exec)
         XCTAssertEqual(answer, .unreadable(AntigravityRemote.noReader))
-        let reader = await SQLiteReaderCheck.run(using: exec)
-        XCTAssertEqual(reader, SQLiteReaderCheck.none)
     }
 
     /// A log a dead writer left without its `-shm`: a reader there would
@@ -339,60 +334,6 @@ final class AntigravityRemoteTests: XCTestCase {
         XCTAssertEqual(AntigravityRemote.parseIdentity("inconclusive\tlasting\tno lsof\n"), .inconclusive(.lasting("no lsof")))
     }
 
-    // MARK: Suggestions
-
-    func testTheListOffersConversationsStartedInTheRunsFolderWhileItRan() async throws {
-        let store = Store()
-        let okAt = 1_795_553_700
-        let mine = "6e8833b0-0a18-4475-a159-f32c998a9f06", early = "43cab1c4-e60d-43c0-b363-fac9b4b89f36"
-        let child = "8c8e8b9b-721a-4e3a-adda-6389fb94f724", elsewhere = "c9742222-e2a9-4b9b-9f4d-6717189122af"
-        try store.conversation(mine, prompt: "make the tests pass", at: Date(timeIntervalSince1970: TimeInterval(okAt + 30)))
-        try store.conversation(early, prompt: "an older one, still going", at: Date(timeIntervalSince1970: TimeInterval(okAt - 600)))
-        try store.conversation(child, prompt: "a subagent", at: Date(timeIntervalSince1970: TimeInterval(okAt + 40)))
-        try store.conversation(elsewhere, prompt: "another folder", at: Date(timeIntervalSince1970: TimeInterval(okAt + 50)))
-        for (conversation, parent, folder) in [(mine, "", "/home/u/app"), (early, "", "/home/u/app"),
-                                               (child, mine, "/home/u/app"), (elsewhere, "", "/home/u/other")] {
-            try store.summary(conversation, title: "", folder: folder, parent: parent, modified: "2026-11-24 20:56:00.1+00:00")
-        }
-        try store.summary(id, title: "Long ago", folder: "/home/u/app", modified: "2026-01-01 00:00:00+00:00")
-        let since = Date(timeIntervalSince1970: TimeInterval(okAt - 60))
-        XCTAssertEqual(AntigravityRemote.timeText(since), "2026-11-24 20:54:00+00:00")
-        let listing = await AntigravityRemote.list(since: since, using: store.exec)
-        guard case .conversations(let now, let found) = listing else { return XCTFail("\(listing)") }
-        XCTAssertGreaterThan(now, okAt)
-        XCTAssertEqual(Set(found.map(\.id)), [mine, early, child, elsewhere], "rows changed since the run began, nothing older")
-        let candidates = AntigravityRemote.inFolder(found, directory: "/home/u/app", declined: [], held: [])
-        XCTAssertEqual(Set(candidates.map(\.id)), [mine, early], "the folder's, a person's")
-        let fetched = await AntigravityRemote.heads(candidates.map(\.id), using: store.exec)
-        let heads = try XCTUnwrap(fetched)
-        let offered = try XCTUnwrap(AntigravityRemote.eligible(candidates, heads: heads, since: okAt,
-                                                               until: Date(timeIntervalSince1970: TimeInterval(okAt + 3600))))
-        XCTAssertEqual(offered.map(\.sessionID), [mine], "begun while the run ran")
-        XCTAssertEqual(offered.first?.firstPrompt, "make the tests pass")
-        XCTAssertEqual(offered.first?.rolloutPath, "~/.gemini/antigravity-cli/conversations/\(mine).db")
-        XCTAssertTrue(AntigravityRemote.inFolder(found, directory: "/home/u/app",
-                                                 declined: [RemotePath(AntigravityRemote.declineKey(mine))], held: [])
-            .allSatisfy { $0.id != mine }, "declined")
-        XCTAssertTrue(AntigravityRemote.inFolder(found, directory: "/home/u/app", declined: [], held: [mine])
-            .allSatisfy { $0.id != mine }, "another run's")
-        // A database that names another conversation is not that one.
-        let swapped: [String: AntigravityRemote.Head] = [mine: .read(.init(ids: [other], summary: nil,
-                                                                           firstUserStep: heads[mine].flatMap { if case .read(let r) = $0 { r.firstUserStep } else { nil } })),
-                                                         early: heads[early]!]
-        XCTAssertEqual(AntigravityRemote.eligible(candidates, heads: swapped, since: okAt,
-                                                  until: Date(timeIntervalSince1970: TimeInterval(okAt + 3600)))?.count, 0)
-        // One that couldn't be read leaves the question unasked.
-        XCTAssertNil(AntigravityRemote.eligible(candidates, heads: [mine: .unreadable, early: heads[early]!], since: okAt,
-                                                until: Date(timeIntervalSince1970: TimeInterval(okAt + 3600))))
-    }
-
-    func testNoStoreListsNothing() async {
-        let store = Store()
-        let listing = await AntigravityRemote.list(since: Date(), using: store.exec)
-        guard case .conversations(_, let found) = listing else { return XCTFail("\(listing)") }
-        XCTAssertTrue(found.isEmpty)
-    }
-
     // MARK: Through RemoteSessions
 
     private func sessions(_ store: Store, run: RemoteStateStore) -> RemoteSessions {
@@ -432,107 +373,6 @@ final class AntigravityRemoteTests: XCTestCase {
         XCTAssertEqual(try run.run("a")?.claim, .verified)
         let known = await sessions.identify("a")
         XCTAssertEqual(known, .known(id))
-    }
-
-    func testAPendingRunThatEndedIsAskedAboutItsFoldersConversations() async throws {
-        let store = Store()
-        let run = try RemoteStateStore()
-        try pendingRun(run, folder: "/home/u/app")
-        try store.conversation(id, prompt: "fix the build", at: Date(timeIntervalSince1970: 1_795_553_730))
-        try store.summary(id, title: "", folder: "/home/u/app", modified: "2026-11-24 20:55:40+00:00")
-        let sessions = sessions(store, run: run)
-        guard case .candidates(let found) = await sessions.suggestions("a") else { return XCTFail() }
-        XCTAssertEqual(found.map(\.sessionID), [id])
-        XCTAssertEqual(found.first?.firstPrompt, "fix the build")
-        XCTAssertNotNil(found.first?.hostClockOffset)
-        let yes = await sessions.confirm("a", suggestion: try XCTUnwrap(found.first))
-        XCTAssertEqual(yes, .adopted(id))
-        XCTAssertEqual(try run.run("a")?.claim, .confirmed)
-    }
-
-    /// The lock is proof, but a decline of that conversation for this run
-    /// still stands; a conversation an ended run held is this tab's now
-    /// (`agy`'s `/resume`); a live one's is not.
-    func testALockClaimHonoursADeclineAndTakesOverAnEndedRunsConversation() async throws {
-        let store = Store()
-        let run = try RemoteStateStore()
-        try pendingRun(run, folder: "/home/u/app")
-        let sessions = sessions(store, run: run)
-        process(store, pid: 100, start: 1000, files: ["\(store.root)/presence/\(id).lock"])
-        try run.decline("a", rolloutPath: AntigravityRemote.declineKey(id))
-        guard case .inconclusive = await sessions.identify("a") else { return XCTFail("declined for this run") }
-        XCTAssertNil(try run.run("a")?.sessionID)
-
-        let fresh = try RemoteStateStore()
-        try pendingRun(fresh, folder: "/home/u/app")
-        var earlier = RemoteRun(handle: "old", host: .init(rawValue: "box"), agent: .antigravity, mode: .new,
-                                directoryIntent: "/home/u/app", sessionID: nil, recordPath: "r-old", startedAt: Date())
-        earlier.creation = .proven
-        try fresh.insert(earlier)
-        XCTAssertEqual(try fresh.claim("old", sessionID: id, how: .verified), .claimed)
-        let resumed = self.sessions(store, run: fresh)
-        let live = await resumed.identify("a")
-        XCTAssertEqual(live, .taken, "a live run still holds it")
-        try fresh.update("old") { $0.endedAt = Date() }
-        let adopted = await resumed.identify("a")
-        XCTAssertEqual(adopted, .adopted(id))
-        XCTAssertNil(try fresh.run("old")?.claim, "the ended run gave up its claim mark")
-        XCTAssertEqual(try fresh.run("old")?.sessionID, id, "never its id")
-    }
-
-    /// The join says how the conversation came to the run: created when its
-    /// first prompt came after the run's `ok`, opened when before (a
-    /// `/resume`) or when that can't be read.
-    func testAClaimsJoinIsOpenedForAConversationLoadedNotStarted() async throws {
-        let store = Store()
-        let run = try RemoteStateStore()
-        try pendingRun(run, folder: "/home/u/app")
-        let sessions = sessions(store, run: run)
-        process(store, pid: 100, start: 1000, files: ["\(store.root)/presence/\(id).lock"])
-        let unknown = await sessions.claimVia("a")
-        XCTAssertEqual(unknown, .created, "no claim yet: nothing to say")
-        _ = await sessions.identify("a")
-        let unreadable = await sessions.claimVia("a")
-        XCTAssertEqual(unreadable, .opened, "no database to date it")
-        try store.conversation(id, prompt: "new here", at: Date(timeIntervalSince1970: 1_795_553_730))
-        let created = await sessions.claimVia("a")
-        XCTAssertEqual(created, .created)
-        try FileManager.default.removeItem(atPath: store.database(id))
-        try store.conversation(id, prompt: "from yesterday", at: Date(timeIntervalSince1970: 1_795_460_000))
-        let opened = await sessions.claimVia("a")
-        XCTAssertEqual(opened, .opened)
-    }
-
-    /// Temple's own yes to a lone candidate is Codex's alone.
-    func testNoAutomaticYesForAnAntigravityCandidate() async throws {
-        let store = Store()
-        let run = try RemoteStateStore()
-        try pendingRun(run, folder: "/home/u/app")
-        try store.conversation(id, prompt: "fix the build", at: Date(timeIntervalSince1970: 1_795_553_730))
-        try store.summary(id, title: "", folder: "/home/u/app", modified: "2026-11-24 20:55:40+00:00")
-        let sessions = sessions(store, run: run)
-        guard case .candidates(let found) = await sessions.suggestions("a"), let lone = found.first, found.count == 1 else {
-            return XCTFail()
-        }
-        guard case .inconclusive = await sessions.confirm("a", suggestion: lone, automatic: true) else { return XCTFail() }
-        XCTAssertNil(try run.run("a")?.sessionID)
-    }
-
-    /// A store folder that can't be searched is no proof it is empty: Open
-    /// by id can't tell, never "not found".
-    func testAnUnsearchableStoreIsNeverNotFound() async throws {
-        let store = Store()
-        try store.conversation(id, prompt: "x", at: sent)
-        let provider = RemoteSourceTests.Provider(store.exec, roots: [.antigravity: RemoteTranscriptRoot(.unset, base: nil)!])
-        let source = RemoteSessionSource(host: HostID(rawValue: "box"), provider: provider)
-        chmod(store.host.home + "/.gemini", 0)
-        defer { chmod(store.host.home + "/.gemini", 0o755) }
-        let lookup = try await source.lookup(id: id)
-        guard case .cannotTell = lookup[.antigravity] else { return XCTFail("\(lookup)") }
-        chmod(store.host.home + "/.gemini", 0o755)
-        try FileManager.default.removeItem(atPath: store.host.home + "/.gemini")
-        let gone = try await source.lookup(id: id)
-        XCTAssertEqual(gone[.antigravity], .notFound, "no folder at all: no conversation")
     }
 
     func testOnlyAgentsThatMintTheirIdsStartPending() async throws {

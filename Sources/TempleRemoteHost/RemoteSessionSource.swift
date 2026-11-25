@@ -453,19 +453,14 @@ actor RemoteTranscriptAccess {
         var result: [Agent: (candidates: [TranscriptCandidate], shortfall: LookupUncertainty?)] = [:]
         for agent in Agent.allCases {
             let shortfall: LookupUncertainty?
-            // `agy` keeps every conversation under its one folder, which
-            // nothing moves: no folder there is no conversation there. (A
-            // Claude or Codex root can be moved by a variable, so theirs is
-            // "can't tell".)
-            let absentStore: LookupUncertainty? = agent == .antigravity ? nil : .noStore
             if let root = listing.context.roots[id]?[agent],
                let index = listing.groups.firstIndex(of: Group(agent: agent, root: root)) {
                 switch listing.answer.roots[index] {
                 case .ok?:
-                    if listing.answer.noStore.contains(index) { shortfall = absentStore }
+                    if listing.answer.noStore.contains(index) { shortfall = .noStore }
                     else if case .files? = listing.answer.lists[index] { shortfall = nil }
                     else { shortfall = .listingFailed }
-                case RemoteTranscripts.RootOutcome.none?: shortfall = absentStore
+                case RemoteTranscripts.RootOutcome.none?: shortfall = .noStore
                 case .failed?: shortfall = .listingFailed
                 case .unknown?, nil: shortfall = .storeUnknown
                 }

@@ -308,10 +308,6 @@ public protocol RemoteSessionHost: HostLauncher {
     func confirm(_ handle: String, suggestion: RemoteSuggestion, automatic: Bool) async -> RemoteIdentity
     /// "Not this one": never offered again for this run.
     func decline(_ handle: String, rolloutPath: String) async throws
-    /// How the session a run's claim names came to it, for the core join:
-    /// `.opened` for one its agent loaded rather than started (an
-    /// Antigravity `/resume`, ADR-044).
-    func claimVia(_ handle: String) async -> JoinedVia
     func markJoined(_ handle: String) async throws
     /// Claims whose core join never happened, with their folders.
     func unjoinedClaims() async -> [(handle: String, sessionID: String, agent: Agent, directory: String?)]
@@ -392,10 +388,6 @@ public struct RemoteTabState: Equatable {
     /// Try again is checking; what it found when that was nothing new.
     public var retrying = false
     public var retryResult: String?
-    /// The last lookup for an Antigravity tab's candidates couldn't be made
-    /// (no reader on the host, an unreadable conversation): said, with Try
-    /// again (ADR-044).
-    public var lookupFailed = false
     /// Consecutive clients of Temple's own reattach that ended within a
     /// minute (a flapping connection): a few, and it stops trying.
     public var automaticShortLived = 0
@@ -1134,9 +1126,6 @@ public enum RemoteCopy {
     /// Try again, while it checks, and when it found nothing new.
     /// Try again's lookup failed: why.
     public static func checkFailed(_ reason: String) -> String { "Couldn't check again: \(sentence(reason))" }
-    /// An ended Antigravity tab whose candidates couldn't be looked up.
-    public static func couldNotLook(_ reason: String) -> String { couldNotLookLead + sentence(reason) }
-    static let couldNotLookLead = "Temple couldn't look for which session this was: "
     public static let checkingAgain = "Checking again\u{2026}"
     public static func checkedStillNone(_ agent: Agent) -> String {
         "Checked again: still no new \(agent.displayName) session in this folder."

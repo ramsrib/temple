@@ -162,12 +162,9 @@ struct AntigravitySessionStore: TranscriptSummaryStore {
         let wal = URL(fileURLWithPath: url.path + "-wal")
         guard let log = try? FileSignature(wal) else { return main }
         // The log's identity too: a log replaced by one of the same size and
-        // time is still another version; and the main file's time, so a
-        // checkpoint still older than the log's time counts as a change
-        // (as `AntigravityRemote.combined` does on a host).
-        let mainTime = UInt64(bitPattern: Int64((main.date.timeIntervalSince1970 * 1_000_000).rounded()))
+        // time is still another version.
         return FileSignature(date: max(main.date, log.date), size: main.size &+ log.size &* 0x1_0000_0000,
-                             fileNumber: (main.fileNumber &* 1_000_003 &+ log.fileNumber) ^ (mainTime &* 0x9E37_79B9_7F4A_7C15))
+                             fileNumber: main.fileNumber &* 1_000_003 &+ log.fileNumber)
     }
 
     // MARK: Listing
