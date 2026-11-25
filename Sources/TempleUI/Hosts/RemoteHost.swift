@@ -364,6 +364,8 @@ final class RemoteHostLauncher: RemoteSessionHost {
 
     func markJoined(_ handle: String) async throws { try await sessions.markJoined(handle) }
 
+    func claimVia(_ handle: String) async -> JoinedVia { await sessions.claimVia(handle) }
+
     func unjoinedClaims() async -> [(handle: String, sessionID: String, agent: Agent, directory: String?)] {
         await sessions.unjoinedClaims().compactMap { run in run.sessionID.map { (run.handle, $0, run.agent, run.directory) } }
     }

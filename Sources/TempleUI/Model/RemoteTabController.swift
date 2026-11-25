@@ -1484,8 +1484,11 @@ public final class RemoteTabController {
             // The question is asked once the automatic check can't answer:
             // for good (no /proc, a shared Codex server), when the agent
             // ended, or once something was typed (Codex writes its session
-            // file from the first prompt).
-            if lasting || ended || ticket.tab?.inputSubmitted == true {
+            // file from the first prompt). A live Antigravity pane's lock is
+            // the answer: typing (a trust prompt, a slash command) asks
+            // nothing while the lock can still be read (ADR-044).
+            let typed = ticket.tab?.inputSubmitted == true && agent == .codex
+            if lasting || ended || typed {
                 await loadSuggestions(ticket, host: host, handle: handle)
             }
             return false
@@ -1519,7 +1522,8 @@ public final class RemoteTabController {
         // While quitting the join waits for the next launch (the claim
         // stays unjoined); the gate below refuses the tab's part.
         if !isQuitting {
-            let open = SessionOpen(id: id, host: hostID, via: .created, agent: agent, locator: nil)
+            let via = await host.claimVia(handle)
+            let open = SessionOpen(id: id, host: hostID, via: via, agent: agent, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
                 if let directory { model.launchDirectoryHandler?(SessionKey(id: id, host: hostID), directory) }
@@ -1845,8 +1849,18 @@ public final class RemoteTabController {
             if case .unavailable(let reason) = answer {
                 lastLookup[handle] = .unavailable(reason)
                 if retryAwaitingLookup.remove(handle) != nil { tab.remote?.retryResult = RemoteCopy.checkFailed(reason) }
+                // Antigravity's lookup reads the host's SQLite: why it
+                // couldn't is said, with Try again, never a bare band.
+                if tab.agent == .antigravity {
+                    tab.remote?.identityNote = RemoteCopy.couldNotLook(reason)
+                    tab.remote?.lookupFailed = true
+                }
             }
             return
+        }
+        if tab.remote?.lookupFailed == true {
+            tab.remote?.lookupFailed = false
+            if tab.remote?.identityNote?.hasPrefix(RemoteCopy.couldNotLookLead) == true { tab.remote?.identityNote = nil }
         }
         let refused = refusedClaims[handle]?.session.id
         // Never one the user declined for this run, even before the host's
@@ -1858,7 +1872,9 @@ public final class RemoteTabController {
         // into and never asked about: Temple says yes on its own, through
         // the yes's own path (owner, round 2; Fable's decision). Two or
         // more, an ended tab, or once asked: the question.
-        if offered.count == 1, tab.remote?.phase == .connected, tab.inputSubmitted, !isQuitting,
+        // Codex only: Antigravity's candidates are a folder-and-time guess,
+        // and its tab's own lock is the evidence (ADR-044).
+        if offered.count == 1, tab.agent == .codex, tab.remote?.phase == .connected, tab.inputSubmitted, !isQuitting,
            refusedClaims[handle] == nil, tab.remote?.confirming == nil, !asked.contains(handle),
            !hasUnidentifiedNeighbour(tab) {
             claim(offered[0], in: tab, automatic: true)
@@ -1897,7 +1913,7 @@ public final class RemoteTabController {
     private func hasUnidentifiedNeighbour(_ tab: SessionTab) -> Bool {
         let mine = tab.launchObservation?.directory
         return model.tabs.contains { other in
-            guard other !== tab, isPending(other), other.host == tab.host, other.remote != nil,
+            guard other !== tab, isPending(other), other.agent == tab.agent, other.host == tab.host, other.remote != nil,
                   other.remote?.phase != .endedPending else { return false }
             guard let mine, let theirs = other.launchObservation?.directory else { return true }
             return Array(mine.utf8) == Array(theirs.utf8)
@@ -2172,7 +2188,9 @@ public final class RemoteTabController {
         var joined = Set<String>()
         for claim in await host.unjoinedClaims() where refusedClaims[claim.handle] == nil {
             guard !isQuitting, !Task.isCancelled else { return joined }
-            let open = SessionOpen(id: claim.sessionID, host: hostID, via: .created, agent: claim.agent, locator: nil)
+            let via = await host.claimVia(claim.handle)
+            guard !isQuitting, !Task.isCancelled else { return joined }
+            let open = SessionOpen(id: claim.sessionID, host: hostID, via: via, agent: claim.agent, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
                 if let directory = claim.directory { model.launchDirectoryHandler?(SessionKey(id: claim.sessionID, host: hostID), directory) }

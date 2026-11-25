@@ -52,12 +52,12 @@ final class RemoteStoreLedgerTests: XCTestCase {
             run.directory = "/home/u/\(handle)"
             try store.insert(run)
         }
-        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .automatic, rolloutPath: "/r/c7.jsonl"), .claimed)
+        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .automatic, candidateKey: "/r/c7.jsonl"), .claimed)
         XCTAssertEqual(try store.run("p1")?.claim, .automatic)
         try store.decline("p2", rolloutPath: "/r/c6.jsonl")
-        XCTAssertEqual(try store.claim("p2", sessionID: "c8", how: .automatic, rolloutPath: "/r/c8.jsonl"), .declined)
+        XCTAssertEqual(try store.claim("p2", sessionID: "c8", how: .automatic, candidateKey: "/r/c8.jsonl"), .declined)
         XCTAssertNil(try store.run("p2")?.sessionID)
-        XCTAssertEqual(try store.claim("p2", sessionID: "c8", how: .confirmed, rolloutPath: "/r/c8.jsonl"), .claimed,
+        XCTAssertEqual(try store.claim("p2", sessionID: "c8", how: .confirmed, candidateKey: "/r/c8.jsonl"), .claimed,
                        "the user's own yes still claims")
     }
 
@@ -82,12 +82,12 @@ final class RemoteStoreLedgerTests: XCTestCase {
         try insert("p1", folder: "/home/u/p")
         try insert("p2", folder: "/home/u/p")
         try insert("p3", folder: "/home/u/other")
-        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .automatic, rolloutPath: "/r/c7.jsonl"), .contended)
-        XCTAssertEqual(try store.claim("p3", sessionID: "c9", how: .automatic, rolloutPath: "/r/c9.jsonl"), .claimed,
+        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .automatic, candidateKey: "/r/c7.jsonl"), .contended)
+        XCTAssertEqual(try store.claim("p3", sessionID: "c9", how: .automatic, candidateKey: "/r/c9.jsonl"), .claimed,
                        "another folder is no neighbour")
-        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .confirmed, rolloutPath: "/r/c7.jsonl"), .claimed,
+        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .confirmed, candidateKey: "/r/c7.jsonl"), .claimed,
                        "the user's own yes still claims")
-        XCTAssertEqual(try store.claim("p2", sessionID: "c8", how: .automatic, rolloutPath: "/r/c8.jsonl"), .claimed,
+        XCTAssertEqual(try store.claim("p2", sessionID: "c8", how: .automatic, candidateKey: "/r/c8.jsonl"), .claimed,
                        "its neighbour identified: no longer contended")
     }
 
@@ -114,15 +114,15 @@ final class RemoteStoreLedgerTests: XCTestCase {
         // never reported: `~/p` is not compared with `/home/u/p`, it blocks.
         try insert("p1", intent: "~/p", folder: "/home/u/p")
         try insert("p2", intent: "~/p", folder: nil, tabClosed: true)
-        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .automatic, rolloutPath: "/r/c7.jsonl"), .contended)
+        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .automatic, candidateKey: "/r/c7.jsonl"), .contended)
         try store.dismissRun("p2", at: Date())
         // Resolved folders compare by bytes.
         try insert("p3", intent: "~/caf\u{E9}", folder: "/home/u/caf\u{E9}")
         try insert("p4", intent: "~/cafe\u{301}", folder: "/home/u/cafe\u{301}")
-        XCTAssertEqual(try store.claim("p3", sessionID: "c8", how: .automatic, rolloutPath: "/r/c8.jsonl"), .claimed,
+        XCTAssertEqual(try store.claim("p3", sessionID: "c8", how: .automatic, candidateKey: "/r/c8.jsonl"), .claimed,
                        "two spellings the host keeps apart are two folders")
         try insert("p5", intent: "/home/u/p", folder: "/home/u/p")
-        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .automatic, rolloutPath: "/r/c7.jsonl"), .contended,
+        XCTAssertEqual(try store.claim("p1", sessionID: "c7", how: .automatic, candidateKey: "/r/c7.jsonl"), .contended,
                        "the same resolved folder")
     }
 }

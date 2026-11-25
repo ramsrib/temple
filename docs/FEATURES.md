@@ -388,14 +388,13 @@ own `/resume` is linked as opened, not created. Titles are the ones `agy`
 writes (it names a conversation as you send the first prompt, and `/rename`
 renames it), else the first prompt. Subagent conversations, and ones nothing
 was ever asked in (left by `/clear`), are not listed. `agy` asks whether to
-trust a folder the first time it runs there; answer it in the tab. Antigravity
-runs on this Mac only: on a host the menus don't offer it, and `⌘T` there
-starts the host's first agent instead.
+trust a folder the first time it runs there; answer it in the tab. It runs
+on hosts too (below).
 
 ### Sessions on a host
 
-Temple runs Claude Code and Codex (not Antigravity, yet) on another machine
-you reach with ssh, in a
+Temple runs Claude Code, Codex and Antigravity on another machine you reach
+with ssh, in a
 tab that works like a local one
 ([ADR-036](./DECISIONS.md#adr-036--sessions-on-another-machine-through-the-users-own-ssh)).
 Hosts are set up in the hosts manager (**Manage Hosts…**, in the Temple menu
@@ -438,7 +437,7 @@ it. What follows appears for an enabled host only.
   History's page for This Mac or a host, or a session id pasted into `⌘K`
   (**Open session 3f2a1c…**): give the id, and with a host connected choose
   **Host** (This Mac unless you opened it from a host's page; only that one
-  machine is asked). Any Claude Code or Codex session there opens, Temple's
+  machine is asked). Any Claude Code, Codex or Antigravity session there opens, Temple's
   or not: Temple finds which agent it is and the folder it ran in, asking
   for either only when it can't tell. It says "No session … on <host>" only
   when it looked through every store there; a host that didn't answer is
@@ -612,6 +611,19 @@ it. What follows appears for an enabled host only.
   local exit does, and the selection follows the tab that becomes active.
   The session's row sits at the top of its project, titled with that first
   prompt until Codex's own title arrives; opening it resumes it.
+- **New Antigravity sessions**
+  ([ADR-044](./DECISIONS.md#adr-044--antigravity-on-hosts-its-lock-read-through-proc-or-lsof-its-store-through-the-hosts-sqlite)).
+  `agy` starts a conversation at your first prompt, so a new Antigravity tab
+  on a host reads "New Antigravity session" until then. Within seconds of
+  that prompt Temple learns which conversation it is from the `agy` process
+  the tab started (the conversation it holds open), and the tab becomes that
+  session; nothing is asked. If the tab ended before Temple could look, it
+  asks as a Codex tab does, with the conversations started in that folder
+  while the tab ran ("Antigravity ended on <host> before Temple learned
+  which session this was. Is it “<first prompt>” (<time>)?"). Its title,
+  folder and first prompt are read from the host with its own `sqlite3`
+  (or `python3`), never by copying files to this Mac, and nothing is written
+  to `agy`'s files.
 - **Banners.** A tab's banner puts its answers (Reconnect, Resume anyway…,
   Start a new session here, Yes and No) right after its sentence as small
   buttons; only a dismiss-type link (Remove from Temple, Archive session,
@@ -896,7 +908,10 @@ Changes apply live where applicable.
   already added." Test connection opens a small terminal, in the app's
   light or dark, where your own ssh connects and asks what it needs (a
   host key, a password, a second factor), then checks the login shell's
-  PATH, Claude Code, Codex, whether tmux can start a session (by running the
+  PATH, Claude Code, Codex, Antigravity (optional: a host without `agy` is
+  not flagged, though Antigravity is greyed out there; with `agy` but neither
+  `sqlite3` nor `python3`, it says Temple can't read its sessions' titles and
+  folders), whether tmux can start a session (by running the
   exact commands a launch sends) and whether the host ends your processes
   when you log out (`KillUserProcesses`), each with **Show output**. The
   status line says what it found ("Connected as <user@address>. Found
@@ -1117,6 +1132,6 @@ and System / Light / Dark appearance.
 | Session lineage | Follow a Temple session that Claude continues under a new id (`←` / `/bg` writes `continued-in` into the old transcript) and hand its row and tab to the child; open live background sessions with `claude attach`; optionally show subagents under their parent. Each becomes Temple's through the same `join`, with lineage kept apart from how it joined (ADR-023); on-disk hooks in [SESSION-FORMATS](./SESSION-FORMATS.md). |
 | Terminal & tabs | Split panes; copy mode; terminal cursor controls; tab-bar overflow handling. `⌘⇧T` reopen-closed-tab shipped. |
 | Windowing | Multi-window support. |
-| Agents | Antigravity on hosts (it needs SQLite there, and the remote process walk Codex uses); following an Antigravity tab across `/clear`, which its process already reveals; more adapters such as Gemini CLI and aider; surface agent-specific capabilities such as models and permission modes. |
+| Agents | Following an Antigravity tab across `/clear`, which its process already reveals; more adapters such as Gemini CLI and aider; surface agent-specific capabilities such as models and permission modes. |
 | Proxied backends | Opt-in launch through a local [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI) endpoint, so a session can run on a pooled or non-Anthropic backend (`claude --model gpt-5.6-sol`) without touching the direct-login path. Per-session and per-project, never a global default: Claude takes `ANTHROPIC_BASE_URL` / `ANTHROPIC_AUTH_TOKEN` in `TerminalCommand.env`, Codex ignores `OPENAI_BASE_URL` and needs `-c model_providers.…` flags instead. Endpoint URL is a settings key; the token is not, and belongs in the Keychain or an env lookup rather than `UserDefaults`. Model list comes from the endpoint's `/v1/models`, and a proxied session wants a visible mark in the tab and sidebar, because API-key auth makes Claude Code ignore the claude.ai login and disable its connectors. |
 | Platforms | Linux build with a GTK libghostty host. |

@@ -2872,7 +2872,7 @@ every row and heading on every redraw.
 ---
 
 ## ADR-043 — Antigravity's CLI is a third agent, identified by the lock its process holds
-**Date:** 2026-11-24 · **Status:** Accepted. Amends ADR-008 (a third way to learn a new session's id)
+**Date:** 2026-11-24 · **Status:** Accepted. Amends ADR-008 (a third way to learn a new session's id). Its "this Mac only" decision is superseded by ADR-044
 
 The owner wants Gemini models in Temple. Google ships them in two terminal
 tools: the open-source Gemini CLI and the Antigravity CLI, `agy`, the
@@ -2897,7 +2897,8 @@ folded in.
   another case. Older Temples read an unknown raw value as Claude in places
   (`TabPersistence`, `RemoteStateStore`); the owner accepted that
   (2026-11-24) rather than guard it.
-- **This Mac only, for now.** `Agent.remoteAgents` (Claude, Codex) is what
+- **This Mac only, for now** (superseded by ADR-044, which runs it on
+  hosts and removed `Agent.remoteAgents`). `Agent.remoteAgents` (Claude, Codex) was what
   a host runs: a host's launcher reports Antigravity unavailable, the
   project menu, the home page and the `⌘N` picker offer it on this Mac's
   projects only (`AppModel.agents(on:)`), `⌘T` with an Antigravity default
@@ -3046,3 +3047,164 @@ An unchecked `immutable=1` read, and a read-write open: see above. Sharing
 the summaries as facts (Codex's titles path): each read takes the row as it
 is then, so only the revision is shared. A fixture `agy` for the demo: a
 Claude or Codex session started from the demo writes the real store too.
+
+## ADR-044 — Antigravity on hosts: its lock read through `/proc` or `lsof`, its store through the host's SQLite
+
+**Date:** 2026-11-25 · **Status:** Accepted. Supersedes ADR-043's "this Mac only"; extends docs/designs/remote-ssh.md sections 3 and 6
+
+v0.10.0 shipped Antigravity for this Mac only and refused it on every way
+onto a host. That scope was decided without the owner, who expected the
+feature whole (2026-11-25); this is the rest of it. A host runs every agent
+Temple knows: whether one is installed there is the launcher's
+`availability`, from the host test, as before.
+
+**Decisions.**
+
+- **A new Antigravity session on a host is a pending run, as a new Codex
+  one is.** `Agent.mintsOwnID` (Codex, Antigravity) replaces "is Codex"
+  throughout the pending path: `RemoteRun.isPending`, the store's chips and
+  the `contended` check (now the run's own agent), `RemoteSessions.openPending(agent:)`,
+  `RemoteTabController.isPending`, the restored chips, the launch's join of
+  an unjoined claim, and Running sessions' Open. The pending-tab copy names
+  the tab's agent. `Agent.remoteAgents` is gone.
+- **Its id is the lock its pane's own process holds** (ADR-043's rule, on
+  the host): `AntigravityRemote.identityScript`, run by `identify` for an
+  Antigravity run. tmux names the pid as the session's pane before and
+  after; on a host with `/proc`, the process's start time (the one its pane
+  recorded) before and after its descriptors are read (`readlink` on
+  `/proc/<pid>/fd/*`); on a host without, its start time from `ps -o
+  lstart=` before and after `lsof -a -p <pid>` (`/usr/sbin/lsof` too: a
+  login PATH may leave it out). Exactly one `<uuid>.lock` directly under
+  `$HOME/.gemini/antigravity-cli/presence/` (its own spelling or its
+  resolved one) is claimed `.verified`; none is "no conversation yet"
+  (retried; `agy` makes one at the first prompt); two, a descriptor that
+  can't be read, or a pane tmux names otherwise or reports dead, is
+  inconclusive; a start time other than the one the pane recorded at
+  launch is ended. A host with no `/proc` now records the pane's `ps -o
+  lstart=` at launch (`KeepAlive.paneScript`), so the check there is pinned
+  to the launched process too. Each descriptor is matched whole (`readlink`
+  captured with a sentinel; `lsof` escapes a newline in a name). Only the
+  pane's own process counts: the launch `exec`s `agy`, and a subagent's
+  process holds its own conversation's lock.
+  - *A conversation an ended run held* (a `/resume` in a new tab): the
+    lock is this pane's proof, so ended or dismissed runs give the id up
+    (their claim mark, never their id); a live run's is still `.taken`. A
+    decline of the conversation for this run still stands
+    (`candidateKey`, the claim's renamed argument).
+  - *Created or opened.* The core join asks the host
+    (`RemoteSessions.claimVia`): `.created` when the conversation's first
+    prompt came after the run's `ok`, `.opened` when before (`/resume`) or
+    when it can't be read, ADR-043's rule; the launch's join of an
+    unjoined claim asks the same.
+  - *No question while the lock can be read.* Typing into a live
+    Antigravity tab asks nothing (a trust prompt is a Return too), and
+    Temple's own yes to a lone candidate is Codex's alone, refused in the
+    controller and in `confirm`: Antigravity's candidates are a
+    folder-and-time guess, its pane's lock the evidence.
+  - *When it is asked.* The schedule Codex uses (2, 5, 15, 60 s after `ok`,
+    then each minute while attached), at the tab's exit and close, and,
+    for Antigravity, 3 s after the tab's first Return
+    (`inputIdentityDelay`): the conversation exists from that prompt, and
+    the next scheduled check could be a minute away.
+  - *The question, when the lock was never seen* (the run ended first, or
+    the host has neither `/proc` nor `lsof`): the candidates are the host's
+    conversations whose summary row changed since a minute before the run's
+    `ok`, a person's (no parent), in the run's folder (its one workspace,
+    by bytes), whose first prompt was sent inside the run's window on the
+    host's clock; not declined, not another run's (`AntigravityRemote.list`,
+    `eligible`). Each carries its first prompt. A decline is kept under
+    `~/.gemini/antigravity-cli/conversations/<id>.db` in the run store's
+    `rollout_path`. The summaries are read first (no payloads); then at
+    most eight candidates in the folder, newest first, are read from their
+    own databases (ids and a 256 KiB first step), which must name the
+    conversation the summary did. One that can't be read leaves the
+    question unasked: the ended tab says why, with Try again
+    (`RemoteTabState.lookupFailed`).
+- **A host's conversations are read with the host's own SQLite**
+  (`AntigravityRemote.readScript`), handed to `AntigravityFormat` as the
+  same record the local store builds (ADR-043): the database's ids, its
+  first user step (1 MiB), and its summary row; for an identity read the
+  ids alone. The reader is `sqlite3`, else `python3`'s sqlite module (Ubuntu
+  servers often lack the first; macOS always has it, and its `python3` may
+  be a stub that offers to install developer tools, so `sqlite3` is tried
+  first). Every column travels hex-encoded, rows TAB-separated, and the
+  answer is parsed strictly (a terminal line only last, one step, only
+  the asked conversation's summary). Neither reader is trusted by name: it
+  must run a query first, and `python3` is never tried on macOS.
+- **No file is created in the store, measured.** On 2026-11-25 (sqlite3
+  3.46 and 3.53 on Linux, Apple's 3.54, Python's module): a `mode=ro` open
+  creates `-wal` and `-shm` beside a WAL database that has neither (Linux),
+  and `-shm` beside a log a crashed writer left without one (everywhere,
+  this Mac's v0.10.0 reader included); `mode=ro&immutable=1` creates
+  nothing. So, here and in `ReadOnlySQLite`: no `-wal` is a checked
+  `immutable` snapshot (no `-wal`, and the same size, modification time and
+  inode, before and after); a `-wal` and a `-shm` is a live writer, read
+  `mode=ro`; a `-wal` with no `-shm` is a dead writer's, copied to a private
+  folder (stats unchanged across the copy) and the copy read. One race is
+  accepted: a last writer that closes, removing both files, between the
+  check and a `mode=ro` open, which recreates them empty (`agy` uses them as
+  its own). A snapshot can in principle miss a writer that opened,
+  checkpointed and closed inside the read with nothing moving the main
+  file's size, time or inode; the engine reads again on the next change.
+  Busy (SQLite's own result code from Python, its message from the CLI) is
+  read again, three times, then `.changedDuringRead`.
+- **One version, lookup and read alike.** A conversation's version is its
+  database and log combined (`AntigravityRemote.combined`, the main
+  file's time folded in so a checkpoint older than the log still moves
+  it): the locate script lists `<id>.db-wal` beside `<id>.db`, and a hint
+  stats both, so the engine never discards a read while `agy` has the
+  conversation open. This Mac's signature folds the same time in.
+- **Located like the others.** The locate script's Antigravity group finds
+  `<uuid>.db` directly under `$HOME/.gemini/antigravity-cli/conversations`
+  (`agy` has no variable to move its folder, so its root is always
+  `unset`); `accepts` takes that shape only.
+- **Open by id: no folder is no conversation, for Antigravity only.** A
+  host (or this Mac) with no `antigravity-cli/conversations` folder has no
+  Antigravity conversation, since nothing moves that folder: the lookup
+  says "not found" for it, so an id no store has still reads "No session …".
+  Absence is proven, never inferred from a failed test: the nearest
+  existing ancestor must be a folder this user can search, with no dangling
+  link on the way (`temple_absent` on a host, `provenAbsent` here, taken
+  after the listing it speaks for); an unsearchable folder or an unmounted
+  volume is "can't tell".
+  A missing Claude or Codex root stays "can't tell" (a variable can move
+  it). This fixes the same wording on a Mac without `agy` in v0.10.0. The
+  engine's absence rule is unchanged: a missing store root is a failure,
+  never an absence (ADR-030).
+- **The host test** checks `agy --version` beside `claude` and `codex`.
+  `agy` is optional: missing, its row is information and the status line
+  says nothing, though Antigravity is greyed out on that host. Found, the
+  test also asks which reader the host has; with neither `sqlite3` nor
+  `python3`, the row and the status line say Temple can't read its
+  sessions' titles and folders there, and the host is advisory. Sessions
+  still start; their rows keep the tab's folder and title.
+
+**Reviewed** by gpt-6.2-sol and gpt-6.2-astra (round 1): every finding
+above is folded in. Not taken: verifying the process's executable and
+requiring a read-write descriptor (the pane's own process is the one the
+launch `exec`ed, and this Mac's check, ADR-043, is the same); a launch-time
+pin of the tmux server's identity.
+
+**Tested.** `AntigravityRemoteTests` runs every script under `/bin/sh`
+against real SQLite files (a quiescent database, a live writer's log,
+`python3` with `sqlite3` hidden), a fake `/proc`, and a real process holding
+a lock read through `lsof`; `RemoteCodexIdentityTests` covers a new
+Antigravity tab on a host through adoption, the first-Return check, and its
+chip's restore. `LinuxContainerAcceptance` (opt-in,
+`TEMPLE_LINUX_CONTAINERS`) runs the same scripts in Debian (dash, sqlite3
+3.46, Python 3.13) and Alpine (busybox sh, sqlite3 3.53, Python 3.14)
+containers with a real `/proc`, a real tmux pane whose own process holds the
+lock, `lsof`, a live writer's log and a dead writer's (read from a copy,
+nothing created); both passed on 2026-11-25. Alpine needed GNU findutils
+(task 6482421f).
+
+**Not verified yet:** a real `agy` on a Linux host. Whether Linux's `agy`
+is the process that holds the lock (not a wrapper's child) is measured on
+macOS only; if it is a child there, identity stays inconclusive and the
+question takes over at the run's end, never a wrong claim. To check on a
+host: start an Antigravity tab there, send a prompt, and see the tab become
+its session within seconds.
+
+**Known gaps.** `/clear` is still not followed (ADR-043). A host whose
+`find` is busybox's (Alpine without GNU findutils) cannot read any agent's
+transcripts (`temple_stat`), Antigravity's included: task 6482421f.

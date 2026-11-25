@@ -216,7 +216,8 @@ private struct SessionTerminalView: View {
                     Text(RemoteCopy.checkingAgain)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                } else if remote.identityRefused || note == RemoteCopy.couldNotTell(tab.agent) || note == RemoteCopy.noOtherCandidate(tab.agent) {
+                } else if remote.identityRefused || remote.lookupFailed || note == RemoteCopy.couldNotTell(tab.agent)
+                            || note == RemoteCopy.noOtherCandidate(tab.agent) {
                     Button(RemoteCopy.tryAgain) { model.openSessions.remoteTabs.retryIdentity(tab) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)

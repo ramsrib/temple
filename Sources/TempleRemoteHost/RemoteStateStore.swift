@@ -507,7 +507,15 @@ public final class RemoteStateStore: @unchecked Sendable {
     /// transaction across processes: refused when any other run on the
     /// host already holds that id (a claim, or a run of that session).
     /// Written before the core join; a claimed conversation exists.
-    public func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil) throws -> ClaimOutcome {
+    /// `candidateKey`: what a decline of this candidate is kept under (a
+    /// Codex rollout's path, an Antigravity conversation's database), in
+    /// `declined_candidates.rollout_path`.
+    /// `endedHoldersYield`: the claim is the pane's own proof of a
+    /// conversation it loaded (Antigravity's lock, ADR-044), so a run that
+    /// held the id and has ended or been dismissed gives it up (its claim
+    /// mark, never its id); a live one still refuses it.
+    public func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, candidateKey: String? = nil,
+                      endedHoldersYield: Bool = false) throws -> ClaimOutcome {
         try queue.writeWithoutTransaction { database in
             var outcome = ClaimOutcome.gone
             try database.inTransaction(.immediate) {
@@ -519,9 +527,9 @@ public final class RemoteStateStore: @unchecked Sendable {
                     outcome = .alreadyKnown(known)
                     return .commit
                 }
-                if let rolloutPath, try Int.fetchOne(database, sql: """
+                if let candidateKey, try Int.fetchOne(database, sql: """
                     SELECT COUNT(*) FROM declined_candidates WHERE handle = ? AND rollout_path = ?
-                    """, arguments: [handle, rolloutPath]) ?? 0 > 0 {
+                    """, arguments: [handle, candidateKey]) ?? 0 > 0 {
                     outcome = .declined
                     return .commit
                 }
@@ -552,10 +560,16 @@ public final class RemoteStateStore: @unchecked Sendable {
                 }
                 let held = try Int.fetchOne(database, sql: """
                     SELECT COUNT(*) FROM runs WHERE host = ? AND session_id = ? AND handle != ?
-                    """, arguments: [run.host.rawValue, sessionID, handle]) ?? 0
+                    """ + (endedHoldersYield ? " AND ended_at IS NULL AND dismissed_at IS NULL" : ""),
+                    arguments: [run.host.rawValue, sessionID, handle]) ?? 0
                 guard held == 0 else {
                     outcome = .taken
                     return .commit
+                }
+                if endedHoldersYield {
+                    try database.execute(sql: """
+                        UPDATE runs SET claim = NULL WHERE host = ? AND session_id = ? AND handle != ? AND claim IS NOT NULL
+                        """, arguments: [run.host.rawValue, sessionID, handle])
                 }
                 try database.execute(sql: """
                     UPDATE runs SET session_id = ?, claim = ?, conversation = ?, joined_at = NULL WHERE handle = ?

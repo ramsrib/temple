@@ -1444,7 +1444,7 @@ public final class RemoteSessions {
             guard let id = CodexIdentityCheck.verify(path: path, header: header, directory: directory) else {
                 return .inconclusive(.retry("the open session file doesn't name this session's folder or its own id"))
             }
-            return await claim(handle, sessionID: id, how: .verified, rolloutPath: path)
+            return await claim(handle, sessionID: id, how: .verified, candidateKey: path)
         }
     }
 
@@ -1458,13 +1458,38 @@ public final class RemoteSessions {
                                                 socket: run.socketPath, session: run.sessionName, using: exec) {
         case .inconclusive(let why): return .inconclusive(why)
         case .none: return .inconclusive(.retry("Antigravity starts a conversation at the first prompt"))
-        case .found(let id): return await claim(run.handle, sessionID: id, how: .verified)
+        case .found(let id):
+            // A conversation `agy` loaded with `/resume` may be one an ended
+            // run here held: the lock is this pane's proof, so it is this
+            // tab's now. A decline of it for this run still stands.
+            return await claim(run.handle, sessionID: id, how: .verified, candidateKey: AntigravityRemote.declineKey(id),
+                               endedHoldersYield: true)
         }
     }
 
-    private func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, rolloutPath: String? = nil) async -> Identity {
+    /// How the session a claim names came to this run, for its core join:
+    /// `.created` unless it is an Antigravity conversation whose first
+    /// prompt was sent before the run started (one `agy` loaded with
+    /// `/resume`, ADR-043's rule), or whose start can't be read here
+    /// (then `.opened`, as on this Mac). Codex runs are always `.created`.
+    public func claimVia(_ handle: String) async -> JoinedVia {
+        guard let run = await run(handle), run.agent == .antigravity, let id = run.sessionID else { return .created }
+        guard let okAt = run.okAt, let exec = try? await queryExec(), !retired,
+              let output = try? await exec.run(script: AntigravityRemote.readProgram,
+                                                args: [AntigravityRemote.database(id), AntigravityRemote.summaries, id, "1"],
+                                                deadline: AntigravityRemote.readDeadline),
+              output.reachedCommand, output.status == 0,
+              case .rows(_, _, let record)? = AntigravityRemote.parseRead(output.data, id: id),
+              let started = record.firstUserStep.flatMap(AntigravityFormat.firstPrompt)?.at else { return .opened }
+        // Two seconds' room, as on this Mac (`watchProcess`).
+        return started.timeIntervalSince1970 >= TimeInterval(okAt) - 2 ? .created : .opened
+    }
+
+    private func claim(_ handle: String, sessionID: String, how: RemoteRun.Claim, candidateKey: String? = nil,
+                       endedHoldersYield: Bool = false) async -> Identity {
         do {
-            switch try await write({ try $0.claim(handle, sessionID: sessionID, how: how, rolloutPath: rolloutPath) }) {
+            switch try await write({ try $0.claim(handle, sessionID: sessionID, how: how, candidateKey: candidateKey,
+                                                  endedHoldersYield: endedHoldersYield) }) {
             case .claimed: return .adopted(sessionID)
             case .alreadyKnown(let id): return .known(id)
             case .taken: return .taken
@@ -1549,7 +1574,12 @@ public final class RemoteSessions {
     }
 
     /// Antigravity's candidates: conversations in the run's folder whose
-    /// first prompt was sent while the run ran, from the host's summaries.
+    /// first prompt was sent while the run ran. The host's summaries name
+    /// the conversations in the folder; then each one's own database (at
+    /// most `offerLimit`, newest first) says it is that conversation and
+    /// when its first prompt was sent. One that can't be read makes the
+    /// whole answer unavailable: a question missing a candidate would read
+    /// as complete.
     private func eligibleAntigravity(_ run: RemoteRun, handle: String, okAt: Int, directory: String) async -> Suggestions {
         let exec: RemoteExec
         do { exec = try await queryExec() } catch { return .unavailable(error.localizedDescription) }
@@ -1571,9 +1601,14 @@ public final class RemoteSessions {
         } catch {
             return .unavailable("Temple couldn't read its records for this session on this Mac: \(error.localizedDescription)")
         }
-        return .candidates(AntigravityRemote.eligible(found, directory: directory, since: okAt, until: until,
-                                                      declined: declined, held: held, database: AntigravityRemote.declineKey)
-            .map { var candidate = $0; candidate.hostClockOffset = offset; return candidate })
+        let inFolder = AntigravityRemote.inFolder(found, directory: directory, declined: declined, held: held)
+        guard let heads = await AntigravityRemote.heads(inFolder.map(\.id), using: exec) else {
+            return .unavailable("the conversations in this folder couldn't be read")
+        }
+        guard let offered = AntigravityRemote.eligible(inFolder, heads: heads, since: okAt, until: until) else {
+            return .unavailable("a conversation in this folder couldn't be read")
+        }
+        return .candidates(offered.map { var candidate = $0; candidate.hostClockOffset = offset; return candidate })
     }
 
     /// The user said "Yes, that's it": the candidate is checked again now
@@ -1596,8 +1631,12 @@ public final class RemoteSessions {
             if automatic, current.count != 1 {
                 return .inconclusive(.retry("more than one session is a candidate for this one"))
             }
+            // Temple's own yes is Codex's alone (ADR-044).
+            if automatic, await run(handle)?.agent != .codex {
+                return .inconclusive(.retry("Temple doesn't link this agent's sessions on its own"))
+            }
             return await claim(handle, sessionID: suggestion.sessionID, how: automatic ? .automatic : .confirmed,
-                               rolloutPath: suggestion.rolloutPath)
+                               candidateKey: suggestion.rolloutPath)
         }
     }
 

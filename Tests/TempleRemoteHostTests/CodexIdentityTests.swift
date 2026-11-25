@@ -608,7 +608,7 @@ final class CodexIdentityTests: XCTestCase {
         let store = try RemoteStateStore()
         try pendingRun(store, "a")
         try store.decline("a", rolloutPath: "/r/c1")
-        XCTAssertEqual(try store.claim("a", sessionID: "c1", how: .verified, rolloutPath: "/r/c1"), .declined)
+        XCTAssertEqual(try store.claim("a", sessionID: "c1", how: .verified, candidateKey: "/r/c1"), .declined)
     }
 
     func testDeclinedCandidatesAndPendingRestore() throws {
@@ -620,7 +620,7 @@ final class CodexIdentityTests: XCTestCase {
         try store.decline("a", rolloutPath: "/r/1")
         XCTAssertEqual(try store.declined("a"), ["/r/1"])
         XCTAssertEqual(try store.declined("b"), [])
-        XCTAssertEqual(try store.claim("a", sessionID: "z1", how: .confirmed, rolloutPath: "/r/1"), .declined,
+        XCTAssertEqual(try store.claim("a", sessionID: "z1", how: .confirmed, candidateKey: "/r/1"), .declined,
                        "a declined file is refused in the claim's own transaction")
         XCTAssertNil(try store.run("a")?.sessionID)
         try store.update("b") { $0.tabClosedAt = Date() }

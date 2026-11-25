@@ -2,20 +2,27 @@ import Foundation
 import SQLite3
 import TempleCore
 
-/// Reads another program's SQLite database without ever writing to it
-/// (ADR-043). The database is opened `mode=ro` and read in one transaction.
+/// Reads another program's SQLite database without ever writing to it or
+/// creating a file beside it (ADR-043, ADR-044), in one of three ways:
 ///
-/// A WAL database that no process has open has no `-shm` file, and the
-/// system SQLite cannot open it read-only then: the first statement fails
-/// with `SQLITE_CANTOPEN` (measured on 3.54.0, SESSION-FORMATS.md). With a
-/// `-wal` and no `-shm` (a writer that crashed) it can, and reads the log
-/// through an index built in memory. Only for
-/// that error the read is made with `immutable=1`, which takes no locks and
-/// assumes nobody writes, as a checked snapshot: before and after the read
-/// the database has no `-wal` and the same size, modification time and file
-/// number. A WAL database changes its main file only by checkpointing, so an
-/// unchanged file with no WAL is a consistent read; anything else is read
-/// again, and a read that never settles fails.
+/// - **No `-wal`**: no process has it open (a WAL writer keeps one). Read
+///   `immutable=1`, which takes no locks and creates nothing, as a checked
+///   snapshot: before and after, no `-wal` and the same size, modification
+///   time and file number. A WAL database changes its main file only by
+///   checkpointing, so an unchanged file with no log is a consistent read.
+///   (The system SQLite can't open such a file `mode=ro` at all:
+///   `SQLITE_CANTOPEN`, measured on 3.54.0.)
+/// - **A `-wal` and a `-shm`**: a writer has it open. Read `mode=ro` in one
+///   transaction, as any reader of a live database does.
+/// - **A `-wal` and no `-shm`**: a writer died; nothing has it open. A
+///   `mode=ro` open would create the `-shm` (measured, 2026-11-25), so the
+///   two files are copied to a private folder, their stats the same before
+///   and after, and the copy is read.
+///
+/// Anything that changed meanwhile is read again; a read that never
+/// settles fails. One race is left: a last writer that closes, removing
+/// both files, between the check and a `mode=ro` open, which then
+/// recreates them empty (harmless to `agy`, which uses them as its own).
 enum ReadOnlySQLite {
     enum Value: Equatable {
         case null, integer(Int64), real(Double), text(String), blob(Data)
@@ -54,11 +61,40 @@ enum ReadOnlySQLite {
     static func read(_ url: URL, _ queries: [Query]) throws -> [[[Value]]] {
         var info = stat()
         guard stat(url.path, &info) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
-        do {
-            return try run(url, immutable: false, queries)
-        } catch let failure as Failure where failure.isCantOpen {
-            return try snapshot(url, queries)
+        for _ in 0..<attempts {
+            let wal = there(url.path + "-wal"), shm = there(url.path + "-shm")
+            if !wal { return try snapshot(url, queries) }
+            if shm {
+                do { return try run(url, immutable: false, queries) } catch let failure as Failure where failure.isCantOpen {
+                    // The writer closed between the check and the open.
+                    continue
+                }
+            }
+            if let rows = try copied(url, queries) { return rows }
         }
+        throw Failure(code: SQLITE_BUSY, message: "\(url.lastPathComponent) changed while it was read")
+    }
+
+    /// Whether anything (a link included) is at `path`.
+    private static func there(_ path: String) -> Bool {
+        var info = stat()
+        return lstat(path, &info) == 0
+    }
+
+    /// A database and the log a dead writer left, copied and read; nil when
+    /// either changed (or a `-shm` appeared) while they were copied.
+    private static func copied(_ url: URL, _ queries: [Query]) throws -> [[[Value]]]? {
+        let wal = URL(fileURLWithPath: url.path + "-wal")
+        guard let before = MainFileStamp(url), let logBefore = MainFileStamp(wal) else { return nil }
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("temple-sqlite-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true,
+                                                attributes: [.posixPermissions: 0o700])
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let copy = folder.appendingPathComponent("c.db")
+        try FileManager.default.copyItem(at: url, to: copy)
+        try FileManager.default.copyItem(at: wal, to: URL(fileURLWithPath: copy.path + "-wal"))
+        guard MainFileStamp(url) == before, MainFileStamp(wal) == logBefore, !there(url.path + "-shm") else { return nil }
+        return try run(copy, immutable: false, readOnly: false, queries)
     }
 
     private static func snapshot(_ url: URL, _ queries: [Query]) throws -> [[[Value]]] {
@@ -87,12 +123,15 @@ enum ReadOnlySQLite {
         }
     }
 
-    private static func run(_ url: URL, immutable: Bool, _ queries: [Query]) throws -> [[[Value]]] {
+    /// `readOnly` false: a private copy, which SQLite may recover its log in.
+    private static func run(_ url: URL, immutable: Bool, readOnly: Bool = true, _ queries: [Query]) throws -> [[[Value]]] {
         var components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-        components?.queryItems = [URLQueryItem(name: immutable ? "immutable" : "mode", value: immutable ? "1" : "ro")]
+        var items = readOnly ? [URLQueryItem(name: "mode", value: "ro")] : []
+        if immutable { items.append(URLQueryItem(name: "immutable", value: "1")) }
+        components?.queryItems = items.isEmpty ? nil : items
         guard let uri = components?.url?.absoluteString else { throw Failure(code: SQLITE_MISUSE, message: "no URI for \(url.path)") }
         var handle: OpaquePointer?
-        let flags = SQLITE_OPEN_READONLY | SQLITE_OPEN_URI | SQLITE_OPEN_NOMUTEX
+        let flags = (readOnly ? SQLITE_OPEN_READONLY : SQLITE_OPEN_READWRITE) | SQLITE_OPEN_URI | SQLITE_OPEN_NOMUTEX
         let opened = sqlite3_open_v2(uri, &handle, flags, nil)
         defer { sqlite3_close_v2(handle) }
         guard opened == SQLITE_OK, let db = handle else { throw failure(handle, opened) }

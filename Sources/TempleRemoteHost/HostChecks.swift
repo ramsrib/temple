@@ -526,6 +526,7 @@ public struct HostTestSummary: Sendable, Equatable {
     public var isAdvisory: Bool {
         guard failure == nil else { return false }
         let proven = Agent.allCases.contains { Self.isProblem($0, check($0)) && unavailableReason(for: $0) != nil }
+            || (tmux?.provesUnavailable ?? false)
         return proven || sqliteReader == SQLiteReaderCheck.none || environment?.path == nil || logind == .killsUserProcesses(true)
     }
 }
@@ -537,17 +538,17 @@ public enum SQLiteReaderCheck: Sendable, Equatable {
     case none
     case notChecked(reason: String)
 
-    static let script = """
-    if command -v sqlite3 >/dev/null 2>&1; then echo sqlite3
-    elif command -v python3 >/dev/null 2>&1; then echo python3
-    else echo none; fi
-    """
+    /// The reads' own choice (`AntigravityRemote.sqlite`): a reader that
+    /// ran a query just now, and never `python3` on macOS.
+    static var script: String {
+        AntigravityRemote.sqlite + "\n" + #"printf '%s\n' "${AGY_SQ:-${AGY_PY:-none}}""#
+    }
 
     /// The Test connection's `agy` row, after its version.
-    public static let rowNote = "no sqlite3 or python3 here, so Temple can't read its sessions' titles and folders"
+    public static let rowNote = "no working sqlite3 or python3 here, so Temple can't read its sessions' titles and folders"
 
     public static let noneProblem =
-        "Antigravity is here, but without sqlite3 or python3 Temple can't read the titles and folders of its sessions."
+        "Antigravity is here, but without a working sqlite3 or python3 Temple can't read the titles and folders of its sessions."
 
     public static func run(using exec: RemoteExec) async -> SQLiteReaderCheck {
         do {

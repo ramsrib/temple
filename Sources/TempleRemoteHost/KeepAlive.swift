@@ -310,7 +310,10 @@ public struct TmuxKeepAlive: KeepAlive {
     /// (from `$TMUX`, parsed from the right: `<socket>,<server pid>,
     /// <session index>`), then `exec`s the agent: the pane pid is the
     /// agent's, and the diagnostics change nothing about liveness.
-    /// `/proc/<pid>/stat` is read past the last `)` (note 2). The record
+    /// `/proc/<pid>/stat` is read past the last `)` (note 2); on a host
+    /// with no `/proc` the pane records its `ps -o lstart=` instead
+    /// (ADR-044), which pins Antigravity's lock check there to the process
+    /// launched. The record
     /// directory is checked before it is written. Claude's config root is
     /// applied from the launch's `TEMPLE_CFG` (set, or unset so an older
     /// tmux server's value cannot win; anything else fails the launch with
@@ -354,6 +357,7 @@ public struct TmuxKeepAlive: KeepAlive {
           cdx=unset
         fi
         pst() { [ -r "/proc/$1/stat" ] || return 0; x=$(cat "/proc/$1/stat" 2>/dev/null) || return 0; x=${x##*)}; set -- $x; [ $# -ge 20 ] || return 0; shift 19; printf '%s' "$1"; }
+        pls() { [ -d /proc ] && return 0; x=$(ps -o lstart= -p "$1" 2>/dev/null) || return 0; set -- $x; printf '%s' "$*"; }
         case $d in "~") d=$HOME;; "~/"*) d=$HOME/${d#"~/"};; esac
         cd -- "$d" || { rec "failed${T}cd${T}$?"; exit 1; }
         if [ -n "$m" ] && [ -n "$TMUX_PANE" ]; then
@@ -362,7 +366,7 @@ public struct TmuxKeepAlive: KeepAlive {
         fi
         w=$(pwd -P; printf x); w=${w%x}; w=${w%"$NL"}
         t=${TMUX%,*}; sp=${t##*,}; so=${t%,*}
-        rec "ok${NL}epoch${T}$(date +%s)${NL}pane${T}$$${T}$(pst $$)${NL}server${T}${sp}${T}$(pst "$sp")${NL}socket${T}${so}${NL}cfg${T}${cfg}${NL}cdx${T}${cdx}${NL}dir${T}${w}"
+        rec "ok${NL}epoch${T}$(date +%s)${NL}pane${T}$$${T}$(pst $$)$(pls $$)${NL}server${T}${sp}${T}$(pst "$sp")${NL}socket${T}${so}${NL}cfg${T}${cfg}${NL}cdx${T}${cdx}${NL}dir${T}${w}"
         exec "$@"
         """#
     }

@@ -406,9 +406,12 @@ actor RemoteTranscriptAccess {
         }
         // A hint is stat'ed only when it is a normal absolute path on this
         // host; whether it lies in a store is decided once the roots are known.
-        let hints = Array(Set(named.compactMap { request -> RemotePath? in
-            guard let hint = request.hint, hint.host == host, Self.isNormal(RemotePath(hint.path)) else { return nil }
-            return RemotePath(hint.path)
+        let hints = Array(Set(named.flatMap { request -> [RemotePath] in
+            guard let hint = request.hint, hint.host == host, Self.isNormal(RemotePath(hint.path)) else { return [] }
+            // An Antigravity conversation's version is its database and its
+            // log together: the log is stat'ed with it.
+            if hint.path.hasSuffix(".db") { return [RemotePath(hint.path), RemotePath(hint.path + "-wal")] }
+            return [RemotePath(hint.path)]
         })).sorted()
         var args: [String] = []
         for group in groups {
@@ -499,6 +502,13 @@ actor RemoteTranscriptAccess {
         let store = Self.store(canonical, agent: agent)
         var stats: [RemotePath: CandidateStat] = [:]
         for file in files where Self.accepts(file.path, store: store, agent: agent) { stats[file.path] = file.stat }
+        // Antigravity: each database's log, listed beside it.
+        var logs: [RemotePath: CandidateStat] = [:]
+        if agent == .antigravity {
+            for file in files where file.path.bytes.reversed().starts(with: Array(".db-wal".utf8).reversed()) {
+                logs[RemotePath(bytes: Array(file.path.bytes.dropLast(4)))] = file.stat
+            }
+        }
         // The row's recorded path, when it is one this agent's store would
         // hold (as the local store's `acceptsTranscript` decides).
         var hintPath: RemotePath?
@@ -506,6 +516,22 @@ actor RemoteTranscriptAccess {
            Self.accepts(hint.1, store: store, agent: agent), let stat = listing.answer.hints[hint.1] {
             hintPath = hint.1
             if stats[hint.1] == nil { stats[hint.1] = stat }
+            if agent == .antigravity, logs[hint.1] == nil, let log = listing.answer.hints[hint.1.appending("-wal")] {
+                logs[hint.1] = log
+            }
+        }
+        if agent == .antigravity {
+            // The version a read reports: the database and its log combined
+            // (`AntigravityRemote.combined`); a log that is there but can't
+            // be stat'ed leaves the version unknown.
+            for (path, stat) in stats {
+                guard case .present(let main) = stat else { continue }
+                switch logs[path] {
+                case .present(let log)?: stats[path] = .present(AntigravityRemote.combined(main, log))
+                case .unreadable?: stats[path] = .unreadable
+                case .missing?, nil: break
+                }
+            }
         }
         let hintPresent = hintPath.map { stats[$0] != .missing } ?? false
         var list: [TranscriptCandidate] = []
