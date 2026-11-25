@@ -61,6 +61,8 @@ enum ReadOnlySQLite {
     static func read(_ url: URL, _ queries: [Query]) throws -> [[[Value]]] {
         var info = stat()
         guard stat(url.path, &info) == 0 else { throw POSIXError(POSIXErrorCode(rawValue: errno) ?? .EIO) }
+        // A link's sidecars are beside its target, not beside it.
+        guard !isLink(url.path) else { throw Failure(code: SQLITE_CANTOPEN, message: "\(url.lastPathComponent) is a link") }
         for _ in 0..<attempts {
             let wal = there(url.path + "-wal"), shm = there(url.path + "-shm")
             if !wal { return try snapshot(url, queries) }

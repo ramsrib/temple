@@ -1820,7 +1820,9 @@ public final class RemoteTabController {
     private var lookupGeneration: [String: Int] = [:]
 
     private func loadSuggestions(_ ticket: RemoteTicket, host: RemoteSessionHost, handle: String) async {
-        guard gate.valid(ticket), let tab = ticket.tab, isPending(tab) else { return }
+        // Codex's question only: an Antigravity tab is identified by its
+        // pane's lock, or not at all (ADR-044).
+        guard gate.valid(ticket), let tab = ticket.tab, isPending(tab), tab.agent == .codex else { return }
         let generation = (lookupGeneration[handle] ?? 0) + 1
         lookupGeneration[handle] = generation
         let answer = await host.suggestions(handle)

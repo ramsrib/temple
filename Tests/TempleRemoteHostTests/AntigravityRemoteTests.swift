@@ -91,6 +91,17 @@ final class AntigravityRemoteTests: XCTestCase {
         }
     }
 
+    /// The first prompt a record states, as the format reads it (the title
+    /// hint while the conversation has no summary row).
+    static func prompt(_ record: AntigravityFormat.Record) -> String? {
+        let data = record.encoded()
+        guard case .summary(let summary) = AntigravityFormat().facts(
+            TranscriptBytes(head: data, tail: nil, fileSize: data.count, window: data.count + 1), name: nil,
+            locator: TranscriptLocator(host: HostID(rawValue: "box"), path: "/x"), modifiedAt: Date(), shared: .empty)
+        else { return nil }
+        return summary.firstPrompt ?? summary.laterPromptHint
+    }
+
     private func read(_ store: Store, _ id: String, facts: Bool = true,
                       exec: RemoteExec? = nil) async throws -> AntigravityRemote.ReadAnswer {
         let output = try await (exec ?? store.exec).run(script: AntigravityRemote.readProgram,
@@ -113,7 +124,7 @@ final class AntigravityRemoteTests: XCTestCase {
         XCTAssertEqual(record.ids, [id])
         XCTAssertEqual(record.summary?.title, "Replying With Only Ok", "the conversation's own row, not another's")
         XCTAssertEqual(record.summary?.workspaceURIs, "[\"file:///home/u/app\"]")
-        XCTAssertEqual(record.firstUserStep.flatMap(AntigravityFormat.firstPrompt)?.prompt, "Reply with only the word ok")
+        XCTAssertEqual(Self.prompt(record), "Reply with only the word ok")
         XCTAssertEqual(store.files().sorted(), before, "no -wal or -shm made in a store that is not Temple's")
 
         guard case .rows(_, _, let identity) = try await read(store, id, facts: false) else { return XCTFail() }
@@ -158,7 +169,7 @@ final class AntigravityRemoteTests: XCTestCase {
         let before = store.files().sorted()
         XCTAssertFalse(before.contains("\(id).db-shm"))
         guard case .rows(_, _, let record) = try await read(store, id) else { return XCTFail() }
-        XCTAssertEqual(record.firstUserStep.flatMap(AntigravityFormat.firstPrompt)?.prompt, "only in the log")
+        XCTAssertEqual(Self.prompt(record), "only in the log")
         XCTAssertEqual(store.files().sorted(), before, "no -shm made beside the dead writer's log")
     }
 
@@ -177,7 +188,7 @@ final class AntigravityRemoteTests: XCTestCase {
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: path + "-wal"))
         guard case .rows(_, let closing, let record) = try await read(store, id) else { return XCTFail() }
-        XCTAssertEqual(record.firstUserStep.flatMap(AntigravityFormat.firstPrompt)?.prompt, "only in the log")
+        XCTAssertEqual(Self.prompt(record), "only in the log")
 
         // The version the lookup reports is the one a read reports, or the
         // engine would throw every read away while `agy` has it open.
@@ -216,9 +227,17 @@ final class AntigravityRemoteTests: XCTestCase {
         guard case .rows(let opening, _, _)? = AntigravityRemote.parseRead(
             Data(("db\t10\t1.5\t7\nwal\t32\t2.5\t8\n" + "db\t10\t1.5\t7\nwal\t32\t2.5\t8\ndone\n").utf8), id: id) else { return XCTFail() }
         XCTAssertEqual(opening.modifiedAt, Date(timeIntervalSince1970: 2.5), "the log's time when it is newer")
-        guard case .rows(let first, let second, _)? = AntigravityRemote.parseRead(
-            Data(("db\t10\t1.5\t7\nwal\t32\t2.5\t8\n" + "db\t10\t1.5\t7\nwal\t32\t2.5\t9\ndone\n").utf8), id: id) else { return XCTFail() }
-        XCTAssertNotEqual(first, second, "a log replaced by one of the same size and time is another version")
+        XCTAssertEqual(AntigravityRemote.parseRead(
+            Data(("db\t10\t1.5\t7\nwal\t32\t2.5\t8\n" + "db\t10\t1.5\t7\nwal\t32\t2.5\t9\ndone\n").utf8), id: id), .busy,
+                       "a log replaced during the read: read again")
+        XCTAssertEqual(AntigravityRemote.parseRead(
+            Data(("db\t10\t1.5\t7\nwal\t32\t2.5\t8\n" + "db\t10\t1.7\t7\nwal\t32\t2.5\t8\ndone\n").utf8), id: id), .busy,
+                       "a checkpoint older than the log, which the combined version folds away")
+        XCTAssertNotEqual(AntigravityRemote.combined(.init(modifiedAt: Date(timeIntervalSince1970: 1.5), size: 10, identity: 7),
+                                                     .init(modifiedAt: Date(timeIntervalSince1970: 2.5), size: 32, identity: 8)),
+                          AntigravityRemote.combined(.init(modifiedAt: Date(timeIntervalSince1970: 1.5), size: 10, identity: 7),
+                                                     .init(modifiedAt: Date(timeIntervalSince1970: 2.5), size: 32, identity: 9)),
+                          "a log replaced by one of the same size and time is another version")
     }
 
     private func hex(_ text: String) -> String { Store.hex(Array(text.utf8)) }
@@ -280,6 +299,11 @@ final class AntigravityRemoteTests: XCTestCase {
                        "another process under a reused pid")
         store.host.extra["STUB_PANE_PID"] = "200"
         guard case .inconclusive(.retry) = await identify(store) else { return XCTFail("tmux names another pane") }
+        store.host.extra["STUB_PANE_PID"] = "100 1"
+        guard case .inconclusive(.retry) = await identify(store) else { return XCTFail("a dead pane keeps its pid") }
+        store.host.extra["STUB_PANE_PID"] = "100 0"
+        let live = await identify(store)
+        XCTAssertEqual(live, .found(id))
     }
 
     func testNoLockIsNoConversationYetAndTwoAreInconclusive() async {

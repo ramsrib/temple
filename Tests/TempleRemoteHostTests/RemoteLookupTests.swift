@@ -42,7 +42,7 @@ final class RemoteLookupTests: XCTestCase {
         XCTAssertEqual(lookup[.claude], .notFound)
     }
 
-    func testNeitherStoreHasItIsNotFoundAnywhere() async throws {
+    func testNoStoreHasItButAStoreTempleDoesntKnowIsCantTell() async throws {
         let box = Box()
         let lookup = try await source(box).lookup(id: uuid())
         XCTAssertEqual(lookup[.claude], .notFound)

@@ -61,6 +61,8 @@ enum AntigravityRemote {
           if temple_there "$1-shm"; then
             temple_sql mode=ro "$1" "$2"; _s=$?
             [ "$_s" -eq 5 ] && continue
+            # The writer closed meanwhile: pick again.
+            [ "$_s" -eq 4 ] && ! temple_there "$1-wal" && continue
             return "$_s"
           fi
           _b=$(temple_stat "$1") && _bw=$(temple_stat "$1-wal") || continue
@@ -75,6 +77,7 @@ enum AntigravityRemote {
         _b=$(temple_stat "$1") || return 4
         temple_sql 'mode=ro&immutable=1' "$1" "$2"; _s=$?
         [ "$_s" -eq 5 ] && continue
+        [ "$_s" -eq 4 ] && temple_there "$1-wal" && continue
         [ "$_s" -eq 0 ] || return "$_s"
         if ! temple_there "$1-wal" && _a=$(temple_stat "$1") && [ "$_a" = "$_b" ]; then return 0; fi
       done
@@ -98,16 +101,15 @@ enum AntigravityRemote {
         step_count, hex(last_modified_time) FROM conversation_summaries WHERE conversation_id = '%s'
         """
 
-    /// Arguments `db summaries id facts`; a path that begins `~/` is under
-    /// `$HOME`. Prints the database's and its log's stat (`db<TAB>…`,
-    /// `wal<TAB>…` or `wal<TAB>none`), the rows (`id`, `step`, `summary`,
-    /// every column hex), the stats again, then `done`. Or `missing`,
-    /// `busy` (read again), or `unreadable<TAB><why>` instead, at any point
-    /// (then nothing more).
+    /// Arguments `db summaries id facts`. Prints the database's and its
+    /// log's stat (`db<TAB>…`, `wal<TAB>…` or `wal<TAB>none`), the rows
+    /// (`id`, `step`, `summary`, every column hex), the stats again, then
+    /// `done`. Or `missing`, `busy` (read again), or `unreadable<TAB><why>`
+    /// instead, at any point (then nothing more); a session whose rows pass
+    /// `$BUDGET` bytes is that session's `unreadable`, never the host's
+    /// transport failure.
     static let readScript = RemoteTranscripts.common + "\n" + sqlite + "\n" + #"""
     f=$1; s=$2; id=$3; facts=$4
-    case $f in "~/"*) f=$HOME/${f#"~/"} ;; esac
-    case $s in "~/"*) s=$HOME/${s#"~/"} ;; esac
     case $id in ''|*[!0-9a-f-]*) printf 'unreadable\tnot a conversation id\n'; exit 0 ;; esac
     [ -n "$AGY_SQ" ] || { printf 'unreadable\t%s\n' "$NOREADER"; exit 0; }
     temple_agy_dir || { printf 'unreadable\tno temporary folder on the host\n'; exit 0; }
@@ -123,7 +125,9 @@ enum AntigravityRemote {
     rows() {
       temple_read_db "$1" "$2"
       case $? in
-        0) r=$(cat "$AGY_OUT") || { printf 'unreadable\tthe answer could not be read back\n'; exit 0; }
+        0) n=$(wc -c < "$AGY_OUT" | tr -d ' ')
+           [ "$n" -le "$BUDGET" ] || { printf 'unreadable\tthis session is larger than Temple reads (%s bytes, limit %s)\n' "$n" "$BUDGET"; exit 0; }
+           r=$(cat "$AGY_OUT") || { printf 'unreadable\tthe answer could not be read back\n'; exit 0; }
            [ -z "$r" ] || printf '%s\n' "$r" ;;
         5) printf 'busy\n'; exit 0 ;;
         *) printf 'unreadable\t%s\n' "$(printf '%s' "${AGY_ERR:-the database could not be read}" | head -n 1)"; exit 0 ;;
@@ -142,7 +146,10 @@ enum AntigravityRemote {
     /// The read's script with its fixed queries in place (as shell words).
     static var readProgram: String {
         ["IDS=" + RemoteQuoting.quote(idsQuery), "STEP=" + RemoteQuoting.quote(stepQuery(limit: 1 << 20)),
-         "SUMMARY=" + RemoteQuoting.quote(summaryQuery), "NOREADER=" + RemoteQuoting.quote(noReader)]
+         "SUMMARY=" + RemoteQuoting.quote(summaryQuery), "NOREADER=" + RemoteQuoting.quote(noReader),
+         // Two reads of rows (the conversation's, its summary): together
+         // inside what one answer may carry.
+         "BUDGET=\(RemoteTranscripts.responseBudget / 2)"]
             .joined(separator: "\n") + "\n" + readScript
     }
 
@@ -165,6 +172,7 @@ enum AntigravityRemote {
         let lines = text.dropLast().split(separator: "\n", omittingEmptySubsequences: false).map(String.init)
         var index = 0
         var stamps: [TranscriptSignature] = []
+        var raw: [String] = []
         var ids: [String] = []
         var sawStep = false
         var step: String?
@@ -179,6 +187,7 @@ enum AntigravityRemote {
                 guard stamps.count < 2, index + 1 < lines.count, lines[index + 1].hasPrefix("wal\t"),
                       let main = RemoteTranscripts.signature(String(line.dropFirst(3))) else { return nil }
                 let walText = String(lines[index + 1].dropFirst(4))
+                raw.append(line + "\n" + lines[index + 1])
                 if walText == "none" {
                     stamps.append(main)
                 } else {
@@ -200,6 +209,9 @@ enum AntigravityRemote {
                       let modified = utf8(fields[6]) else { return nil }
                 summary = .init(title: title, workspaceURIs: uris, parent: parent, stepCount: count, lastModified: modified)
             case "done" where fields.count == 1 && stamps.count == 2 && index == lines.count - 1:
+                // Any part of either file's stat that moved, even one the
+                // combined version folds away: read again.
+                if raw[0] != raw[1] { return .busy }
                 return .rows(opening: stamps[0], closing: stamps[1],
                              record: AntigravityFormat.Record(ids: ids, summary: summary, firstUserStep: step))
             default:
@@ -287,7 +299,7 @@ enum AntigravityRemote {
       L=$(command -v lsof 2>/dev/null) || { [ -x /usr/sbin/lsof ] && L=/usr/sbin/lsof; } || no lasting "this host has neither /proc nor lsof"
       b=$(lst "$pid") || no ended "the session's process has ended"
       [ -z "$start" ] || [ "$b" = "$start" ] || no ended "the session's process has ended"
-      out=$("$L" -n -P -w -a -p "$pid" -Fn 2>/dev/null </dev/null) || no retry "lsof couldn't list the session's open files"
+      out=$("$L" -n -P -w -a -p "$pid" -Ffn 2>/dev/null </dev/null) || no retry "lsof couldn't list the session's open files"
       a=$(lst "$pid") && [ "$a" = "$b" ] || no ended "the session's process has ended"
       fd=
       while IFS= read -r line; do
@@ -348,7 +360,4 @@ enum AntigravityRemote {
         return .inconclusive(.retry("the check printed nothing Temple expected"))
     }
 
-    /// Where a conversation's database is, as a read takes it (`~` is the
-    /// host's home).
-    static func database(_ id: String) -> String { "~/" + storeFolder + "/conversations/" + id + ".db" }
 }

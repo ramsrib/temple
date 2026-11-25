@@ -3097,7 +3097,7 @@ Antigravity's store and id plugged in, and nothing beside it.
   2026-11-25 (sqlite3 3.46 and 3.53 on Linux, Apple's 3.54, Python's
   module): a `mode=ro` open creates `-wal` and `-shm` beside a WAL database
   that has neither (Linux), and `-shm` beside a log a crashed writer left
-  without one (everywhere, v0.10.0's local reader included); 
+  without one (everywhere, v0.10.0's local reader included);
   `mode=ro&immutable=1` creates nothing. So both readers
   (`AntigravityRemote.sqlite`, `ReadOnlySQLite`) pick: no `-wal` is a
   checked `immutable` snapshot; a `-wal` and a `-shm` is a live writer,
