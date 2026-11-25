@@ -299,9 +299,8 @@ final class HistoryRowBuilder {
         let archived: Bool = { if case .archived = standing { return true }; return false }()
         let canResume: Bool = {
             if conflict != nil { return false }
-            // Another Temple's row opens on its host, which runs only the
-            // agents a host can (ADR-043).
-            guard let member else { return catalog != nil || (peer.map { Agent.remoteAgents.contains($0.agent) } ?? false) }
+            // Another Temple's row opens on its host.
+            guard let member else { return catalog != nil || peer != nil }
             // A member with no folder recorded opens in its peer's (section 4).
             return (member.canResume || (peer != nil && member.agent != nil)) && !(archived && (transcriptMissing || folderMissing))
         }()

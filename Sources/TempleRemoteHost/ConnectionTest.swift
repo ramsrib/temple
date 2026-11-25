@@ -221,6 +221,24 @@ public final class ConnectionTest: ObservableObject, Identifiable {
         summaryDraft.codex = codex
         set(Self.row("codex", codex, path: environment.path))
 
+        set(Row(id: "agy", verdict: .running, line: "\(Agent.antigravity.displayName): checking…"))
+        let antigravity = await ToolCheck.run("agy", using: exec)
+        if Task.isCancelled { return }
+        summaryDraft.antigravity = antigravity
+        var agyRow = Self.row("agy", antigravity, path: environment.path)
+        // Optional: its absence is said, not flagged.
+        if antigravity == .missing { agyRow.verdict = .info }
+        if case .runs = antigravity {
+            let reader = await SQLiteReaderCheck.run(using: exec)
+            if Task.isCancelled { return }
+            summaryDraft.sqliteReader = reader
+            if reader == .none {
+                agyRow.verdict = .advisory
+                agyRow.line += "; " + SQLiteReaderCheck.rowNote
+            }
+        }
+        set(agyRow)
+
         set(Row(id: "tmux", verdict: .running, line: "tmux: checking it can start a session…"))
         let (tmux, tmuxShown) = await TmuxCheck.runShowing(nonce: RemoteQuoting.nonce(), using: exec)
         if Task.isCancelled { return }

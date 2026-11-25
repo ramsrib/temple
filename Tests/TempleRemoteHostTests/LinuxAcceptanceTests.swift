@@ -774,7 +774,7 @@ extension LinuxAcceptanceTests {
 
         /// Starts a pending Codex session and waits for its composer.
         func launch(_ extra: [String], label: String) async throws -> (plan: RemoteSessions.OpenPlan, socket: String) {
-            let outcome = try await sessions.openPending(handle: nil, directory: folder, extraArguments: extra)
+            let outcome = try await sessions.openPending(agent: .codex, handle: nil, directory: folder, extraArguments: extra)
             let plan = try pendingPlan(outcome)
             handles.append(plan.handle)
             markers.append(RecordDirectory.marker(from: try XCTUnwrap(store.run(plan.handle)).recordPath) ?? "")

@@ -48,7 +48,8 @@ final class RemoteSourceTests: XCTestCase {
         var failures: Int { lock.withLock { _failures } }
         init(_ exec: RemoteExec, roots: [Agent: RemoteTranscriptRoot]? = nil) {
             self.exec = exec
-            self.roots = roots ?? [.claude: RemoteTranscriptRoot(.unset, base: nil)!, .codex: RemoteTranscriptRoot(.unset, base: nil)!]
+            self.roots = roots ?? [.claude: RemoteTranscriptRoot(.unset, base: nil)!, .codex: RemoteTranscriptRoot(.unset, base: nil)!,
+                                   .antigravity: RemoteTranscriptRoot(.unset, base: nil)!]
         }
         func transcriptContext(sessionIDs: [String], refresh: Bool) async throws -> RemoteTranscriptContext {
             RemoteTranscriptContext(exec: exec, roots: Dictionary(uniqueKeysWithValues: sessionIDs.map { ($0, roots) }))

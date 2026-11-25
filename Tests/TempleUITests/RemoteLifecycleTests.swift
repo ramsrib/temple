@@ -275,6 +275,7 @@ final class FakeRemoteHost: RemoteSessionHost {
     struct Pending: Equatable {
         var handle: String
         var directory: String
+        var agent: Agent = .codex
         var sessionID: String?
         var attachment = 1
         var ended = false
@@ -288,13 +289,15 @@ final class FakeRemoteHost: RemoteSessionHost {
     private var pendingCounter = 0
     var pendingOpenGate: (() async -> Void)?
     private(set) var pendingOpens: [(handle: String?, directory: String)] = []
-    func openPending(handle: String?, directory: String) async throws -> RemotePendingOpenResult {
+    private(set) var pendingOpenAgents: [Agent] = []
+    func openPending(agent: Agent, handle: String?, directory: String) async throws -> RemotePendingOpenResult {
         pendingOpens.append((handle, directory))
+        pendingOpenAgents.append(agent)
         if let pendingOpenGate { await pendingOpenGate() }
         if let openError { throw openError }
         guard let handle else {
             pendingCounter += 1
-            let run = Pending(handle: "p\(pendingCounter)", directory: directory)
+            let run = Pending(handle: "p\(pendingCounter)", directory: directory, agent: agent)
             pending.append(run)
             return .plan(RemoteOpenPlan(handle: run.handle, attachment: 1, creating: true,
                                         command: TerminalCommand(argv: ["ssh", "create", run.handle], cwd: "/Users/me"),
@@ -441,7 +444,10 @@ final class FakeRemoteHost: RemoteSessionHost {
     }
 
     var unjoined: [(handle: String, sessionID: String, directory: String?)] = []
-    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)] { unjoined }
+    var unjoinedAgent: Agent = .codex
+    func unjoinedClaims() async -> [(handle: String, sessionID: String, agent: Agent, directory: String?)] {
+        unjoined.map { ($0.handle, $0.sessionID, unjoinedAgent, $0.directory) }
+    }
 
     var pendingRunsAnswer: (() -> [RemotePendingRun])?
     var pendingRunsGate: (() async -> Void)?
@@ -449,7 +455,7 @@ final class FakeRemoteHost: RemoteSessionHost {
         if let pendingRunsGate { await pendingRunsGate() }
         if let pendingRunsAnswer { return pendingRunsAnswer() }
         return pending.filter { ($0.sessionID == nil || $0.claimed) && !$0.dismissed && !$0.tabClosed }
-            .map { RemotePendingRun(handle: $0.handle, directory: $0.directory, ended: $0.ended,
+            .map { RemotePendingRun(handle: $0.handle, agent: $0.agent, directory: $0.directory, ended: $0.ended,
                                     sessionID: $0.claimed ? $0.sessionID : nil, typed: $0.typed, joined: $0.joined) }
     }
 

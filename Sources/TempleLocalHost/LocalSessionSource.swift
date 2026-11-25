@@ -850,6 +850,16 @@ public final class LocalSessionSource: HostSessionSource, HostSourceDiagnostics,
     }
 
     /// Off the source's queue, so reads run side by side.
+    /// Open by id. On a Mac where `agy` has never kept a conversation (its
+    /// folder isn't there), Antigravity has none: `agy` keeps every
+    /// conversation under that one folder, and nothing moves it. Claude's
+    /// and Codex's roots can be moved, so theirs stays "can't tell".
+    public func lookup(id: String) async throws -> SessionLookup {
+        var empty: Set<Agent> = []
+        if let store = antigravityStore, !FileManager.default.fileExists(atPath: store.conversationsRoot.path) { empty.insert(.antigravity) }
+        return try await SessionLookup.standard(id: id, source: self, listedEmpty: empty)
+    }
+
     public func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead {
         guard locator.host == host, let store = stores.first(where: { $0.agent == agent }) else {
             throw TranscriptReadError.unreadable("not a \(agent.displayName) transcript on this Mac")

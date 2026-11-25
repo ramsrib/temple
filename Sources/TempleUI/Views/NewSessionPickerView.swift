@@ -19,7 +19,7 @@ struct NewSessionPickerView: View {
     var body: some View {
         // One filter pass per render (the palettes' discipline).
         let projects = self.projects
-        let hosts = Agent.remoteAgents.contains(model.newSessionPickerAgent) ? model.remoteLaunchHosts : []
+        let hosts = model.remoteLaunchHosts
         // The trailing pseudo-rows: "Choose folder…" is always reachable by
         // keyboard, so a project Temple has never indexed is never mouse-only;
         // below it, "Choose folder on <host>…" per host a session can start on.

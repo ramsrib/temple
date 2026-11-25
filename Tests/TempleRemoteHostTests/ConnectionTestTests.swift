@@ -108,6 +108,7 @@ final class ConnectionTestTests: XCTestCase {
             "Login shell: /bin/bash, PATH read.",
             "Claude Code: 2.1.283 at /home/mentes/.local/bin/claude",
             "No codex command on PATH.",
+            "No agy command on PATH.",
             "tmux: 3.4, can start sessions",
             "logind: this host ends your processes when your last login ends (KillUserProcesses=yes). Run loginctl enable-linger to keep sessions alive.",
         ])

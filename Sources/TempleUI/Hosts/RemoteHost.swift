@@ -64,9 +64,7 @@ final class RemoteHostLauncher: RemoteSessionHost {
     var hostName: String { sessions.record.name }
 
     func availability(_ agent: Agent) -> LaunchAvailability {
-        // Temple reads Antigravity's store on this Mac only (ADR-043).
-        guard Agent.remoteAgents.contains(agent) else { return .unavailable(reason: "Temple can start \(agent.displayName) only on this Mac, not on hosts.") }
-        return check(agent)
+        check(agent)
     }
 
     /// Remote tabs open asynchronously (`open`); this synchronous path is
@@ -293,12 +291,13 @@ final class RemoteHostLauncher: RemoteSessionHost {
         await sessions.clientExitStatus(handle, attachment: attachment)
     }
 
-    // MARK: Codex identity
+    // MARK: Identity of a new Codex or Antigravity session
 
-    func openPending(handle: String?, directory: String) async throws -> RemotePendingOpenResult {
+    func openPending(agent: Agent, handle: String?, directory: String) async throws -> RemotePendingOpenResult {
         let outcome: RemoteSessions.PendingOpenOutcome
         do {
-            outcome = try await sessions.openPending(handle: handle, directory: directory, extraArguments: extraArgs(.codex))
+            outcome = try await sessions.openPending(agent: agent, handle: handle, directory: directory,
+                                                     extraArguments: extraArgs(agent))
         } catch let failure as AttachPreparationFailed {
             throw RemoteReattachFailure(handle: failure.handle, attachment: failure.attachment, message: failure.localizedDescription)
         } catch let gone as PendingRunGone {
@@ -365,13 +364,13 @@ final class RemoteHostLauncher: RemoteSessionHost {
 
     func markJoined(_ handle: String) async throws { try await sessions.markJoined(handle) }
 
-    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)] {
-        await sessions.unjoinedClaims().compactMap { run in run.sessionID.map { (run.handle, $0, run.directory) } }
+    func unjoinedClaims() async -> [(handle: String, sessionID: String, agent: Agent, directory: String?)] {
+        await sessions.unjoinedClaims().compactMap { run in run.sessionID.map { (run.handle, $0, run.agent, run.directory) } }
     }
 
     func pendingRuns() async -> [RemotePendingRun] {
         await sessions.pendingRuns().map {
-            RemotePendingRun(handle: $0.handle, directory: $0.directory ?? $0.directoryIntent, ended: $0.isEnded,
+            RemotePendingRun(handle: $0.handle, agent: $0.agent, directory: $0.directory ?? $0.directoryIntent, ended: $0.isEnded,
                              sessionID: $0.sessionID, typed: $0.inputSeenAt != nil, joined: $0.joinedAt != nil)
         }
     }

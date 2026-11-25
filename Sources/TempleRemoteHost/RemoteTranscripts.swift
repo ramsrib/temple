@@ -115,13 +115,19 @@ enum RemoteTranscripts {
     temple_find() {
       _ag=$1; _p=$2; _ids=$3; set --
       for _n in $_ids; do
-        if [ "$_ag" = claude ]; then set -- "$@" -o -name "$_n.jsonl"
-        else set -- "$@" -o -iname "rollout-*-$_n.jsonl" -o -iname "rollout-*-${_n}_*.jsonl"; fi
+        case $_ag in
+          claude) set -- "$@" -o -name "$_n.jsonl" ;;
+          antigravity) set -- "$@" -o -name "$_n.db" ;;
+          *) set -- "$@" -o -iname "rollout-*-$_n.jsonl" -o -iname "rollout-*-${_n}_*.jsonl" ;;
+        esac
       done
       [ $# -gt 0 ] || return 0
       shift
-      if [ "$_ag" = claude ]; then set -- "$_p" -mindepth 2 -maxdepth 2 \( "$@" \)
-      else set -- "$_p" \( "$@" \); fi
+      case $_ag in
+        claude) set -- "$_p" -mindepth 2 -maxdepth 2 \( "$@" \) ;;
+        antigravity) set -- "$_p" -mindepth 1 -maxdepth 1 \( "$@" \) ;;
+        *) set -- "$_p" \( "$@" \) ;;
+      esac
       if [ -n "$gnu" ]; then find -H "$@" -printf '%y\t%s\t%T@\t%i\t%p\0' 2>/dev/null
       else find -H "$@" -exec sh -c 'for f; do if [ -L "$f" ]; then y=l; elif [ -f "$f" ]; then y=f; else y=o; fi; s=$(stat -f "%z%t%Fm%t%i" -- "$f") || exit 1; printf "%s\t%s\t%s\0" "$y" "$s" "$f"; done' temple-stat {} + 2>/dev/null
       fi
@@ -129,7 +135,11 @@ enum RemoteTranscripts {
     i=0
     while [ $# -ge 5 ] && [ "$1" != -- ]; do
       ag=$1; st=$2; v=$3; b=$4; ids=$5; shift 5
-      if [ "$ag" = claude ]; then def=.claude; sub=projects; else def=.codex; sub=sessions; fi
+      case $ag in
+        claude) def=.claude; sub=projects ;;
+        antigravity) def='.gemini/antigravity-cli'; sub=conversations ;;
+        *) def=.codex; sub=sessions ;;
+      esac
       d=
       case $st in
         set) case $v in /*) d=$v ;; *) [ -n "$b" ] && d=$b/$v ;; esac ;;

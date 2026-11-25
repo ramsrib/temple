@@ -249,7 +249,7 @@ final class RemoteColdReadTests: XCTestCase {
         // stuck opening.
         var opening = RemoteTabState(phase: .opening)
         opening.handle = "p9"
-        let chip = app.openSessions.appendPendingChip(host: hostID, handle: "p9", directory: "/home/u/p", ended: false)
+        let chip = app.openSessions.appendPendingChip(host: hostID, agent: .codex, handle: "p9", directory: "/home/u/p", ended: false)
         chip.remote = opening
         app.openSessions.remoteTabs.retireHost(hostID)
         XCTAssertEqual(chip.remote?.phase, .disconnected)

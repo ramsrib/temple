@@ -254,6 +254,47 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(remote.identifies.count, asked)
     }
 
+    /// A new Antigravity session on a host is pending the same way (ADR-044):
+    /// `agy` makes its conversation at the first prompt, and the pane's own
+    /// process then holds its lock. The run is opened for Antigravity, the
+    /// claim joins core as an Antigravity session, and the tab becomes it.
+    func testANewAntigravitySessionOnAHostIsPendingThenAdoptedByItsLock() async throws {
+        model.remoteTabs.identitySchedule = [60]
+        model.remoteTabs.inputIdentityDelay = 0.02
+        remote.identityResult = .adopted("a9", directory: "/home/u/project")
+        let tab = model.newSession(agent: .antigravity, project: Fixture.key("~/project", host: hostID))
+        await settle(tab.hasLiveProcess, "the pending run's tab connects")
+        XCTAssertNil(tab.sessionID)
+        XCTAssertEqual(tab.title, Agent.antigravity.newSessionTitle)
+        XCTAssertEqual(remote.pendingOpenAgents, [.antigravity])
+        XCTAssertTrue(joins.isEmpty, "nothing reaches core before the id is known")
+        XCTAssertTrue(remote.identifies.isEmpty, "the schedule's first check is a minute away")
+        // The first prompt: checked within moments, not at the next minute.
+        model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
+        await settle(tab.sessionID == "a9", "adopted after the first prompt")
+        XCTAssertEqual(joins.map(\.agent), [.antigravity])
+        XCTAssertEqual(joins.first?.via, .created)
+        XCTAssertEqual(directories.last?.2, "/home/u/project")
+        XCTAssertEqual(tab.agent, .antigravity)
+        XCTAssertFalse(tab.isProvisional)
+        XCTAssertEqual(persistence.load().map(\.sessionID), ["a9"])
+    }
+
+    /// A pending Antigravity run comes back at launch as an Antigravity chip,
+    /// and a claim joined at launch joins as Antigravity's.
+    func testAPendingAntigravityRunRestoresAsItsOwnAgent() async throws {
+        remote.pending = [.init(handle: "p4", directory: "/home/u/p", agent: .antigravity)]
+        remote.unjoined = [("p5", "a5", "/home/u/q")]
+        remote.unjoinedAgent = .antigravity
+        model.remoteTabs.restorePending(hosts: [hostID])
+        await settle(self.model.tabs.contains { $0.remote?.handle == "p4" })
+        let chip = try XCTUnwrap(model.tabs.first { $0.remote?.handle == "p4" })
+        XCTAssertEqual(chip.agent, .antigravity)
+        XCTAssertEqual(chip.title, Agent.antigravity.newSessionTitle)
+        XCTAssertNil(chip.sessionID)
+        XCTAssertEqual(joins.first { $0.id == "a5" }?.agent, .antigravity)
+    }
+
     /// Inconclusive and nothing typed: nobody is asked anything. Once
     /// something was typed, the suggestions come; a decline removes one for
     /// good; a yes claims and adopts.
@@ -356,7 +397,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         remote.identityResult = .taken
         remote.suggestionsResult = .candidates([suggestion()])
         let tab = await newCodex()
-        await settle(tab.remote?.identityNote == RemoteCopy.couldNotTell)
+        await settle(tab.remote?.identityNote == RemoteCopy.couldNotTell(.codex))
         XCTAssertNil(tab.sessionID)
         // A yes that turns out taken says the same, and drops that candidate.
         remote.confirmResult = .taken
@@ -385,7 +426,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertFalse(tab.isProvisional)
         XCTAssertEqual(tab.remote?.suggestions, [], "no question")
         XCTAssertEqual(tab.remote?.linkedOnItsOwn, true)
-        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.linkedOnItsOwn(suggestion()))
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.linkedOnItsOwn(suggestion(), agent: .codex))
         XCTAssertEqual(persistence.load().map(\.sessionID), ["c7"])
     }
 
@@ -512,7 +553,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         let tab = await newCodex()
         model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
         await settle(tab.remote?.linkedOnItsOwn == true)
-        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.linkedOnItsOwn(suggestion()))
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.linkedOnItsOwn(suggestion(), agent: .codex))
         XCTAssertEqual(tab.sessionID, "c7")
         tab.activity = .idle
         model.closeTab(tab.id)
@@ -563,8 +604,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model.surfaceDidSubmitInput(try XCTUnwrap(second.surface))
         await settle(second.remote?.suggestions.count == 2)
         for candidate in second.remote?.suggestions ?? [] { model.remoteTabs.decline(candidate, in: second) }
-        XCTAssertEqual(second.remote?.identityNote, RemoteCopy.noOtherCandidate)
-        XCTAssertEqual(RemoteCopy.noOtherCandidate, "No Codex session has started in this folder since the tab opened, apart from "
+        XCTAssertEqual(second.remote?.identityNote, RemoteCopy.noOtherCandidate(.codex))
+        XCTAssertEqual(RemoteCopy.noOtherCandidate(.codex), "No Codex session has started in this folder since the tab opened, apart from "
                        + "any you said weren't this tab's. Temple checks again every minute while the tab is connected; "
                        + "Try again checks now. The tab keeps working; it gets a sidebar row once Temple finds its session.")
     }
@@ -579,8 +620,8 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model.surfaceDidSubmitInput(try XCTUnwrap(tab.surface))
         await settle(tab.remote?.suggestions.count == 2)
         for candidate in tab.remote?.suggestions ?? [] { model.remoteTabs.decline(candidate, in: tab) }
-        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate)
-        XCTAssertEqual(RemoteCopy.couldNotTell,
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate(.codex))
+        XCTAssertEqual(RemoteCopy.couldNotTell(.codex),
                        "Temple couldn't tell which Codex session this is. The tab keeps working; it gets a sidebar row once Temple can tell.")
         let lookups = remote.suggestionLookups.count
         let hold = Gate()
@@ -595,7 +636,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(tab.remote?.retrying == false)
         XCTAssertEqual(tab.remote?.retryResult, "Checked again: still no new Codex session in this folder.")
         XCTAssertEqual(tab.remote?.suggestions, [], "neither comes back")
-        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate)
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate(.codex))
         model.remoteTabs.detach(tab.id)
 
     }
@@ -614,7 +655,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertFalse(model.remoteTabs.inputCommitted(handle))
         model.remoteTabs.detach(tab.id)
         await settle(!self.model.tabs.contains { $0 === tab })
-        model.remoteTabs.openPendingRun(handle: handle, host: hostID, directory: "/home/u/project", typed: true)
+        model.remoteTabs.openPendingRun(handle: handle, agent: .codex, host: hostID, directory: "/home/u/project", typed: true)
         let reopened = try XCTUnwrap(model.tabs.first { $0.remote?.handle == handle })
         XCTAssertTrue(reopened.inputSubmitted, "the tab asks at once")
         XCTAssertFalse(model.remoteTabs.inputCommitted(handle), "nothing assumed written")
@@ -636,7 +677,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model.remoteTabs.retryIdentity(tab)
         await settle(tab.remote?.suggestions.count == 2)
         for candidate in tab.remote?.suggestions ?? [] { model.remoteTabs.decline(candidate, in: tab) }
-        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate)
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate(.codex))
         remote.suggestionsResult = .unavailable("ssh: connect to host box port 22: Connection refused")
         model.remoteTabs.retryIdentity(tab)
         await settle(tab.remote?.retrying == false)
@@ -644,7 +685,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
                        "Couldn't check again: ssh: connect to host box port 22: Connection refused.")
         remote.suggestionsResult = .candidates([])
         model.remoteTabs.retryIdentity(tab)
-        await settle(tab.remote?.retrying == false && tab.remote?.retryResult == RemoteCopy.checkedStillNone,
+        await settle(tab.remote?.retrying == false && tab.remote?.retryResult == RemoteCopy.checkedStillNone(.codex),
                      "a lookup that came back empty")
     }
 
@@ -691,7 +732,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertFalse(model.tabs.contains { $0 === tab })
         XCTAssertEqual(tab.remote?.openToken, token, "detach leaves the old object's token intact")
         remote.identityGate = nil
-        model.remoteTabs.openPendingRun(handle: handle, host: hostID, directory: "/home/u/project", typed: false)
+        model.remoteTabs.openPendingRun(handle: handle, agent: .codex, host: hostID, directory: "/home/u/project", typed: false)
         let reopened = try XCTUnwrap(model.tabs.first { $0.remote?.handle == handle })
         await settle(reopened.hasLiveProcess)
         remote.suggestionsQueue = [
@@ -723,7 +764,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model.remoteTabs.retryIdentity(tab)
         await settle(tab.remote?.suggestions.count == 2)
         for candidate in tab.remote?.suggestions ?? [] { model.remoteTabs.decline(candidate, in: tab) }
-        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate)
+        XCTAssertEqual(tab.remote?.identityNote, RemoteCopy.noOtherCandidate(.codex))
         let hold = Gate()
         let lookups = remote.suggestionLookups.count
         remote.suggestionsQueue = [(gate: { await hold.wait() }, answer: .candidates([])),
@@ -766,7 +807,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         let tab = await newCodex()
         await settle(tab.remote?.suggestions.count == 1)
         model.remoteTabs.decline(try XCTUnwrap(tab.remote?.suggestions.first), in: tab)
-        await settle(tab.remote?.identityNote == RemoteCopy.noOtherCandidate, "never a bare tab")
+        await settle(tab.remote?.identityNote == RemoteCopy.noOtherCandidate(.codex), "never a bare tab")
         XCTAssertNil(tab.sessionID)
     }
 
@@ -867,7 +908,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         await settle(!self.model.tabs.contains { $0 === tab })
         await settle(self.remote.closedPending == ["p1"])
         XCTAssertTrue(remote.stops.isEmpty)
-        model.remoteTabs.openPendingRun(handle: "p1", host: hostID, directory: "/home/u/project")
+        model.remoteTabs.openPendingRun(handle: "p1", agent: .codex, host: hostID, directory: "/home/u/project")
         let reopened = try XCTUnwrap(model.activeTab)
         await settle(reopened.hasLiveProcess)
         XCTAssertEqual(factory.created.last?.startedCommand?.argv, ["ssh", "attach", "p1"])
@@ -937,14 +978,14 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertEqual(tab.remote?.phase, .endedPending)
         try await Task.sleep(for: .milliseconds(50))
         XCTAssertEqual(tab.remote?.diagnostics, [], "nothing fetched for an ended run")
-        let question = RemoteCopy.codexEndedQuestion("box", suggestion: try XCTUnwrap(tab.remote?.suggestions.first))
+        let question = RemoteCopy.endedQuestion("box", agent: .codex, suggestion: try XCTUnwrap(tab.remote?.suggestions.first))
         XCTAssertTrue(question.hasPrefix("Codex ended on box before Temple learned which session this was. "
                                          + "Is it \u{201C}reply with the word ok\u{201D} ("), question)
         XCTAssertTrue(question.hasSuffix(")?"), question)
         XCTAssertEqual(RemoteCopy.endedScreenNotKept("box", agent: .codex), "Codex's last screen on box isn't kept after it ends.")
         let unread = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: Date(),
                                       directory: "/w", promptKnown: false)
-        XCTAssertTrue(RemoteCopy.codexEndedQuestion("box", suggestion: unread)
+        XCTAssertTrue(RemoteCopy.endedQuestion("box", agent: .codex, suggestion: unread)
             .contains("Is it the one whose first prompt couldn't be read ("))
     }
 
@@ -1058,7 +1099,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
     /// session (joined, then attached), never stuck opening.
     func testAPendingRunIdentifiedElsewhereOpensAsThatSession() async throws {
         remote.pending = [.init(handle: "p7", directory: "/home/u/project", sessionID: "c3")]
-        model.remoteTabs.openPendingRun(handle: "p7", host: hostID, directory: "/home/u/project")
+        model.remoteTabs.openPendingRun(handle: "p7", agent: .codex, host: hostID, directory: "/home/u/project")
         let tab = try XCTUnwrap(model.activeTab)
         await settle(tab.hasLiveProcess, "opened as the session")
         XCTAssertEqual(tab.sessionID, "c3")
@@ -1282,7 +1323,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         remote.ledgerOverride = RemoteStoreLedger(store: store)
         remote.pendingRunsAnswer = {
             (try! store.pendingRuns(host: self.hostID)).map {
-                RemotePendingRun(handle: $0.handle, directory: $0.directoryIntent, ended: $0.isEnded,
+                RemotePendingRun(handle: $0.handle, agent: $0.agent, directory: $0.directoryIntent, ended: $0.isEnded,
                                  sessionID: $0.sessionID, typed: true, joined: $0.joinedAt != nil)
             }
         }
@@ -1403,7 +1444,7 @@ final class RemoteCodexIdentityTests: XCTestCase {
         model.requestClose(tabID: tab.id)
         model.remoteTabs.confirmDetach()
         await settle(!self.model.tabs.contains { $0 === tab })
-        model.remoteTabs.openPendingRun(handle: "p1", host: hostID, directory: "/home/u/project")
+        model.remoteTabs.openPendingRun(handle: "p1", agent: .codex, host: hostID, directory: "/home/u/project")
         let reopened = try XCTUnwrap(model.activeTab)
         await settle(reopened.remote?.phase == .disconnected)
         XCTAssertFalse(reopened.hasLiveProcess)
@@ -1586,11 +1627,11 @@ final class RemoteCodexIdentityTests: XCTestCase {
         XCTAssertFalse(RemoteCopy.suggestionQuestion(unread).contains("No prompt yet"))
         XCTAssertEqual(RemoteCopy.checkFailed("Temple couldn't read its records for this session on this Mac: disk error"),
                        "Couldn't check again: Temple couldn't read its records for this session on this Mac: disk error.")
-        XCTAssertEqual(RemoteCopy.linkedOnItsOwn(suggestion()),
+        XCTAssertEqual(RemoteCopy.linkedOnItsOwn(suggestion(), agent: .codex),
                        "Linked this tab to \u{201C}reply with the word ok\u{201D}, the only Codex session started in this folder since the tab opened. If that's the wrong session, close this tab; \u{201C}reply with the word ok\u{201D} stays in the sidebar.")
         let noon = Calendar.current.date(bySettingHour: 15, minute: 12, second: 0, of: Date())!
         let timed = RemoteSuggestion(rolloutPath: "/r", sessionID: "x", firstPrompt: nil, startedAt: noon, directory: "/w")
-        XCTAssertEqual(RemoteCopy.linkedOnItsOwn(timed, now: noon),
+        XCTAssertEqual(RemoteCopy.linkedOnItsOwn(timed, agent: .codex, now: noon),
                        "Linked this tab to the Codex session started \(RemoteCopy.startTime(noon, now: noon)), the only one started in this folder since the tab opened. If that's the wrong session, close this tab; the session started \(RemoteCopy.startTime(noon, now: noon)) stays in the sidebar.")
         XCTAssertTrue(RemoteCopy.noDaemonHint(enabled: false).hasPrefix("Add --no-daemon to Codex's arguments above"))
         XCTAssertTrue(RemoteCopy.noDaemonHint(enabled: true).hasPrefix("Codex's arguments include --no-daemon"))
@@ -1623,15 +1664,15 @@ final class RemoteCodexIdentityTests: XCTestCase {
             .contains("temple-r2 4 s after this tab opened"), "a host 10 min behind")
         XCTAssertFalse(RemoteCopy.suggestionQuestion(started(4, hostAhead: nil), tabOpenedAt: opened)
             .contains("after this tab opened"), "no offset: the clock time")
-        let copy = [RemoteCopy.codexEndedPending("box"), RemoteCopy.couldNotTell, RemoteCopy.noDaemonHint(enabled: true),
-                    RemoteCopy.noDaemonHint(enabled: false), RemoteCopy.codexQuestionLeadIn,
-                    RemoteCopy.linkedOnItsOwn(suggestion()), RemoteCopy.quitLine(["box", "jet"]),
+        let copy = [RemoteCopy.endedPending("box", agent: .codex), RemoteCopy.couldNotTell(.codex), RemoteCopy.noDaemonHint(enabled: true),
+                    RemoteCopy.noDaemonHint(enabled: false), RemoteCopy.questionLeadIn(.codex),
+                    RemoteCopy.linkedOnItsOwn(suggestion(), agent: .codex), RemoteCopy.quitLine(["box", "jet"]),
                     RemoteCopy.quitTitle(workingCount: 1), RemoteCopy.quitMessage(workingCount: 2),
-                    RemoteCopy.codexEndedQuestion("box", suggestion: suggestion()),
+                    RemoteCopy.endedQuestion("box", agent: .codex, suggestion: suggestion()),
                     RemoteCopy.endedScreenNotKept("box", agent: .codex), RemoteCopy.sessionsOn("box"),
                     RemoteCopy.stillWorking("box", agent: .codex), RemoteCopy.stillWorkingMessage("box"),
                     RemoteCopy.resumeAnyway("box"), RemoteCopy.scrollingNote, RemoteCopy.notSetUp("box"),
-                    RemoteCopy.startNewPending("box"), RemoteCopy.stopHint("box"), RemoteCopy.discardHelp(archives: true),
+                    RemoteCopy.startNewPending("box", agent: .codex), RemoteCopy.stopHint("box"), RemoteCopy.discardHelp(archives: true),
                     RemoteCopy.discardHelp(archives: false), RemoteCopy.goneFromConfig, RemoteCopy.hostFormNameNote,
                     RemoteCopy.hostFormEditHint, RemoteCopy.cancelConnectingHelp, RemoteCopy.startWithoutCheckingHelp,
                     RemoteCopy.suggestionQuestion(suggestion()), RemoteCopy.noTrackedSessions,

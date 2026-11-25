@@ -291,6 +291,17 @@ final class AntigravityStoreTests: XCTestCase {
     }
 }
 
+/// Open by id on a Mac: `agy` keeps every conversation under its one folder
+/// and nothing moves it, so no folder there is no conversation there.
+final class AntigravityLookupTests: XCTestCase {
+    func testAMacWithoutAgysFolderHasNoAntigravitySession() async throws {
+        let root = URL(fileURLWithPath: "/private/tmp/temple-agy-none-\(UUID().uuidString)")
+        let source = LocalSessionSource(stores: [AntigravitySessionStore(root: root)], monitorChanges: false)
+        let lookup = try await source.lookup(id: "502dbaf1-4ae5-4f7c-ab0f-53dfb69d6efd")
+        XCTAssertEqual(lookup[.antigravity], .notFound)
+    }
+}
+
 /// Which conversation a process has loaded: the one `presence/<id>.lock`
 /// the process itself holds open.
 final class ProcessLocksTests: XCTestCase {

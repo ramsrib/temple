@@ -84,11 +84,11 @@ final class ListingAuditTests: XCTestCase {
     // MARK: Rows
 
     func testAPlainStoreIsExhaustive() throws {
-        for agent in Agent.remoteAgents { XCTAssertTrue(try audit(agent), "\(agent)") }
+        for agent in [Agent.claude, .codex] { XCTAssertTrue(try audit(agent), "\(agent)") }
     }
 
     func testDSStoreAnywhereIsStillExhaustive() throws {
-        for agent in Agent.remoteAgents {
+        for agent in [Agent.claude, .codex] {
             let (dirLevel, fileLevel) = places(agent)
             try Data().write(to: dirLevel.appendingPathComponent(".DS_Store"))
             try Data().write(to: fileLevel.appendingPathComponent(".DS_Store"))
@@ -99,7 +99,7 @@ final class ListingAuditTests: XCTestCase {
     }
 
     func testAnyOtherHiddenEntryIsNotExhaustive() throws {
-        for agent in Agent.remoteAgents {
+        for agent in [Agent.claude, .codex] {
             let notes = places(agent).fileLevel.appendingPathComponent(".notes")
             try Data().write(to: notes)
             XCTAssertFalse(try audit(agent), "\(agent): a hidden file")
@@ -119,14 +119,14 @@ final class ListingAuditTests: XCTestCase {
     }
 
     func testAHiddenSymlinkToADirectoryIsNotExhaustive() throws {
-        for agent in Agent.remoteAgents {
+        for agent in [Agent.claude, .codex] {
             try link(places(agent).dirLevel.appendingPathComponent(".linked"), to: outside)
             XCTAssertFalse(try audit(agent), "\(agent)")
         }
     }
 
     func testAHiddenSymlinkToAFileIsNotExhaustive() throws {
-        for agent in Agent.remoteAgents {
+        for agent in [Agent.claude, .codex] {
             try link(places(agent).fileLevel.appendingPathComponent(".linked-file"), to: outside.appendingPathComponent("anything"))
             XCTAssertFalse(try audit(agent), "\(agent)")
         }
@@ -151,7 +151,7 @@ final class ListingAuditTests: XCTestCase {
     }
 
     func testADanglingSymlinkIsNotExhaustive() throws {
-        for agent in Agent.remoteAgents {
+        for agent in [Agent.claude, .codex] {
             try link(places(agent).dirLevel.appendingPathComponent("gone"), to: root.appendingPathComponent("nothing-here"))
             XCTAssertFalse(try audit(agent), "\(agent)")
         }
@@ -162,7 +162,7 @@ final class ListingAuditTests: XCTestCase {
         try FileManager.default.createDirectory(at: sealed.appendingPathComponent("inner"), withIntermediateDirectories: true)
         try FileManager.default.setAttributes([.posixPermissions: 0o000], ofItemAtPath: sealed.path)
         locked.append(sealed)
-        for agent in Agent.remoteAgents {
+        for agent in [Agent.claude, .codex] {
             try link(places(agent).dirLevel.appendingPathComponent("behind-a-wall"), to: sealed.appendingPathComponent("inner"))
             XCTAssertFalse(try audit(agent), "\(agent)")
         }
@@ -170,7 +170,7 @@ final class ListingAuditTests: XCTestCase {
 
     func testAMetadataReadThatFailsIsNotExhaustive() throws {
         struct Injected: Error {}
-        for agent in Agent.remoteAgents {
+        for agent in [Agent.claude, .codex] {
             let victim = places(agent).fileLevel.lastPathComponent
             let failing = EntryInspector { url, keys in
                 if url.lastPathComponent == victim { throw Injected() }
@@ -184,7 +184,7 @@ final class ListingAuditTests: XCTestCase {
     /// An entry whose metadata does not say (no answer, rather than no) is
     /// not taken as plain.
     func testMetadataThatDoesNotSayIsNotExhaustive() throws {
-        for agent in Agent.remoteAgents {
+        for agent in [Agent.claude, .codex] {
             let silent = EntryInspector { _, _ in URLResourceValues() }
             XCTAssertFalse(try audit(agent, inspector: silent), "\(agent)")
         }

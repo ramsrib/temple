@@ -436,12 +436,7 @@ public final class OpenSessionsModel: NSObject, ObservableObject {
             TempleUILog.launch.notice("new session refused on \(key.host.rawValue, privacy: .public): tmux unusable")
             return nil
         }
-        // The default agent, unless the project's host can't run it (an
-        // Antigravity default on a project on another machine): then the
-        // first agent it can.
-        let preferred = defaultAgent()
-        let agent = key.host.isLocal || Agent.remoteAgents.contains(preferred) ? preferred : Agent.remoteAgents[0]
-        return newSession(agent: agent, project: key)
+        return newSession(agent: defaultAgent(), project: key)
     }
 
     /// Reconcile seam (ADR-008, ADR-043): rebind a provisional tab to its
@@ -1680,13 +1675,14 @@ extension OpenSessionsModel {
         persist()
     }
 
-    /// A pending Codex session on a host, restored from its run (it has no
-    /// id, so no `open_tabs` row): an inert chip that attaches by its
-    /// handle when activated, or asks about an ended one.
+    /// A pending Codex or Antigravity session on a host, restored from its
+    /// run (it has no id, so no `open_tabs` row): an inert chip that
+    /// attaches by its handle when activated, or asks about an ended one.
     @discardableResult
-    func appendPendingChip(host: HostID, handle: String, directory: String, ended: Bool, typed: Bool = false) -> SessionTab {
-        let tab = SessionTab(kind: .session, sessionID: nil, agent: .codex, projectPath: directory,
-                             title: Agent.codex.newSessionTitle, isProvisional: true, host: host)
+    func appendPendingChip(host: HostID, agent: Agent, handle: String, directory: String, ended: Bool,
+                           typed: Bool = false) -> SessionTab {
+        let tab = SessionTab(kind: .session, sessionID: nil, agent: agent, projectPath: directory,
+                             title: agent.newSessionTitle, isProvisional: true, host: host)
         var state = RemoteTabState(phase: ended ? .endedPending : .disconnected)
         state.handle = handle
         tab.remote = state
@@ -1710,9 +1706,9 @@ extension OpenSessionsModel {
     }
 
     @discardableResult
-    func appendClaimedChip(host: HostID, sessionID: String, directory: String) -> SessionTab {
-        let tab = SessionTab(kind: .session, sessionID: sessionID, agent: .codex, projectPath: directory,
-                             title: Agent.codex.newSessionTitle, isResume: true, host: host)
+    func appendClaimedChip(host: HostID, sessionID: String, agent: Agent, directory: String) -> SessionTab {
+        let tab = SessionTab(kind: .session, sessionID: sessionID, agent: agent, projectPath: directory,
+                             title: agent.newSessionTitle, isResume: true, host: host)
         tabs.append(tab)
         return tab
     }

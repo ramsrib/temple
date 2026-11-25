@@ -401,13 +401,27 @@ public struct HostTestSummary: Sendable, Equatable {
     public var environment: RemoteEnvironment?
     public var claude: ToolCheck?
     public var codex: ToolCheck?
+    public var antigravity: ToolCheck?
+    /// What reads Antigravity's conversations there (`sqlite3`, `python3`),
+    /// checked only when `agy` runs; nil when not checked.
+    public var sqliteReader: SQLiteReaderCheck?
     public var tmux: TmuxCheck?
     public var logind: LogindCheck?
 
     public init(failure: SSHFailure? = nil, connectedAs: String? = nil, environment: RemoteEnvironment? = nil,
-                claude: ToolCheck? = nil, codex: ToolCheck? = nil, tmux: TmuxCheck? = nil, logind: LogindCheck? = nil) {
+                claude: ToolCheck? = nil, codex: ToolCheck? = nil, antigravity: ToolCheck? = nil,
+                sqliteReader: SQLiteReaderCheck? = nil, tmux: TmuxCheck? = nil, logind: LogindCheck? = nil) {
         self.failure = failure; self.connectedAs = connectedAs; self.environment = environment
-        self.claude = claude; self.codex = codex; self.tmux = tmux; self.logind = logind
+        self.claude = claude; self.codex = codex; self.antigravity = antigravity; self.sqliteReader = sqliteReader
+        self.tmux = tmux; self.logind = logind
+    }
+
+    func check(_ agent: Agent) -> ToolCheck? {
+        switch agent {
+        case .claude: claude
+        case .codex: codex
+        case .antigravity: antigravity
+        }
     }
 
     public static let notTested = "Not tested since Temple started. Test the connection to check this host."
@@ -422,11 +436,15 @@ public struct HostTestSummary: Sendable, Equatable {
         var found: [String] = []
         if case .runs(_, let version, _)? = claude { found.append("Claude Code \(AgentInstall.versionNumber(in: version) ?? version)") }
         if case .runs(_, let version, _)? = codex { found.append("Codex \(AgentInstall.versionNumber(in: version) ?? version)") }
+        if case .runs(_, let version, _)? = antigravity {
+            found.append("Antigravity \(AgentInstall.versionNumber(in: version) ?? version)")
+        }
         if case .accepted(let version, _)? = tmux { found.append("tmux \(version)") }
         if !found.isEmpty { sentences.append("Found " + found.joined(separator: ", ") + ".") }
-        for (agent, check) in [(Agent.claude, claude), (.codex, codex)] {
-            if let problem = check.flatMap({ Self.problem(agent, $0) }) { sentences.append(problem) }
+        for agent in Agent.allCases where Self.isProblem(agent, check(agent)) {
+            if let problem = check(agent).flatMap({ Self.problem(agent, $0) }) { sentences.append(problem) }
         }
+        if sqliteReader == SQLiteReaderCheck.none { sentences.append(SQLiteReaderCheck.noneProblem) }
         if let problem = tmux.flatMap(Self.problem) { sentences.append(problem) }
         if logind == .killsUserProcesses(true) {
             sentences.append("Sessions here end when you log out (logind KillUserProcesses=yes); run loginctl enable-linger on the host.")
@@ -442,6 +460,15 @@ public struct HostTestSummary: Sendable, Equatable {
     public static func pathUnread(_ problem: String?) -> String {
         "Couldn't read the login shell's PATH (\(problem.map(trimmed) ?? "no answer")), "
             + "so agents installed under your home folder may not be found."
+    }
+
+    /// Whether a check is said as a problem in the status line: Antigravity
+    /// is optional, so its absence is no problem (Claude Code's and Codex's
+    /// is: they are what a host is added for).
+    static func isProblem(_ agent: Agent, _ check: ToolCheck?) -> Bool {
+        guard let check else { return false }
+        if agent == .antigravity, check == .missing { return false }
+        return problem(agent, check) != nil
     }
 
     static func problem(_ agent: Agent, _ check: ToolCheck) -> String? {
@@ -474,8 +501,7 @@ public struct HostTestSummary: Sendable, Equatable {
     /// run; nil otherwise (not tested, couldn't connect, or it ran).
     public func unavailableReason(for agent: Agent) -> String? {
         guard failure == nil else { return nil }
-        let check = agent == .claude ? claude : codex
-        if let check, check.provesUnavailable, let problem = Self.problem(agent, check) { return problem }
+        if let check = check(agent), check.provesUnavailable, let problem = Self.problem(agent, check) { return problem }
         if let tmux, tmux.provesUnavailable { return Self.problem(tmux) }
         return nil
     }
@@ -499,7 +525,43 @@ public struct HostTestSummary: Sendable, Equatable {
     /// user's processes at logout.
     public var isAdvisory: Bool {
         guard failure == nil else { return false }
-        let proven = [Agent.claude, .codex].contains { unavailableReason(for: $0) != nil }
-        return proven || environment?.path == nil || logind == .killsUserProcesses(true)
+        let proven = Agent.allCases.contains { Self.isProblem($0, check($0)) && unavailableReason(for: $0) != nil }
+        return proven || sqliteReader == SQLiteReaderCheck.none || environment?.path == nil || logind == .killsUserProcesses(true)
+    }
+}
+
+/// What reads Antigravity's conversations on a host (ADR-044): its store is
+/// SQLite, read with the host's `sqlite3`, else `python3`'s sqlite module.
+public enum SQLiteReaderCheck: Sendable, Equatable {
+    case found(String)
+    case none
+    case notChecked(reason: String)
+
+    static let script = """
+    if command -v sqlite3 >/dev/null 2>&1; then echo sqlite3
+    elif command -v python3 >/dev/null 2>&1; then echo python3
+    else echo none; fi
+    """
+
+    /// The Test connection's `agy` row, after its version.
+    public static let rowNote = "no sqlite3 or python3 here, so Temple can't read its sessions' titles and folders"
+
+    public static let noneProblem =
+        "Antigravity is here, but without sqlite3 or python3 Temple can't read the titles and folders of its sessions."
+
+    public static func run(using exec: RemoteExec) async -> SQLiteReaderCheck {
+        do {
+            let output = try await exec.run(script: script, args: [], deadline: ToolCheck.deadline)
+            guard output.reachedCommand, output.status == 0 else {
+                return .notChecked(reason: output.firstErrorLine ?? "ssh exited with status \(output.status)")
+            }
+            switch output.stdout.trimmingCharacters(in: .whitespacesAndNewlines) {
+            case "none": return .none
+            case let name where name == "sqlite3" || name == "python3": return .found(name)
+            case let other: return .notChecked(reason: "the check printed something Temple didn't expect: \(other)")
+            }
+        } catch {
+            return .notChecked(reason: error.localizedDescription)
+        }
     }
 }

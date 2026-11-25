@@ -105,7 +105,7 @@ public struct RemoteSessionSource: HostSessionSource {
         guard let access else { throw LocateError.transport("Temple doesn't read transcripts on \(host.rawValue).") }
         let listed = try await access.lookupListing(id)
         var agents: [Agent: AgentLookup] = [:]
-        for agent in Agent.remoteAgents {
+        for agent in Agent.allCases {
             let entry = listed[agent] ?? ([], .storeUnknown)
             agents[agent] = try await SessionLookup.resolve(id: id, agent: agent, candidates: entry.candidates,
                                                             listed: entry.shortfall, source: self)
@@ -450,14 +450,19 @@ actor RemoteTranscriptAccess {
         var result: [Agent: (candidates: [TranscriptCandidate], shortfall: LookupUncertainty?)] = [:]
         for agent in Agent.allCases {
             let shortfall: LookupUncertainty?
+            // `agy` keeps every conversation under its one folder, which
+            // nothing moves: no folder there is no conversation there. (A
+            // Claude or Codex root can be moved by a variable, so theirs is
+            // "can't tell".)
+            let absentStore: LookupUncertainty? = agent == .antigravity ? nil : .noStore
             if let root = listing.context.roots[id]?[agent],
                let index = listing.groups.firstIndex(of: Group(agent: agent, root: root)) {
                 switch listing.answer.roots[index] {
                 case .ok?:
-                    if listing.answer.noStore.contains(index) { shortfall = .noStore }
+                    if listing.answer.noStore.contains(index) { shortfall = absentStore }
                     else if case .files? = listing.answer.lists[index] { shortfall = nil }
                     else { shortfall = .listingFailed }
-                case RemoteTranscripts.RootOutcome.none?: shortfall = .noStore
+                case RemoteTranscripts.RootOutcome.none?: shortfall = absentStore
                 case .failed?: shortfall = .listingFailed
                 case .unknown?, nil: shortfall = .storeUnknown
                 }
@@ -521,10 +526,17 @@ actor RemoteTranscriptAccess {
         return list
     }
 
-    /// The agent's store under a canonical root: `<root>/projects/` or
-    /// `<root>/sessions/` (`/projects/` for a root of `/`).
+    /// The agent's store under a canonical root: `<root>/projects/`,
+    /// `<root>/sessions/` or `<root>/conversations/` (`/projects/` for a
+    /// root of `/`).
     static func store(_ root: RemotePath, agent: Agent) -> RemotePath {
-        RemotePath(bytes: root.bytes == [slash] ? [] : root.bytes).appending(agent == .claude ? "/projects/" : "/sessions/")
+        let folder: String
+        switch agent {
+        case .claude: folder = "/projects/"
+        case .codex: folder = "/sessions/"
+        case .antigravity: folder = "/conversations/"
+        }
+        return RemotePath(bytes: root.bytes == [slash] ? [] : root.bytes).appending(folder)
     }
 
     /// A normal absolute path: no empty, `.` or `..` component, so its
@@ -545,18 +557,18 @@ actor RemoteTranscriptAccess {
     /// Whether a transcript path is one the agent's store holds, as the
     /// local stores' `acceptsTranscript` decides: inside the store, normal,
     /// and the agent's shape (Claude: `<store>/<folder>/<id>.jsonl`; Codex:
-    /// a `rollout-*.jsonl` anywhere below `sessions`). Bytes throughout, as
-    /// `isNormal`.
+    /// a `rollout-*.jsonl` anywhere below `sessions`; Antigravity:
+    /// `<store>/<uuid>.db`). Bytes throughout, as `isNormal`.
     static func accepts(_ path: RemotePath, store: RemotePath, agent: Agent) -> Bool {
         let bytes = path.bytes, prefix = store.bytes
+        let suffix = Array((agent == .antigravity ? ".db" : ".jsonl").utf8)
         guard isNormal(path), bytes.count > prefix.count, bytes.starts(with: prefix),
-              bytes.reversed().starts(with: Array(".jsonl".utf8).reversed()) else { return false }
+              bytes.reversed().starts(with: suffix.reversed()) else { return false }
         let inside = bytes[prefix.count...].split(separator: slash, omittingEmptySubsequences: false)
         switch agent {
         case .claude: return inside.count == 2
         case .codex: return inside.last?.starts(with: Array("rollout-".utf8)) == true
-        // Not read on hosts yet (ADR-043): no SQLite there to ask.
-        case .antigravity: return false
+        case .antigravity: return inside.count == 1 && AntigravityFormat().name(path: path.string) != nil
         }
     }
 
@@ -579,6 +591,7 @@ actor RemoteTranscriptAccess {
     func read(_ locator: TranscriptLocator, agent: Agent, expecting id: String, facts: Bool) async throws -> TranscriptRead {
         guard !shut else { throw TranscriptReadError.transport("Temple is quitting") }
         do { try admit(bypass: false) } catch Breaker.tripped(let words) { throw TranscriptReadError.transport(words) }
+        if agent == .antigravity { return try await readAntigravity(locator, expecting: id, facts: facts) }
         let format = TranscriptFormats.format(for: agent)
         let window = TranscriptBytes.defaultWindow
         var headBytes = window
@@ -638,6 +651,86 @@ actor RemoteTranscriptAccess {
             return TranscriptRead(identity: identity.verdict, summary: summary, signature: bytes.closing,
                                   bytesRead: used, sharedRevision: nil)
         }
+    }
+
+    /// An Antigravity conversation: its rows, read by the host's own
+    /// SQLite (`AntigravityRemote`), handed to the format as one record, as
+    /// the local store does. A database whose stats moved during the read,
+    /// or that was busy, is read again, three times, then
+    /// `.changedDuringRead`.
+    private func readAntigravity(_ locator: TranscriptLocator, expecting id: String, facts: Bool) async throws -> TranscriptRead {
+        let format = AntigravityFormat()
+        let path = RemotePath(locator.path)
+        guard let name = format.name(path: locator.path), Self.isNormal(path) else {
+            throw TranscriptReadError.unreadable("not an Antigravity conversation")
+        }
+        // The summaries file beside the conversations folder.
+        let parts = path.bytes.split(separator: Self.slash, omittingEmptySubsequences: false)
+        let root = Array(parts.dropLast(2).joined(separator: [Self.slash]))
+        let summaries = RemotePath(bytes: root).appending("/conversation_summaries.db")
+        var changes = 0
+        while true {
+            let answer = try await readAntigravityOnce(locator.path, summaries: summaries.string, id: name.threadID, facts: facts)
+            switch answer {
+            case .missing: throw TranscriptReadError.missing
+            case .unreadable(let why): throw TranscriptReadError.unreadable(why)
+            case .busy:
+                changes += 1
+                if changes >= Self.attempts { throw TranscriptReadError.changedDuringRead }
+            case .rows(let opening, let closing, let record):
+                guard opening == closing else {
+                    changes += 1
+                    if changes >= Self.attempts { throw TranscriptReadError.changedDuringRead }
+                    continue
+                }
+                let identityLine = AntigravityFormat.Record(ids: record.ids, summary: nil, firstUserStep: nil).encoded()
+                let verdict = format.identity(lines: [identityLine], expecting: id)
+                var summary: TranscriptSummary?
+                var used = identityLine.count
+                if facts, verdict == .verified {
+                    let data = record.encoded()
+                    used = data.count
+                    let bytes = TranscriptBytes(head: data, tail: nil, fileSize: data.count,
+                                                window: max(data.count + 1, TranscriptBytes.defaultWindow))
+                    counters.update { $0.parses += 1 }
+                    if case .summary(let value) = format.facts(bytes, name: name, locator: locator,
+                                                                 modifiedAt: closing.modifiedAt, shared: .empty) {
+                        summary = value
+                    }
+                }
+                return TranscriptRead(identity: verdict, summary: summary, signature: closing, bytesRead: used,
+                                      sharedRevision: nil)
+            }
+        }
+    }
+
+    private func readAntigravityOnce(_ path: String, summaries: String, id: String,
+                                     facts: Bool) async throws -> AntigravityRemote.ReadAnswer {
+        try await admitted(bypass: false, cancelled: TranscriptReadError.transport("the read was cancelled")) {
+            TranscriptReadError.transport($0)
+        }
+        defer { release() }
+        let context: RemoteTranscriptContext
+        do { context = try await provider.transcriptContext(sessionIDs: [], refresh: false) } catch {
+            await transportFailed()
+            throw TranscriptReadError.transport(error.localizedDescription)
+        }
+        counters.update { $0.reads += 1 }
+        let output: RemoteOutput
+        do {
+            output = try await context.exec.run(script: AntigravityRemote.readProgram,
+                                                args: [path, summaries, id, facts ? "1" : "0"],
+                                                deadline: AntigravityRemote.readDeadline)
+        } catch {
+            await transportFailed()
+            throw TranscriptReadError.transport(error.localizedDescription)
+        }
+        guard output.reachedCommand, output.status == 0, let answer = AntigravityRemote.parseRead(output.data, id: id) else {
+            await transportFailed()
+            throw TranscriptReadError.transport(Self.failureLine(output, what: "the read"))
+        }
+        succeeded()
+        return answer
     }
 
     private func readOnce(_ path: String, headBytes: Int, window: Int, facts: Bool, home: String,

@@ -2245,9 +2245,10 @@ public final class AppModel: ObservableObject {
     }
 
     /// The agents `host` can run, the default agent first (the row most
-    /// clicks want). Antigravity runs on this Mac only (ADR-043).
+    /// clicks want). Every host runs every agent Temple knows; whether one
+    /// is installed there is the launcher's `availability`.
     public func agents(on host: HostID) -> [Agent] {
-        let available = host.isLocal ? Agent.allCases : Agent.remoteAgents
+        let available = Agent.allCases
         let preferred = settings.defaultAgent
         return available.contains(preferred) ? [preferred] + available.filter { $0 != preferred } : available
     }
@@ -2274,8 +2275,7 @@ public final class AppModel: ObservableObject {
     /// second on this Mac.
     public var alternateAgent: Agent { keyedAgents(on: .local).alternate }
 
-    /// What the menu bar's ⌘T and ⌥⌘T items start: the active project's host
-    /// decides (Antigravity runs on this Mac only).
+    /// What the menu bar's ⌘T and ⌥⌘T items start in the active project.
     public var commandAgents: (primary: Agent, alternate: Agent) {
         keyedAgents(on: openSessions.activeProjectKey?.host ?? .local)
     }

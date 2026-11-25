@@ -390,6 +390,8 @@ public final class RemoteSessions {
         let login: [Agent: RemoteTranscriptRoot] = [
             .claude: RemoteTranscriptRoot(launchConfig, base: nil),
             .codex: RemoteTranscriptRoot(launchCodexHome, base: nil),
+            // `agy` has no variable for its folder: always under $HOME.
+            .antigravity: RemoteTranscriptRoot(.unset, base: nil),
         ].compactMapValues { $0 }
         let host = host
         var runs: [RemoteRun] = []
@@ -412,7 +414,12 @@ public final class RemoteSessions {
                 roots[id] = [:]
                 continue
             }
-            let variable = latest.agent == .claude ? Self.effectiveRoot(of: latest) : Self.effectiveHome(of: latest)
+            let variable: RemoteEnvironment.Variable?
+            switch latest.agent {
+            case .claude: variable = Self.effectiveRoot(of: latest)
+            case .codex: variable = Self.effectiveHome(of: latest)
+            case .antigravity: variable = .unset
+            }
             roots[id] = RemoteTranscriptRoot(variable, base: latest.directory).map { [latest.agent: $0] } ?? [:]
         }
         return RemoteTranscriptContext(exec: exec, roots: roots)
@@ -466,15 +473,11 @@ public final class RemoteSessions {
     /// Temple never creates from a state where the original may be running.
     public func open(_ request: OpenRequest) async throws -> OpenOutcome {
         guard RemoteQuoting.isSafeToken(request.sessionID) else { throw OpenError.refused("This session id can't be sent to a host.") }
-        // Antigravity runs on this Mac only (ADR-043), however the open came
-        // (another Temple's History lists its sessions too).
-        guard Agent.remoteAgents.contains(request.agent) else {
-            throw OpenError.refused("Temple can start \(request.agent.displayName) only on this Mac, not on hosts.")
-        }
-        // Codex mints its own ids: a new Codex session is a pending run
-        // (`openPending`), never one started under an id Temple chose.
-        if request.agent == .codex, request.mode == .new || request.startNew {
-            throw OpenError.refused("A new Codex session starts without an id (Temple learns it later).")
+        // Codex and Antigravity mint their own ids: a new session of theirs
+        // is a pending run (`openPending`), never one started under an id
+        // Temple chose.
+        if request.agent.mintsOwnID, request.mode == .new || request.startNew {
+            throw OpenError.refused("A new \(request.agent.displayName) session starts without an id (Temple learns it later).")
         }
         let connection = try await resolvedConnection(refresh: true)
         let resume = request.mode == .resume && !request.startNew
@@ -814,7 +817,6 @@ public final class RemoteSessions {
         case (.claude, let id?, false): tail = ["--session-id", id]
         case (.claude, let id?, true): tail = ["--resume", id]
         case (.codex, let id?, _): tail = ["resume", id]
-        // Never offered on a host (ADR-043); the resume form, should it be.
         case (.antigravity, let id?, _): tail = ["--conversation", id]
         }
         return [agent.binaryName] + extra + tail
@@ -1323,14 +1325,17 @@ public final class RemoteSessions {
         case identified(handle: String, sessionID: String)
     }
 
-    /// Starts a new Codex session (`handle` nil): a pending run, written
-    /// before anything spawns, its agent `codex` with the extra arguments
-    /// and nothing else, so Codex mints the id. Or reopens a pending run by
-    /// its handle: attach-only while it is not Ended, as for any run.
-    public func openPending(handle: String?, directory: String, extraArguments: [String]) async throws -> PendingOpenOutcome {
+    /// Starts a new session of an agent that mints its own id (`handle`
+    /// nil): a pending run, written before anything spawns, its agent run
+    /// with the extra arguments and nothing else, so the agent mints the
+    /// id. Or reopens a pending run by its handle: attach-only while it is
+    /// not Ended, as for any run.
+    public func openPending(agent: Agent, handle: String?, directory: String,
+                            extraArguments: [String]) async throws -> PendingOpenOutcome {
+        guard agent.mintsOwnID else { throw OpenError.refused("A new \(agent.displayName) session starts with an id Temple gives it.") }
         let connection = try await resolvedConnection(refresh: true)
         guard let handle else {
-            var run = RemoteRun(handle: token(), host: host, agent: .codex, mode: .new, directoryIntent: directory,
+            var run = RemoteRun(handle: token(), host: host, agent: agent, mode: .new, directoryIntent: directory,
                                 sessionID: nil, recordPath: RecordDirectory.locator(marker: "r-" + token()), startedAt: now())
             run.conversation = .unconfirmed
             let candidate = run
@@ -1367,7 +1372,7 @@ public final class RemoteSessions {
                 }
             }
             return .plan(try await attachPlan(run, connection: connection,
-                                              agentArgv: agentArgv(.codex, sessionID: nil, resume: false, extra: extraArguments)))
+                                              agentArgv: agentArgv(run.agent, sessionID: nil, resume: false, extra: extraArguments)))
         }
     }
 
@@ -1417,12 +1422,13 @@ public final class RemoteSessions {
 
     private func identifyNow(_ handle: String) async -> Identity {
         guard !retired, !Task.isCancelled else { return .inconclusive(.retry(Retired().localizedDescription)) }
-        guard let run = await run(handle), run.agent == .codex else { return .inconclusive(.ended("Temple has no record of this session")) }
+        guard let run = await run(handle), run.agent.mintsOwnID else { return .inconclusive(.ended("Temple has no record of this session")) }
         if let id = run.sessionID { return .known(id) }
         if run.isEnded { return .inconclusive(.ended("the session has ended")) }
         guard run.creation == .proven, let pid = run.panePID, let directory = run.directory else {
             return .inconclusive(.retry("Temple hasn't seen this session start yet"))
         }
+        if run.agent == .antigravity { return await identifyAntigravity(run, panePID: pid) }
         guard let start = run.paneStart else { return .inconclusive(.lasting("this host has no /proc")) }
         guard let home = CodexHomeRoot.arguments(run.codexHome, base: directory) else {
             return .inconclusive(.lasting("Temple doesn't know which Codex home this session used"))
@@ -1439,6 +1445,20 @@ public final class RemoteSessions {
                 return .inconclusive(.retry("the open session file doesn't name this session's folder or its own id"))
             }
             return await claim(handle, sessionID: id, how: .verified, rolloutPath: path)
+        }
+    }
+
+    /// Antigravity's check: the conversation whose lock the pane's own
+    /// process holds (ADR-044). None yet is no conversation yet: `agy`
+    /// makes one at the first prompt.
+    private func identifyAntigravity(_ run: RemoteRun, panePID: Int) async -> Identity {
+        let exec: RemoteExec
+        do { exec = try await queryExec() } catch { return .inconclusive(.retry(error.localizedDescription)) }
+        switch await AntigravityRemote.identify(proc: procRoot, panePID: panePID, paneStart: run.paneStart,
+                                                socket: run.socketPath, session: run.sessionName, using: exec) {
+        case .inconclusive(let why): return .inconclusive(why)
+        case .none: return .inconclusive(.retry("Antigravity starts a conversation at the first prompt"))
+        case .found(let id): return await claim(run.handle, sessionID: id, how: .verified)
         }
     }
 
@@ -1476,6 +1496,8 @@ public final class RemoteSessions {
         case .candidates(let found):
             let offered = Array(found.prefix(CodexSuggestionLookup.limit))
             guard !offered.isEmpty else { return .candidates([]) }
+            // Antigravity's carry their prompts already.
+            if await run(handle)?.agent == .antigravity { return .candidates(offered) }
             let exec: RemoteExec
             do { exec = try await queryExec() } catch { return .unavailable(error.localizedDescription) }
             let heads = await CodexSuggestionLookup.heads(offered.map(\.rolloutPath), using: exec)
@@ -1494,6 +1516,7 @@ public final class RemoteSessions {
         guard let okAt = run.okAt, let directory = run.directory else {
             return .unavailable("Temple hasn't seen this session start yet")
         }
+        if run.agent == .antigravity { return await eligibleAntigravity(run, handle: handle, okAt: okAt, directory: directory) }
         guard let home = CodexHomeRoot.arguments(run.codexHome, base: directory) else {
             return .unavailable("Temple doesn't know which Codex home this session used")
         }
@@ -1522,6 +1545,34 @@ public final class RemoteSessions {
         // be said relative to this Mac's clock (display only).
         return .candidates(CodexSuggestionLookup.eligible(files, directory: directory, since: okAt, until: until,
                                                           declined: declined, held: held)
+            .map { var candidate = $0; candidate.hostClockOffset = offset; return candidate })
+    }
+
+    /// Antigravity's candidates: conversations in the run's folder whose
+    /// first prompt was sent while the run ran, from the host's summaries.
+    private func eligibleAntigravity(_ run: RemoteRun, handle: String, okAt: Int, directory: String) async -> Suggestions {
+        let exec: RemoteExec
+        do { exec = try await queryExec() } catch { return .unavailable(error.localizedDescription) }
+        let asked = now()
+        // A minute's room: the summary row is written as the prompt is sent.
+        let listing = await AntigravityRemote.list(since: Date(timeIntervalSince1970: TimeInterval(okAt - 60)), using: exec)
+        guard case .conversations(let remoteNow, let found) = listing else {
+            if case .unavailable(let reason) = listing { return .unavailable(reason) }
+            return .unavailable("no answer")
+        }
+        let offset = TimeInterval(remoteNow) - asked.timeIntervalSince1970
+        let until = run.endedAt.map { $0.addingTimeInterval(offset + 30) }
+            ?? Date(timeIntervalSince1970: TimeInterval(remoteNow + 5))
+        let host = host
+        let declined: Set<RemotePath>, held: Set<String>
+        do {
+            declined = try await write { try $0.declined(handle) }
+            held = try await write { try $0.sessionIDs(host: host) }
+        } catch {
+            return .unavailable("Temple couldn't read its records for this session on this Mac: \(error.localizedDescription)")
+        }
+        return .candidates(AntigravityRemote.eligible(found, directory: directory, since: okAt, until: until,
+                                                      declined: declined, held: held, database: AntigravityRemote.declineKey)
             .map { var candidate = $0; candidate.hostClockOffset = offset; return candidate })
     }
 

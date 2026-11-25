@@ -12,8 +12,7 @@ public struct SessionLookup: Sendable, Equatable {
 
     public subscript(agent: Agent) -> AgentLookup { agents[agent] ?? .cannotTell(.storeUnknown) }
 
-    /// The agents the host was asked about, in `Agent.allCases` order: a
-    /// host other than this Mac is not asked about Antigravity (ADR-043).
+    /// The agents the host was asked about, in `Agent.allCases` order.
     public var asked: [Agent] { Agent.allCases.filter { agents[$0] != nil } }
     /// The agents that have the session, in `Agent.allCases` order.
     public var found: [Agent] { asked.filter { if case .found = self[$0] { true } else { false } } }
@@ -53,13 +52,25 @@ public extension HostSessionSource {
     /// a confirmed file it is "can't tell", never "not found". A source
     /// that knows more about why a listing fell short answers itself.
     func lookup(id: String) async throws -> SessionLookup {
-        let located = try await locate([LocateRequest(id: id, refresh: true)])
+        try await SessionLookup.standard(id: id, source: self)
+    }
+}
+
+extension SessionLookup {
+    /// The seam's default lookup. `listedEmpty`: agents whose store is
+    /// known to hold nothing although its listing did not complete (an
+    /// Antigravity folder that isn't there at all: `agy` keeps every
+    /// conversation under it, and nothing moves it).
+    public static func standard(id: String, source: any HostSessionSource,
+                                listedEmpty: Set<Agent> = []) async throws -> SessionLookup {
+        let located = try await source.locate([LocateRequest(id: id, refresh: true)])
         let candidates = located.candidates[id] ?? []
         var agents: [Agent: AgentLookup] = [:]
         for agent in Agent.allCases {
+            let listed = located.complete.contains(agent) || listedEmpty.contains(agent)
             agents[agent] = try await SessionLookup.resolve(
                 id: id, agent: agent, candidates: candidates.filter { $0.agent == agent },
-                listed: located.complete.contains(agent) ? nil : .listingFailed, source: self)
+                listed: listed ? nil : .listingFailed, source: source)
         }
         return SessionLookup(agents: agents)
     }

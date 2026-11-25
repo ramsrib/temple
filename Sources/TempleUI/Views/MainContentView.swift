@@ -1,4 +1,5 @@
 import SwiftUI
+import TempleCore
 
 /// The right pane: the active tab's terminal (or Settings, or History), or the launcher when
 /// nothing is open (UX §Main content). The per-project tab strip lives in the
@@ -138,7 +139,7 @@ private struct SessionTerminalView: View {
             }
         }
         .sheet(item: $confirmation) { confirmation in
-            RemoteConfirmationSheet(confirmation: confirmation, host: tab.host.rawValue,
+            RemoteConfirmationSheet(confirmation: confirmation, host: tab.host.rawValue, agent: tab.agent,
                                     stopCommand: model.openSessions.remoteTabs.stopCommand(tab)) {
                 switch confirmation {
                 case .resumeAnyway: model.openSessions.remoteTabs.resumeAnyway(tab)
@@ -156,7 +157,7 @@ private struct SessionTerminalView: View {
         VStack(alignment: .leading, spacing: 6) {
             if !remote.suggestions.isEmpty {
                 // Why Temple asks at all.
-                Text(RemoteCopy.codexQuestionLeadIn)
+                Text(RemoteCopy.questionLeadIn(tab.agent))
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
@@ -215,7 +216,7 @@ private struct SessionTerminalView: View {
                     Text(RemoteCopy.checkingAgain)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                } else if remote.identityRefused || note == RemoteCopy.couldNotTell || note == RemoteCopy.noOtherCandidate {
+                } else if remote.identityRefused || note == RemoteCopy.couldNotTell(tab.agent) || note == RemoteCopy.noOtherCandidate(tab.agent) {
                     Button(RemoteCopy.tryAgain) { model.openSessions.remoteTabs.retryIdentity(tab) }
                         .buttonStyle(.bordered)
                         .controlSize(.small)
@@ -263,8 +264,8 @@ private struct SessionTerminalView: View {
             Image(systemName: "questionmark.circle")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
-            Text(candidate.map { RemoteCopy.codexEndedQuestion(host, suggestion: $0) }
-                 ?? RemoteCopy.codexEndedPending(host))
+            Text(candidate.map { RemoteCopy.endedQuestion(host, agent: tab.agent, suggestion: $0) }
+                 ?? RemoteCopy.endedPending(host, agent: tab.agent))
                 .font(.system(size: 12))
                 .textSelection(.enabled)
         }
@@ -369,7 +370,7 @@ private struct SessionTerminalView: View {
                     Button(RemoteCopy.reconnectNowButton) { model.openSessions.remoteTabs.reconnect(tab) }
                     if tab.sessionID != nil {
                         Button(RemoteCopy.resumeAnywayButton) { confirmation = .resumeAnyway }
-                    } else if tab.agent == .codex {
+                    } else if tab.agent.mintsOwnID {
                         Button(RemoteCopy.startNewPendingButton) { confirmation = .startNewPending }
                     }
                 } dismiss: {
@@ -612,6 +613,7 @@ enum RemoteConfirmation: String, Identifiable {
 private struct RemoteConfirmationSheet: View {
     let confirmation: RemoteConfirmation
     let host: String
+    let agent: Agent
     let stopCommand: String?
     let action: () -> Void
     @Environment(\.dismiss) private var dismiss
@@ -621,7 +623,7 @@ private struct RemoteConfirmationSheet: View {
     }
 
     private var message: String {
-        confirmation == .resumeAnyway ? RemoteCopy.resumeAnyway(host) : RemoteCopy.startNewPending(host)
+        confirmation == .resumeAnyway ? RemoteCopy.resumeAnyway(host) : RemoteCopy.startNewPending(host, agent: agent)
     }
 
     var body: some View {

@@ -90,8 +90,9 @@ final class RemoteSessionsSheetModel: ObservableObject {
             commands[session.handle] = RemoteCopy.attachCommand(session.handle)
             return false
         }
-        if session.agent == .codex {
-            openSessions.remoteTabs.openPendingRun(handle: session.handle, host: request.host, directory: directory)
+        if session.agent.mintsOwnID {
+            openSessions.remoteTabs.openPendingRun(handle: session.handle, agent: session.agent, host: request.host,
+                                                   directory: directory)
         } else if let id = session.sessionID {
             openSessions.remoteTabs.openSession(id, agent: session.agent, host: request.host, directory: directory)
         } else {

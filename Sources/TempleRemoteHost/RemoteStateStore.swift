@@ -120,8 +120,9 @@ public struct RemoteRun: Equatable, Sendable {
         case automatic
     }
 
-    /// A Codex run Temple started that has no id yet.
-    public var isPending: Bool { agent == .codex && sessionID == nil }
+    /// A run of an agent that mints its own id (Codex, Antigravity) that
+    /// Temple started and has no id for yet.
+    public var isPending: Bool { agent.mintsOwnID && sessionID == nil }
 
     public init(handle: String, host: HostID, agent: Agent, mode: Mode, directoryIntent: String,
                 sessionID: String?, recordPath: String, startedAt: Date) {
@@ -544,7 +545,7 @@ public final class RemoteStateStore: @unchecked Sendable {
                         AND session_id IS NULL AND ended_at IS NULL AND dismissed_at IS NULL
                         AND (creation IS NULL OR creation != ?)
                         AND (directory IS NULL OR ? IS NULL OR CAST(directory AS BLOB) = CAST(? AS BLOB)))
-                    """, arguments: [run.host.rawValue, handle, Agent.codex.rawValue, RemoteRun.Creation.failed.rawValue,
+                    """, arguments: [run.host.rawValue, handle, run.agent.rawValue, RemoteRun.Creation.failed.rawValue,
                                      run.directory, run.directory]) ?? false {
                     outcome = .contended
                     return .commit
@@ -631,14 +632,14 @@ public final class RemoteStateStore: @unchecked Sendable {
         return Set(paths.map { RemotePath($0) })
     }
 
-    /// Codex runs restored as chips at launch from the runs alone: pending
+    /// Codex and Antigravity runs restored as chips at launch from the runs alone: pending
     /// ones, and claimed ones whose tab never reached `open_tabs` (a claim
     /// that landed after the quit froze the tab set). Not discarded, not a
     /// creation that never ran, and their tab neither closed nor handed
     /// over (`tab_closed_at`).
     public func pendingRuns(host: HostID) throws -> [RemoteRun] {
         try runs(host: host).filter {
-            $0.agent == .codex && ($0.isPending || $0.claim != nil)
+            $0.agent.mintsOwnID && ($0.isPending || $0.claim != nil)
                 && $0.dismissedAt == nil && $0.tabClosedAt == nil && $0.creation != .failed
         }
     }

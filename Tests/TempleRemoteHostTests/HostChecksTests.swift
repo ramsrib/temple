@@ -226,4 +226,38 @@ final class HostChecksTests: XCTestCase {
         XCTAssertEqual(HostTestSummary.notTested, "Not tested since Temple started. Test the connection to check this host.")
         XCTAssertNil(unreachable.tmuxProblem)
     }
+
+    /// Antigravity is optional: its absence is not a problem the host has,
+    /// but it greys Antigravity out there; a host where `agy` runs and
+    /// nothing reads SQLite is advisory (ADR-044).
+    func testAntigravityIsOptionalAndNeedsAReader() {
+        let path = "/home/mentes/.local/bin:/usr/bin"
+        let env = RemoteEnvironment(shell: "/bin/bash", path: path, problem: nil)
+        let claude = ToolCheck.runs(path: "/c", version: "2.1.283 (Claude Code)", output: "")
+        let codex = ToolCheck.runs(path: "/x", version: "codex-cli 0.52.0", output: "")
+        let without = HostTestSummary(connectedAs: "mentes@10.0.0.2", environment: env, claude: claude, codex: codex,
+                                      antigravity: .missing, tmux: .accepted(version: "3.4", passthrough: true))
+        XCTAssertEqual(without.statusLine, "Connected as mentes@10.0.0.2. Found Claude Code 2.1.283, Codex 0.52.0, tmux 3.4.")
+        XCTAssertFalse(without.isAdvisory)
+        XCTAssertEqual(without.unavailableReason(for: .antigravity), "No agy command on PATH.")
+        XCTAssertNil(without.unavailableReason(for: .codex))
+
+        let unread = HostTestSummary(connectedAs: "mentes@10.0.0.2", environment: env, claude: claude, codex: codex,
+                                     antigravity: .runs(path: "/a", version: "1.5.17", output: ""), sqliteReader: SQLiteReaderCheck.none,
+                                     tmux: .accepted(version: "3.4", passthrough: true))
+        XCTAssertEqual(unread.statusLine, "Connected as mentes@10.0.0.2. Found Claude Code 2.1.283, Codex 0.52.0, Antigravity 1.5.17, tmux 3.4. "
+                       + SQLiteReaderCheck.noneProblem)
+        XCTAssertTrue(unread.isAdvisory)
+        XCTAssertNil(unread.unavailableReason(for: .antigravity), "it starts; only its titles can't be read")
+
+        let broken = HostTestSummary(environment: env, antigravity: .fails(path: "/a", status: 1, firstLine: "bad", output: "bad"))
+        XCTAssertTrue(broken.statusLine.contains("Antigravity is there but didn't run: bad."), broken.statusLine)
+        XCTAssertTrue(broken.isAdvisory)
+    }
+
+    func testTheReaderCheckRunsOnTheHost() async {
+        let exec = LocalShellExec(path: "/usr/bin:/bin")
+        let found = await SQLiteReaderCheck.run(using: exec)
+        XCTAssertEqual(found, .found("sqlite3"))
+    }
 }

@@ -45,9 +45,11 @@ public enum Agent: String, Codable, CaseIterable, Sendable {
         return title.caseInsensitiveCompare("\(binaryName): \(folder)") == .orderedSame
     }
 
-    /// The agents a host other than this Mac can run: Antigravity's store is
-    /// SQLite, read on this Mac only for now (ADR-043).
-    public static let remoteAgents: [Agent] = [.claude, .codex]
+    /// The agent mints the session's id itself (Codex, and Antigravity at
+    /// the first prompt): a new session starts without one, and Temple
+    /// learns it afterwards. Claude takes the id Temple hands it
+    /// (`--session-id`).
+    public var mintsOwnID: Bool { self != .claude }
 
     /// The agents a row with no agent recorded can be: such rows predate
     /// Temple recording one (ADR-029), and Antigravity came later (ADR-043),

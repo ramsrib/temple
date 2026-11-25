@@ -171,9 +171,10 @@ public enum RemoteSuggestions: Equatable {
     case unavailable(String)
 }
 
-/// A pending Codex run restored as a chip at launch.
+/// A pending Codex or Antigravity run restored as a chip at launch.
 public struct RemotePendingRun: Equatable {
     public let handle: String
+    public let agent: Agent
     /// Its folder: the pane's, or the one asked for.
     public let directory: String
     public let ended: Bool
@@ -184,9 +185,9 @@ public struct RemotePendingRun: Equatable {
     public let typed: Bool
     /// Its claim reached core.
     public let joined: Bool
-    public init(handle: String, directory: String, ended: Bool, sessionID: String? = nil, typed: Bool = false,
+    public init(handle: String, agent: Agent, directory: String, ended: Bool, sessionID: String? = nil, typed: Bool = false,
                 joined: Bool = false) {
-        self.handle = handle; self.directory = directory; self.ended = ended
+        self.handle = handle; self.agent = agent; self.directory = directory; self.ended = ended
         self.sessionID = sessionID; self.typed = typed; self.joined = joined
     }
 }
@@ -290,11 +291,12 @@ public protocol RemoteSessionHost: HostLauncher {
     /// The host was removed or edited: nothing queries it again.
     func retire()
 
-    // Codex identity (phase 1b)
+    // Identity of a new Codex or Antigravity session (phase 1b, ADR-044)
 
-    /// A new Codex session (`handle` nil), written before anything spawns,
-    /// or a pending one reopened by its handle (attach-only while it runs).
-    func openPending(handle: String?, directory: String) async throws -> RemotePendingOpenResult
+    /// A new session of an agent that mints its own id (`handle` nil),
+    /// written before anything spawns, or a pending one reopened by its
+    /// handle (attach-only while it runs).
+    func openPending(agent: Agent, handle: String?, directory: String) async throws -> RemotePendingOpenResult
     /// The automatic check; claims before it answers `.adopted`.
     func identify(_ handle: String) async -> RemoteIdentity
     /// The candidates to ask about; never adopts.
@@ -308,7 +310,7 @@ public protocol RemoteSessionHost: HostLauncher {
     func decline(_ handle: String, rolloutPath: String) async throws
     func markJoined(_ handle: String) async throws
     /// Claims whose core join never happened, with their folders.
-    func unjoinedClaims() async -> [(handle: String, sessionID: String, directory: String?)]
+    func unjoinedClaims() async -> [(handle: String, sessionID: String, agent: Agent, directory: String?)]
     func pendingRuns() async -> [RemotePendingRun]
     /// A pending run's tab closed: no chip at the next launch.
     func closePendingTab(_ handle: String) async throws
@@ -923,11 +925,12 @@ public enum RemoteCopy {
     /// The hint under either confirmation: how to stop the original there.
     public static func stopHint(_ host: String) -> String { "To stop the original on \(host), run:" }
 
-    /// Start a new session for a new Codex session Temple can't reach.
+    /// Start a new session for a new Codex or Antigravity session Temple
+    /// can't reach.
     public static let startNewPendingTitle = "Start a new session?"
 
-    public static func startNewPending(_ host: String) -> String {
-        "Temple can't tell whether Codex is still running on \(host). "
+    public static func startNewPending(_ host: String, agent: Agent) -> String {
+        "Temple can't tell whether \(agent.displayName) is still running on \(host). "
             + "If it is, it keeps running, and a new session starts beside it."
     }
 
@@ -1012,18 +1015,18 @@ public enum RemoteCopy {
         return Array(lines.suffix(limit))
     }
 
-    // Codex identity (phase 1b)
+    // Identity of a new Codex or Antigravity session (phase 1b, ADR-044)
 
-    public static func codexEndedPending(_ host: String) -> String {
-        "Codex ended on \(host) before Temple learned which session this was."
+    public static func endedPending(_ host: String, agent: Agent) -> String {
+        "\(agent.displayName) ended on \(host) before Temple learned which session this was."
     }
 
     /// The ended band's one sentence, the question after the fact: the
     /// candidate's first prompt and when it started. Never a fact.
-    public static func codexEndedQuestion(_ host: String, suggestion: RemoteSuggestion, now: Date = Date()) -> String {
+    public static func endedQuestion(_ host: String, agent: Agent, suggestion: RemoteSuggestion, now: Date = Date()) -> String {
         let subject = suggestion.firstPrompt.map { "\u{201C}\($0)\u{201D}" }
             ?? (suggestion.promptKnown ? "the one with no prompt yet" : "the one whose first prompt couldn't be read")
-        return codexEndedPending(host) + " Is it \(subject) (\(startStamp(suggestion.startedAt, now: now)))?"
+        return endedPending(host, agent: agent) + " Is it \(subject) (\(startStamp(suggestion.startedAt, now: now)))?"
     }
 
     /// Where an ended session's terminal was: tmux's exit leaves the
@@ -1034,7 +1037,9 @@ public enum RemoteCopy {
     }
 
     /// Above the candidates: why Temple asks at all.
-    public static let codexQuestionLeadIn = "Codex picks its own session id, so Temple can't tell which session this tab is."
+    public static func questionLeadIn(_ agent: Agent) -> String {
+        "\(agent.displayName) picks its own session id, so Temple can't tell which session this tab is."
+    }
 
     /// The question about one candidate: never a fact. The folder is the
     /// candidate's full path. When the tab's open time and the host's clock
@@ -1094,11 +1099,11 @@ public enum RemoteCopy {
 
     /// The note a tab shows when Temple said yes on its own to the lone
     /// candidate: why (the only one). Display only; close a wrong link as any tab.
-    public static func linkedOnItsOwn(_ suggestion: RemoteSuggestion, now: Date = Date()) -> String {
+    public static func linkedOnItsOwn(_ suggestion: RemoteSuggestion, agent: Agent, now: Date = Date()) -> String {
         if let prompt = suggestion.firstPrompt {
-            return "Linked this tab to \u{201C}\(prompt)\u{201D}, the only Codex session started in this folder since the tab opened. If that's the wrong session, close this tab; \u{201C}\(prompt)\u{201D} stays in the sidebar."
+            return "Linked this tab to \u{201C}\(prompt)\u{201D}, the only \(agent.displayName) session started in this folder since the tab opened. If that's the wrong session, close this tab; \u{201C}\(prompt)\u{201D} stays in the sidebar."
         }
-        return "Linked this tab to the Codex session started \(startTime(suggestion.startedAt, now: now)), "
+        return "Linked this tab to the \(agent.displayName) session started \(startTime(suggestion.startedAt, now: now)), "
             + "the only one started in this folder since the tab opened. If that's the wrong session, close this tab; "
             + "the session started \(startTime(suggestion.startedAt, now: now)) stays in the sidebar."
     }
@@ -1106,19 +1111,25 @@ public enum RemoteCopy {
     /// Temple asked and has nothing left to ask about (every candidate
     /// declined, or the one it would claim is another session's): the tab
     /// keeps working, unidentified, with Try again.
-    public static let couldNotTell = "Temple couldn't tell which Codex session this is. "
-        + "The tab keeps working; it gets a sidebar row once Temple can tell."
+    public static func couldNotTell(_ agent: Agent) -> String {
+        "Temple couldn't tell which \(agent.displayName) session this is. "
+            + "The tab keeps working; it gets a sidebar row once Temple can tell."
+    }
 
     /// Asked, and nothing left to ask about: every candidate was declined
     /// (or there was none), so no other session has started there.
-    public static let noOtherCandidate = "No Codex session has started in this folder since the tab opened, apart from "
-        + "any you said weren't this tab's. Temple checks again every minute while the tab is connected; Try again checks now. "
-        + "The tab keeps working; it gets a sidebar row once Temple finds its session."
+    public static func noOtherCandidate(_ agent: Agent) -> String {
+        "No \(agent.displayName) session has started in this folder since the tab opened, apart from "
+            + "any you said weren't this tab's. Temple checks again every minute while the tab is connected; Try again checks now. "
+            + "The tab keeps working; it gets a sidebar row once Temple finds its session."
+    }
     /// Try again, while it checks, and when it found nothing new.
     /// Try again's lookup failed: why.
     public static func checkFailed(_ reason: String) -> String { "Couldn't check again: \(sentence(reason))" }
     public static let checkingAgain = "Checking again\u{2026}"
-    public static let checkedStillNone = "Checked again: still no new Codex session in this folder."
+    public static func checkedStillNone(_ agent: Agent) -> String {
+        "Checked again: still no new \(agent.displayName) session in this folder."
+    }
 
     /// "Discard" said which, per row (one meaning: a session that is not
     /// running; nothing is stopped): removed, or archived when the row is

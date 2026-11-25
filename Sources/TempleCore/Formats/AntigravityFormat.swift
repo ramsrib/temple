@@ -112,7 +112,7 @@ public struct AntigravityFormat: TranscriptFormat {
     /// The folder from `workspace_uris`, a JSON array of `file://` URLs.
     /// Only a conversation with exactly one folder has one: which of several
     /// is the conversation's own is not known (SESSION-FORMATS).
-    static func folder(_ json: String) -> String? {
+    public static func folder(_ json: String) -> String? {
         guard let data = json.data(using: .utf8),
               let uris = (try? JSONSerialization.jsonObject(with: data)) as? [String], uris.count == 1,
               let url = URL(string: uris[0]), url.scheme == "file" else { return nil }
@@ -133,6 +133,15 @@ public struct AntigravityFormat: TranscriptFormat {
             return TranscriptText.parseDate(String(iso[..<dot]) + "." + fraction + String(iso[zone...]))
         }
         return nil
+    }
+
+    /// A first user step (base64, as `Record` holds it): its prompt as a
+    /// title would show it (nil when it has none), and when it was sent.
+    /// Nil for bytes that are not a whole step.
+    public static func firstPrompt(_ base64: String) -> (prompt: String?, at: Date?)? {
+        guard let step = userStep(base64) else { return nil }
+        let prompt = step.text.map { TranscriptText.cleanTitle($0) }.flatMap { $0.isEmpty ? nil : $0 }
+        return (prompt, step.at)
     }
 
     /// A user-input step's payload: field 19 (the input), whose field 2 is

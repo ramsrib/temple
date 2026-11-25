@@ -131,17 +131,11 @@ public final class RemoteTabController {
         // would race it for the same run.
         if tab.remote?.phase == .opening { return }
         endRecheck(tab)
-        // Antigravity runs on this Mac only (ADR-043): nothing is started,
-        // and a tab without an id is never taken for a pending Codex run.
-        guard Agent.remoteAgents.contains(tab.agent) else {
-            let reason = "This is \(tab.agent.aSession). Temple can open \(tab.agent.displayName) sessions only on this Mac, not on hosts."
-            // A fresh tab has no remote state yet: the reason still shows.
-            if tab.remote == nil { tab.launchPreparationError = reason } else { tab.remote?.phase = .unknown(reason: reason) }
-            return
-        }
         guard let sid = tab.sessionID else {
-            // A new Codex session: Codex mints the id, so the run starts
-            // pending and is identified later (phase 1b).
+            // A new Codex or Antigravity session: the agent mints the id, so
+            // the run starts pending and is identified later (phase 1b,
+            // ADR-044). A Claude tab always has its id.
+            guard tab.agent.mintsOwnID else { return }
             ensurePending(tab, on: host, startNew: false, automatic: automatic)
             return
         }
@@ -499,6 +493,7 @@ public final class RemoteTabController {
         }
         let creating = state.creating
         let pending = isPending(tab)
+        let agent = tab.agent
         if let identity = state.identityOperation { operations.cancel(id: identity) }
         let age = tab.spawnedAt.map { Date().timeIntervalSince($0) } ?? .infinity
         model.cancelSettle(for: tab.id)
@@ -587,14 +582,14 @@ public final class RemoteTabController {
                                                   message: RemoteCopy.launchFailed(host.hostName, reason: reason))
                 return
             }
-            // A pending Codex run is checked once more at its exit: its agent
+            // A pending run is checked once more at its exit: its agent
             // may still be running there (a dropped connection).
             if pending, let self {
                 let identity = await host.identify(handle)
                 if case .adopted(let id, let directory) = identity {
-                    await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+                    await self.adopted(id, agent: agent, directory: directory, handle: handle, host: host, ticket: ticket)
                 } else if case .known(let id, let directory) = identity {
-                    await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+                    await self.adopted(id, agent: agent, directory: directory, handle: handle, host: host, ticket: ticket)
                 }
             }
             let liveness = await host.exitCheck(handle)
@@ -1274,8 +1269,9 @@ public final class RemoteTabController {
 
     // MARK: Codex identity (docs/designs/remote-ssh.md section 3, phase 1b)
 
-    /// A new Codex session on a host whose id Temple has not learned yet.
-    func isPending(_ tab: SessionTab) -> Bool { tab.kind == .session && tab.sessionID == nil && tab.agent == .codex }
+    /// A new Codex or Antigravity session on a host whose id Temple has not
+    /// learned yet.
+    func isPending(_ tab: SessionTab) -> Bool { tab.kind == .session && tab.sessionID == nil && tab.agent.mintsOwnID }
 
     /// Input evidence per pending run, kept by handle: whether "typed into"
     /// is written with the run (`committed`), being written, or not yet.
@@ -1346,9 +1342,10 @@ public final class RemoteTabController {
         tab.remote = state
         let ticket = gate.ticket(for: tab)
         let directory = tab.projectPath
+        let agent = tab.agent
         operations.run(host: tab.host, .open) { [weak self] in
             let result: Result<RemotePendingOpenResult, Error>
-            do { result = .success(try await host.openPending(handle: handle, directory: directory)) } catch {
+            do { result = .success(try await host.openPending(agent: agent, handle: handle, directory: directory)) } catch {
                 result = .failure(error)
             }
             guard let self, self.gate.admit(.pendingOpenResult, ticket), let tab = ticket.tab else {
@@ -1392,7 +1389,7 @@ public final class RemoteTabController {
                 // session is. The open this answered is over.
                 tab.remote?.phase = .disconnected
                 guard let handle else { return }
-                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+                await self.adopted(id, agent: agent, directory: directory, handle: handle, host: host, ticket: ticket)
                 guard tab.sessionID == id, self.model.tabs.contains(where: { $0 === tab }) else { return }
                 // Temple's own reattach stays one: bound to this run, and
                 // not a person's open of the session it turned out to be.
@@ -1441,6 +1438,7 @@ public final class RemoteTabController {
             previous = at
         }
         let interval = identityInterval
+        let agent = tab.agent
         tab.remote?.identityOperation = operations.run(host: tab.host, .identity) { [weak self] in
             var index = 0
             while !Task.isCancelled {
@@ -1449,7 +1447,7 @@ public final class RemoteTabController {
                 try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
                 guard !Task.isCancelled, let tab = ticket.tab, tab.remote?.phase == .connected,
                       self?.isPending(tab) == true else { return }
-                guard let self, await self.checkIdentity(ticket, host: host, handle: handle) else { continue }
+                guard let self, await self.checkIdentity(ticket, agent: agent, host: host, handle: handle) else { continue }
                 return
             }
         }
@@ -1457,7 +1455,7 @@ public final class RemoteTabController {
 
     /// One check; true when the tab's identity is settled (it has its id).
     @discardableResult
-    private func checkIdentity(_ ticket: RemoteTicket, host: RemoteSessionHost, handle: String) async -> Bool {
+    private func checkIdentity(_ ticket: RemoteTicket, agent: Agent, host: RemoteSessionHost, handle: String) async -> Bool {
         if let id = ticket.tab?.id { lastIdentityCheck[id] = Date() }
         // Core refused this run's id: the walk would find and claim it again,
         // and core would refuse again. The question still comes.
@@ -1468,14 +1466,14 @@ public final class RemoteTabController {
         let identity = await host.identify(handle)
         switch identity {
         case .adopted(let id, let directory), .known(let id, let directory):
-            await adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+            await adopted(id, agent: agent, directory: directory, handle: handle, host: host, ticket: ticket)
             // Settled only once the tab is that session. A failed write is
             // tried again on schedule; a refusal is remembered above.
             guard let tab = ticket.tab else { return true }
             return !isPending(tab)
         case .taken:
             guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return false }
-            tab.remote?.identityNote = RemoteCopy.couldNotTell
+            tab.remote?.identityNote = RemoteCopy.couldNotTell(agent)
             await loadSuggestions(ticket, host: host, handle: handle)
             return false
         case .storage(let detail):
@@ -1502,8 +1500,9 @@ public final class RemoteTabController {
         if let last = lastIdentityCheck[tab.id], Date().timeIntervalSince(last) < activationRecheck { return }
         lastIdentityCheck[tab.id] = Date()
         let ticket = gate.ticket(for: tab)
+        let agent = tab.agent
         operations.run(host: tab.host, .identity) { [weak self] in
-            await self?.checkIdentity(ticket, host: host, handle: handle)
+            await self?.checkIdentity(ticket, agent: agent, host: host, handle: handle)
         }
     }
 
@@ -1514,13 +1513,13 @@ public final class RemoteTabController {
     /// session through the gate. `titleHint`: the first prompt of the
     /// candidate the user said yes to, which the row shows until its
     /// transcript's title arrives (display only, through the gate).
-    private func adopted(_ id: String, directory: String?, handle: String, host: RemoteSessionHost,
+    private func adopted(_ id: String, agent: Agent, directory: String?, handle: String, host: RemoteSessionHost,
                          ticket: RemoteTicket, titleHint: String? = nil, linked: RemoteSuggestion? = nil) async {
         let hostID = ticket.host
         // While quitting the join waits for the next launch (the claim
         // stays unjoined); the gate below refuses the tab's part.
         if !isQuitting {
-            let open = SessionOpen(id: id, host: hostID, via: .created, agent: .codex, locator: nil)
+            let open = SessionOpen(id: id, host: hostID, via: .created, agent: agent, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
                 if let directory { model.launchDirectoryHandler?(SessionKey(id: id, host: hostID), directory) }
@@ -1531,7 +1530,7 @@ public final class RemoteTabController {
                     }
                 }
             case .refused(let conflict):
-                TempleUILog.launch.notice("remote Codex id refused by core: \(conflict.message, privacy: .public)")
+                TempleUILog.launch.notice("remote \(agent.rawValue, privacy: .public) id refused by core: \(conflict.message, privacy: .public)")
                 refusedClaims[handle] = (SessionKey(id: id, host: hostID), conflict.message)
                 guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.identityNote = conflict.message
@@ -1542,7 +1541,7 @@ public final class RemoteTabController {
                 // Core's row was not written: the claim stays unjoined, and
                 // the next check (or the next launch) joins it again. The
                 // tab stays pending and says so.
-                TempleUILog.db.error("core join of a claimed Codex id failed: \(error.localizedDescription, privacy: .public)")
+                TempleUILog.db.error("core join of a claimed \(agent.rawValue, privacy: .public) id failed: \(error.localizedDescription, privacy: .public)")
                 guard gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.identityNote = RemoteCopy.unrecorded(host.hostName, detail: error.localizedDescription)
                 tab.remote?.confirming = nil
@@ -1571,7 +1570,7 @@ public final class RemoteTabController {
         becomeSession(tab, id: id, host: host)
         // Temple's own yes says so, in the tab only.
         if let linked {
-            tab.remote?.identityNote = RemoteCopy.linkedOnItsOwn(linked)
+            tab.remote?.identityNote = RemoteCopy.linkedOnItsOwn(linked, agent: tab.agent)
             tab.remote?.linkedOnItsOwn = true
         }
     }
@@ -1726,12 +1725,27 @@ public final class RemoteTabController {
         }
     }
 
+    /// How long after the first Return an Antigravity tab is checked: `agy`
+    /// makes its conversation, and takes its lock, as that prompt is sent.
+    var inputIdentityDelay: TimeInterval = 3
+
     /// Something was typed into a pending tab: kept with its run, so a
     /// relaunch still knows the conversation may exist.
     func inputSubmitted(_ tab: SessionTab) {
         guard isPending(tab), let handle = tab.remote?.handle, let host = remoteHost(for: tab),
               inputEvidence[handle, default: .none] == .none else { return }
         inputEvidence[handle] = .inFlight
+        if tab.agent == .antigravity, tab.remote?.phase == .connected {
+            // The conversation exists from this prompt on: checked soon,
+            // not at the schedule's next minute.
+            let ticket = gate.ticket(for: tab), delay = inputIdentityDelay, agent = tab.agent
+            operations.run(host: tab.host, .identity) { [weak self] in
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                guard !Task.isCancelled, let tab = ticket.tab, tab.remote?.phase == .connected,
+                      self?.isPending(tab) == true else { return }
+                await self?.checkIdentity(ticket, agent: agent, host: host, handle: handle)
+            }
+        }
         let hostID = tab.host
         let ticket = gate.ticket(host: hostID)
         let retries = inputWriteRetries
@@ -1767,7 +1781,7 @@ public final class RemoteTabController {
         tab.remote?.identityRefused = false
         // "Couldn't tell" stays until candidates arrive (never a bare tab);
         // a refusal's reason goes with the refusal.
-        if let note = tab.remote?.identityNote, note != RemoteCopy.couldNotTell, note != RemoteCopy.noOtherCandidate {
+        if let note = tab.remote?.identityNote, note != RemoteCopy.couldNotTell(tab.agent), note != RemoteCopy.noOtherCandidate(tab.agent) {
             tab.remote?.identityNote = nil
         }
         // It shows that it ran: checking, then what it found.
@@ -1775,13 +1789,14 @@ public final class RemoteTabController {
         tab.remote?.retryResult = nil
         lastIdentityCheck[tab.id] = Date()
         let ticket = gate.ticket(for: tab)
+        let agent = tab.agent
         // Said only from what a lookup finds from here: "still none" after
         // one that came back complete and empty, why when it couldn't look
         // (`loadSuggestions`); nothing when no lookup runs.
         retryAwaitingLookup.insert(handle)
         let generation = lookupGeneration[handle] ?? 0
         operations.run(host: tab.host, .identity) { [weak self] in
-            await self?.checkIdentity(ticket, host: host, handle: handle)
+            await self?.checkIdentity(ticket, agent: agent, host: host, handle: handle)
             guard let self, self.gate.admit(.identityResult, ticket), let tab = ticket.tab else { return }
             tab.remote?.retrying = false
             // No lookup began for this check (identity settled it, or it
@@ -1856,19 +1871,19 @@ public final class RemoteTabController {
         tab.remote?.suggestions = offered.sorted(by: earliestFirst)
         lastLookup[handle] = .candidates(offered.count)
         if retryAwaitingLookup.remove(handle) != nil {
-            tab.remote?.retryResult = offered.isEmpty ? RemoteCopy.checkedStillNone : nil
+            tab.remote?.retryResult = offered.isEmpty ? RemoteCopy.checkedStillNone(tab.agent) : nil
         }
         // The candidates and what the tab says of them, together: with
         // some, no empty-state text stays up.
         if !offered.isEmpty {
             asked.insert(handle)
             tab.remote?.retryResult = nil
-            if tab.remote?.identityNote == RemoteCopy.noOtherCandidate { tab.remote?.identityNote = nil }
+            if tab.remote?.identityNote == RemoteCopy.noOtherCandidate(tab.agent) { tab.remote?.identityNote = nil }
         }
         // Once asked, the tab is never bare: with no candidate left (the
         // last one declined), it says no other session has started there.
         if offered.isEmpty, asked.contains(handle), tab.remote?.identityNote == nil {
-            tab.remote?.identityNote = RemoteCopy.noOtherCandidate
+            tab.remote?.identityNote = RemoteCopy.noOtherCandidate(tab.agent)
         }
     }
 
@@ -1911,6 +1926,7 @@ public final class RemoteTabController {
               tab.remote?.confirming == nil, !isQuitting else { return }
         tab.remote?.confirming = suggestion.id
         let ticket = gate.ticket(for: tab)
+        let agent = tab.agent
         operations.run(host: tab.host, .write) { [weak self] in
             let identity = await host.confirm(handle, suggestion: suggestion, automatic: automatic)
             guard let self else { return }
@@ -1922,7 +1938,7 @@ public final class RemoteTabController {
                 let same = id.utf8.elementsEqual(suggestion.sessionID.utf8)
                 var linked = false
                 if automatic, case .adopted = identity, same { linked = true }
-                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket,
+                await self.adopted(id, agent: agent, directory: directory, handle: handle, host: host, ticket: ticket,
                                    titleHint: same ? suggestion.firstPrompt : nil,
                                    linked: linked ? suggestion : nil)
             case .taken, .inconclusive:
@@ -1934,7 +1950,7 @@ public final class RemoteTabController {
                     return
                 }
                 tab.remote?.suggestions.removeAll { $0.id == suggestion.id }
-                tab.remote?.identityNote = RemoteCopy.couldNotTell
+                tab.remote?.identityNote = RemoteCopy.couldNotTell(agent)
             case .storage(let detail):
                 guard self.gate.admit(.confirmResult, ticket), let tab = ticket.tab else { return }
                 tab.remote?.confirming = nil
@@ -1964,7 +1980,7 @@ public final class RemoteTabController {
         // The last one declined, on a running tab: it says no other session
         // has started there (with Try again), never goes bare.
         if tab.remote?.suggestions.isEmpty == true, tab.remote?.phase == .connected, tab.remote?.identityNote == nil {
-            tab.remote?.identityNote = RemoteCopy.noOtherCandidate
+            tab.remote?.identityNote = RemoteCopy.noOtherCandidate(tab.agent)
         }
         let ticket = gate.ticket(host: tab.host)
         operations.run(host: tab.host, .write) { [weak self] in
@@ -2023,7 +2039,7 @@ public final class RemoteTabController {
             model.removeTab(tab.id)
             return
         }
-        let hostID = tab.host, live = tab.hasLiveProcess, typed = tab.inputSubmitted
+        let hostID = tab.host, live = tab.hasLiveProcess, typed = tab.inputSubmitted, agent = tab.agent
         if let identity = tab.remote?.identityOperation { operations.cancel(id: identity) }
         func detachClient() {
             guard live, let surface = tab.surface else { return }
@@ -2061,10 +2077,10 @@ public final class RemoteTabController {
             let identity = await host.identify(handle)
             var identified = false
             if case .adopted(let id, let directory) = identity, let self {
-                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+                await self.adopted(id, agent: agent, directory: directory, handle: handle, host: host, ticket: ticket)
                 identified = true
             } else if case .known(let id, let directory) = identity, let self {
-                await self.adopted(id, directory: directory, handle: handle, host: host, ticket: ticket)
+                await self.adopted(id, agent: agent, directory: directory, handle: handle, host: host, ticket: ticket)
                 identified = true
             }
             guard let result = try? await host.stop(handle, fromAttachedTab: live) else { return }
@@ -2126,11 +2142,11 @@ public final class RemoteTabController {
                             continue
                         }
                         let chip = self.model.tabs.first(where: { $0.sessionKey == SessionKey(id: id, host: hostID) })
-                            ?? self.model.appendClaimedChip(host: hostID, sessionID: id, directory: run.directory)
+                            ?? self.model.appendClaimedChip(host: hostID, sessionID: id, agent: run.agent, directory: run.directory)
                         self.handOver(chip, handle: run.handle, host: host)
                         continue
                     }
-                    self.model.appendPendingChip(host: hostID, handle: run.handle, directory: run.directory,
+                    self.model.appendPendingChip(host: hostID, agent: run.agent, handle: run.handle, directory: run.directory,
                                                  ended: run.ended, typed: run.typed)
                     if run.typed { self.inputEvidence[run.handle] = .committed }
                 }
@@ -2156,7 +2172,7 @@ public final class RemoteTabController {
         var joined = Set<String>()
         for claim in await host.unjoinedClaims() where refusedClaims[claim.handle] == nil {
             guard !isQuitting, !Task.isCancelled else { return joined }
-            let open = SessionOpen(id: claim.sessionID, host: hostID, via: .created, agent: .codex, locator: nil)
+            let open = SessionOpen(id: claim.sessionID, host: hostID, via: .created, agent: claim.agent, locator: nil)
             switch model.openedHandler?(open) ?? .joined {
             case .joined:
                 if let directory = claim.directory { model.launchDirectoryHandler?(SessionKey(id: claim.sessionID, host: hostID), directory) }
@@ -2188,7 +2204,7 @@ public final class RemoteTabController {
 
     /// "Open" on a pending Codex session in Running sessions on <host>: its tab, or
     /// a chip for it, activated (which attaches).
-    public func openPendingRun(handle: String, host hostID: HostID, directory: String, typed: Bool = false) {
+    public func openPendingRun(handle: String, agent: Agent, host hostID: HostID, directory: String, typed: Bool = false) {
         if let tab = model.tabs.first(where: { $0.host == hostID && $0.remote?.handle == handle }) {
             model.activate(tab)
             return
@@ -2198,7 +2214,7 @@ public final class RemoteTabController {
         // the tab's own flag: what the run store has of its input is
         // written (and retried) by `inputSubmitted`, never assumed here.
         let typed = typed || asked.contains(handle) || declinedHere[handle] != nil
-        let tab = model.appendPendingChip(host: hostID, handle: handle, directory: directory, ended: false, typed: typed)
+        let tab = model.appendPendingChip(host: hostID, agent: agent, handle: handle, directory: directory, ended: false, typed: typed)
         model.activate(tab)
     }
 }

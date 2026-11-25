@@ -940,7 +940,7 @@ final class RemoteSessionsTests: XCTestCase {
         defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
         let store = try RemoteStateStore()
         let sessions = controller(host, store: store)
-        let first = try pendingPlan(await sessions.openPending(handle: nil, directory: "~", extraArguments: ["--no-daemon"]))
+        let first = try pendingPlan(await sessions.openPending(agent: .codex, handle: nil, directory: "~", extraArguments: ["--no-daemon"]))
         XCTAssertTrue(first.creating)
         XCTAssertEqual(first.agentArgv, ["codex", "--no-daemon"])
         let row = try XCTUnwrap(store.run(first.handle))
@@ -1028,7 +1028,7 @@ final class RemoteSessionsTests: XCTestCase {
         XCTAssertEqual(joined, [])
 
         // Reopened by its handle, it is that session's run now.
-        guard case .identified(let handle, let id) = try await sessions.openPending(handle: first.handle, directory: "~",
+        guard case .identified(let handle, let id) = try await sessions.openPending(agent: .codex, handle: first.handle, directory: "~",
                                                                                       extraArguments: []) else { return XCTFail() }
         XCTAssertEqual(handle, first.handle)
         XCTAssertEqual(id, mineID)
@@ -1145,14 +1145,14 @@ final class RemoteSessionsTests: XCTestCase {
         defer { _ = try? host.tmux(["-L", "temple", "kill-server"]) }
         let store = try RemoteStateStore()
         let sessions = controller(host, store: store)
-        let first = try pendingPlan(await sessions.openPending(handle: nil, directory: "~", extraArguments: []))
+        let first = try pendingPlan(await sessions.openPending(agent: .codex, handle: nil, directory: "~", extraArguments: []))
         var client = try tab(host, first)
         let collected = await until(15) { if case .ok = await sessions.collect(first.handle) { return true }; return false }
         XCTAssertTrue(collected)
         client.end()
         try await sessions.closePendingTab(first.handle)
         XCTAssertEqual(try store.pendingRuns(host: record.host), [], "a closed tab is not restored as a chip")
-        let again = try pendingPlan(await sessions.openPending(handle: first.handle, directory: "~", extraArguments: []))
+        let again = try pendingPlan(await sessions.openPending(agent: .codex, handle: first.handle, directory: "~", extraArguments: []))
         XCTAssertFalse(again.creating)
         XCTAssertEqual(again.handle, first.handle)
         XCTAssertEqual(again.attachment, 2)
@@ -1160,12 +1160,12 @@ final class RemoteSessionsTests: XCTestCase {
         client = try tab(host, again)
         client.end()
         _ = try await sessions.stop(first.handle, fromAttachedTab: true)
-        guard case .ended(let handle) = try await sessions.openPending(handle: first.handle, directory: "~", extraArguments: []) else {
+        guard case .ended(let handle) = try await sessions.openPending(agent: .codex, handle: first.handle, directory: "~", extraArguments: []) else {
             return XCTFail()
         }
         XCTAssertEqual(handle, first.handle)
         try await sessions.dismissRun(first.handle)
-        do { _ = try await sessions.openPending(handle: first.handle, directory: "~", extraArguments: []); XCTFail() }
+        do { _ = try await sessions.openPending(agent: .codex, handle: first.handle, directory: "~", extraArguments: []); XCTFail() }
         catch is PendingRunGone {}
     }
 }

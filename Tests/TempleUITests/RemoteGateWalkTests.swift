@@ -314,7 +314,7 @@ final class RemoteGateWalkTests: XCTestCase {
                 let tab = await self.pendingTab(h)
                 h.app.openSessions.remoteTabs.confirm(Self.candidate, in: tab)
                 await self.settle { !h.remote.confirms.isEmpty }
-            }, effect: { $0.tab?.remote?.identityNote == RemoteCopy.couldNotTell }),
+            }, effect: { $0.tab?.remote?.identityNote == RemoteCopy.couldNotTell(.codex) }),
 
             Scenario(completion: .pendingStopOutcome, disruptions: noClose, arm: { h in
                 h.app.openSessions.remoteTabs.identitySchedule = [60]
