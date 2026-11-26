@@ -839,23 +839,28 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         guard lines.count == files.count else { return false }
         // Each line names one file of its own: by its name first, then as
         // Finder shows it (an extension it hides left out, a `:` as `/`).
-        var unmatched = files
-        var rest: [String] = []
-        for line in lines {
-            if let index = unmatched.firstIndex(where: { $0.lastPathComponent == line }) {
-                unmatched.remove(at: index)
-            } else {
-                rest.append(line)
+        // Indexed, so a large Finder selection costs one pass.
+        func shown(_ name: String) -> String {
+            name.replacingOccurrences(of: ":", with: "/").trimmingCharacters(in: .whitespaces)
+        }
+        var used = Array(repeating: false, count: files.count)
+        var exact: [String: [Int]] = [:], loose: [String: [Int]] = [:]
+        for (index, file) in files.enumerated() {
+            exact[file.lastPathComponent, default: []].append(index)
+            for name in Set([shown(file.lastPathComponent), shown(file.deletingPathExtension().lastPathComponent)]) {
+                loose[name, default: []].append(index)
             }
         }
-        for line in rest {
-            guard let index = unmatched.firstIndex(where: { file in
-                [file.lastPathComponent, file.deletingPathExtension().lastPathComponent]
-                    .map { $0.replacingOccurrences(of: ":", with: "/").trimmingCharacters(in: .whitespaces) }
-                    .contains(line)
-            }) else { return false }
-            unmatched.remove(at: index)
+        func take(_ line: String, from table: inout [String: [Int]]) -> Bool {
+            while var candidates = table[line], let index = candidates.popLast() {
+                table[line] = candidates
+                if !used[index] { used[index] = true; return true }
+            }
+            return false
         }
+        var rest: [String] = []
+        for line in lines where !take(line, from: &exact) { rest.append(line) }
+        for line in rest where !take(line, from: &loose) { return false }
         return true
     }
 

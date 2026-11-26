@@ -33,10 +33,11 @@ public enum FileHandoff {
     /// or `temple-copy-short <arrived>` when nothing usable was left.
     ///
     /// A temporary folder is trusted only when it is an absolute path of
-    /// plain characters that is either the account's own and writable by
-    /// nobody else (neither group nor others may write), or sticky and owned
-    /// by root or the account (in it,
-    /// nobody else can rename or remove the account's folder). `mktemp -d`
+    /// plain characters, and it and every folder above it (resolved) is
+    /// owned by root or the account and either writable by nobody else
+    /// (neither group nor others) or sticky, with no ACL granting anything
+    /// on macOS (a deny entry is harmless): nobody
+    /// else can then rename or replace anything on the copy's path. `mktemp -d`
     /// then makes the copy's folder, the account's, atomically (an inherited
     /// setgid is cleared); it is entered and checked again by its resolved
     /// path, owner, mode 0700 and (on macOS) the absence of an ACL, failing
@@ -46,18 +47,23 @@ public enum FileHandoff {
     static let writeScript = #"""
     umask 077
     u=$(id -u)
-    trusted() { [ -n "$(find -H "$1" -maxdepth 0 -type d \( \( -user "$u" ! -perm -020 ! -perm -002 \) -o \( -perm -1000 \( -user 0 -o -user "$u" \) \) \) 2>/dev/null)" ]; }
+    mac=; [ "$(uname)" = Darwin ] && mac=1
+    safe() { [ -n "$(find "$1" -maxdepth 0 -type d \( -user 0 -o -user "$u" \) \( \( ! -perm -020 ! -perm -002 \) -o -perm -1000 \) 2>/dev/null)" ] \
+      && { [ -z "$mac" ] || { l=$(ls -lde "$1" 2>/dev/null) && ! printf '%s\n' "$l" | sed 1d | grep -q ' allow '; }; }; }
+    trusted() { p=$(cd "$1" 2>/dev/null && pwd -P) || return 1; r=$p
+      while :; do safe "$p" || return 1; [ "$p" = / ] && break; p=$(dirname "$p"); done; printf '%s' "$r"; }
     b=${TMPDIR:-}
     case $b in /*) ;; *) b= ;; esac
     case $b in *[!A-Za-z0-9._/-]*) b= ;; esac
     while :; do case $b in */) b=${b%/} ;; *) break ;; esac; done
-    if [ -z "$b" ] || ! trusted "$b"; then b=$4; fi
-    trusted "$b" || { printf 'temple-copy-refused %s\n' "$b"; exit 0; }
+    rb=; [ -n "$b" ] && rb=$(trusted "$b")
+    if [ -z "$rb" ]; then b=$4; rb=$(trusted "$b") || { printf 'temple-copy-refused %s\n' "$b"; exit 0; }; fi
+    b=$rb
     d=$(mktemp -d "$b/temple-$1-XXXXXXXX" 2>/dev/null) || { printf 'temple-copy-unwritable %s\n' "$b"; exit 0; }
     gone() { cd / 2>/dev/null; rm -rf "$d"; }
     chmod g-s,go-rwx "$d" 2>/dev/null
-    ok=; cd "$d" 2>/dev/null && [ "$(pwd -P)" = "$(cd "$b" && pwd -P)/${d##*/}" ] && [ -n "$(find . -maxdepth 0 -user "$u" -perm 700 2>/dev/null)" ] && ok=1
-    if [ -n "$ok" ] && [ "$(uname)" = Darwin ]; then chmod -N . 2>/dev/null; [ "$(ls -lde . 2>/dev/null | wc -l | tr -d ' \t')" = 1 ] || ok=; fi
+    ok=; cd "$d" 2>/dev/null && [ "$(pwd -P)" = "$b/${d##*/}" ] && [ -n "$(find . -maxdepth 0 -user "$u" -perm 700 2>/dev/null)" ] && ok=1
+    if [ -n "$ok" ] && [ -n "$mac" ]; then chmod -N . 2>/dev/null; [ "$(ls -lde . 2>/dev/null | wc -l | tr -d ' \t')" = 1 ] || ok=; fi
     [ -n "$ok" ] || { gone; printf 'temple-copy-refused %s\n' "$b"; exit 0; }
     trap 'gone; exit 1' HUP INT TERM PIPE
     cat > "$2.part" 2>/dev/null || { gone; printf 'temple-copy-unwritable %s\n' "$b"; exit 0; }

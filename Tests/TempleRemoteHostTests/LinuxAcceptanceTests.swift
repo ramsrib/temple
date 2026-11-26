@@ -1240,8 +1240,8 @@ final class FileHandoffAcceptanceTests: XCTestCase {
         let local = try await ProcessRunner.run("/usr/bin/shasum", ["-a", "256", file.path], deadline: 10)
         let digest = String(local.stdout.prefix(64))
         for name in hosts {
-            precondition(name.hasSuffix("-mentes") || name.hasPrefix("mac-mini-personal"),
-                         "acceptance runs only against the -mentes agent accounts and the personal Mini")
+            precondition(["masterblaster-mentes", "jetson-mentes", "mac-mini-personal"].contains(name),
+                         "acceptance runs only against masterblaster-mentes, jetson-mentes and mac-mini-personal")
             let connection = SSHConnection(record: .config(name), stateDirectory: state.url, sshPath: "/usr/bin/ssh")
             try connection.prepareSocketDirectory()
             let exec = SSHExec(connection: connection, path: nil, purpose: .query)

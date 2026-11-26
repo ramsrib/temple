@@ -193,13 +193,14 @@ public final class RemoteSessions {
     /// Launch scripts planned but not yet staged, by stage name. `sent`:
     /// a write was attempted (it may have landed).
     private var pendingStages: [String: PendingStage] = [:]
-    /// The connection each client of a run was planned over, by handle and
-    /// attachment (one per reservation, so an abandoned plan never stands
-    /// for a later client): a file dropped on that client's tab is copied
+    /// The connection a run's client was planned over, with its attachment
+    /// (one per reservation, so an abandoned plan never stands for a later
+    /// client): a file dropped on that client's tab is copied
     /// over that connection's master and nothing else, never over one
     /// re-resolved since (an alias that now names another machine).
-    private var runConnections: [String: (connection: SSHConnection, path: String?)] = [:]
-    private static func clientKey(_ handle: String, _ attachment: Int) -> String { "\(handle)#\(attachment)" }
+    /// Only a run's newest client is kept: an older plan that stages late
+    /// (an abandoned attach) never replaces it.
+    private var runConnections: [String: (attachment: Int, connection: SSHConnection, path: String?)] = [:]
 
     /// A launch planned for one tab and not yet in place on the host. It
     /// keeps the exact connection its tab uses: it is written over that
@@ -672,9 +673,9 @@ public final class RemoteSessions {
         if case .resolved(let resolved) = launchPath { path = resolved }
         pendingStages[name] = PendingStage(handle: handle, creating: creating, script: script, connection: connection,
                                            path: path, state: .planned)
-        // Only a run's latest client has a tab to drop on.
-        for key in runConnections.keys where key.hasPrefix(handle + "#") { runConnections[key] = nil }
-        runConnections[Self.clientKey(handle, attachment)] = (connection, path)
+        if attachment >= runConnections[handle]?.attachment ?? .min {
+            runConnections[handle] = (attachment, connection, path)
+        }
         guard await masterCheck(connection.masterCheckArgv), !retired else {
             if Task.isCancelled { try await failUnspawned(handle, creating: creating, reason: "the open was cancelled") }
             return false
@@ -1313,7 +1314,7 @@ public final class RemoteSessions {
     /// the connection that client was planned over: its path there, or why
     /// not.
     public func copyFile(_ url: URL, handle: String, attachment: Int) async -> FileHandoff.Result {
-        guard !retired, let run = runConnections[Self.clientKey(handle, attachment)] else {
+        guard !retired, let run = runConnections[handle], run.attachment == attachment else {
             return .failed("This tab isn't connected to \(record.name). Reconnect, then try again.")
         }
         return await FileHandoff.copy(url, host: record.name, using: makeExec(run.connection, run.path, .overMaster))

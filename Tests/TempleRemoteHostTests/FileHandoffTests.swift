@@ -61,7 +61,13 @@ final class FileHandoffTests: XCTestCase {
         chmod(groupWritable, 0o775)   // the account's own, but its group can write in it
         chmod(tmp, 0o777)   // the account's own, but anyone can write in it
         let spaced = tree.directory("with space").path
-        for tmpdir in [tmp, groupWritable, "tmp", spaced, tree.path + "/missing"] {
+        // Private itself, under a folder its group can write: the group could
+        // rename it away after the copy.
+        let shared = tree.directory("shared").path
+        let underShared = tree.directory("shared/mine").path
+        chmod(shared, 0o775)
+        chmod(underShared, 0o700)
+        for tmpdir in [tmp, groupWritable, underShared, "tmp", spaced, tree.path + "/missing"] {
             guard case .copied(let path) = await FileHandoff.copy(Data("x".utf8), named: "a.txt", host: "box",
                                                                   using: exec(tmpdir: tmpdir)) else {
                 return XCTFail(tmpdir)
