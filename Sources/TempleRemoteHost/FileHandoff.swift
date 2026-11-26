@@ -51,7 +51,9 @@ public enum FileHandoff {
     mac=; [ "$(uname)" = Darwin ] && mac=1
     safe() { [ -n "$(find "$1" -maxdepth 0 -type d \( -user 0 -o -user "$u" \) \( \( ! -perm -020 ! -perm -002 \) -o -perm -1000 \) 2>/dev/null)" ] \
       && { [ -z "$mac" ] || { l=$(ls -lde "$1" 2>/dev/null) && ! printf '%s\n' "$l" | sed 1d | grep -q ' allow '; }; }; }
-    trusted() { p=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+    nl='
+    '
+    trusted() { p=$(cd "$1" 2>/dev/null && pwd -P && printf x) || return 1; p=${p%x}; p=${p%"$nl"}
       case $p in /*) ;; *) return 1 ;; esac
       case $p in *[!A-Za-z0-9._/-]*) return 1 ;; esac
       safe / || return 1; q=; rest=${p#/}

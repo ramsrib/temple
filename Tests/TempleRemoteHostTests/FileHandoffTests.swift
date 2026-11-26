@@ -67,7 +67,13 @@ final class FileHandoffTests: XCTestCase {
         let underShared = tree.directory("shared/mine").path
         chmod(shared, 0o775)
         chmod(underShared, 0o700)
-        for tmpdir in [tmp, groupWritable, underShared, "tmp", spaced, tree.path + "/missing"] {
+        // A link whose target's name ends in a newline: its resolved path
+        // is not the folder of the same name without one.
+        _ = tree.directory("project")
+        let newlined = tree.directory("project\n").path
+        let link = tree.path + "/link"
+        try FileManager.default.createSymbolicLink(atPath: link, withDestinationPath: newlined)
+        for tmpdir in [tmp, groupWritable, underShared, "tmp", spaced, tree.path + "/missing", link] {
             guard case .copied(let path) = await FileHandoff.copy(Data("x".utf8), named: "a.txt", host: "box",
                                                                   using: exec(tmpdir: tmpdir)) else {
                 return XCTFail(tmpdir)
@@ -75,6 +81,7 @@ final class FileHandoffTests: XCTestCase {
             XCTAssertTrue(path.hasPrefix(fallback + "/temple-"), "\(tmpdir): \(path)")
         }
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: tmp), [])
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: tree.path + "/project"), [])
     }
 
     func testNothingIsWrittenWhenNoTemporaryFolderCanBeTrusted() async throws {
