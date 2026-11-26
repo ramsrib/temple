@@ -852,8 +852,7 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
             }
         }
         func take(_ line: String, from table: inout [String: [Int]]) -> Bool {
-            while var candidates = table[line], let index = candidates.popLast() {
-                table[line] = candidates
+            while let index = table[line]?.popLast() {
                 if !used[index] { used[index] = true; return true }
             }
             return false

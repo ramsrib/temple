@@ -3177,10 +3177,13 @@ use is dropping and pasting screenshots into sessions on hosts.
   and web links dropped together are typed as they always were.
 - **Each copy gets a folder of its own in the host's temporary folder,
   never the project.** `mktemp -d $TMPDIR/temple-<nonce>-XXXXXXXX`, else
-  in `/tmp`. A temporary folder is trusted only when it is an absolute path
-  of plain characters that is either the account's own and writable by
-  nobody else, or sticky and owned by root or the account; otherwise
-  `/tmp`, and if that fails too nothing is written and the tab says so.
+  in `/tmp`. A temporary folder is trusted only when its resolved path is
+  absolute, of plain characters, and every folder on it, from `/` down, is
+  owned by root or the account and either writable by nobody else or
+  sticky, with no ACL granting anything on macOS (review rounds 4 and 5: a
+  private folder under one its group can write could be renamed away after
+  the copy); otherwise `/tmp`, and if that fails too nothing is written and
+  the tab says so.
   The copy's folder is entered and checked again (resolved path, owner,
   mode 0700, no ACL on macOS); every write is relative to it. Review
   rounds 1 and 2 each found a way around a shared per-account folder
@@ -3193,9 +3196,9 @@ use is dropping and pasting screenshots into sessions on hosts.
   conversation may name the path again.
 - **Over the tab's own connection.** The bytes ride a query's stdin (as a
   staged launch does) over the master of the connection that tab's client
-  was planned over, by run and attachment (`RemoteSessions.runConnections`;
-  one per reservation, so an abandoned plan never stands for a later
-  client), never a connection re-resolved since: an alias that now names
+  was planned over, kept for the run's newest attachment only
+  (`RemoteSessions.runConnections`; an abandoned attach that stages late
+  never replaces it), never a connection re-resolved since: an alias that now names
   another machine must not get the file while the tab is on the old one.
   The file is written as `.part`, its length checked, then renamed; a copy
   cut off is removed. The answer is believed only from a command that
@@ -3224,6 +3227,14 @@ use is dropping and pasting screenshots into sessions on hosts.
   top-right corner (`FileCopyNote`), so a one-second copy does not resize
   the agent's screen twice, and names an image with no file of its own
   "the image", not Temple's name for it.
+
+**Tested on real hosts.** `FileHandoffAcceptanceTests` on masterblaster-mentes
+(Linux x86_64), jetson-mentes (Linux aarch64) and mac-mini-personal (macOS
+27); the phase 1a lifecycle copies a screenshot over the tab's own master.
+End to end in the bundled app on the Mini (2026-11-26): `⌘V` of a clipboard
+image put `[Image #1]` in Claude Code's prompt on the host, the file there
+byte-identical; the "Copying the image to …" note showed during a 25 MB
+copy; a Finder-copied folder gave the failure note.
 
 **Not done.** No upload progress bar: a screenshot copies in a second or
 two, and the line with its spinner says it is under way. No removal of

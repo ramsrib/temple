@@ -33,7 +33,8 @@ public enum FileHandoff {
     /// or `temple-copy-short <arrived>` when nothing usable was left.
     ///
     /// A temporary folder is trusted only when it is an absolute path of
-    /// plain characters, and it and every folder above it (resolved) is
+    /// plain characters (checked again once resolved), and every folder on
+    /// its resolved path, from `/` down, is
     /// owned by root or the account and either writable by nobody else
     /// (neither group nor others) or sticky, with no ACL granting anything
     /// on macOS (a deny entry is harmless): nobody
@@ -50,8 +51,13 @@ public enum FileHandoff {
     mac=; [ "$(uname)" = Darwin ] && mac=1
     safe() { [ -n "$(find "$1" -maxdepth 0 -type d \( -user 0 -o -user "$u" \) \( \( ! -perm -020 ! -perm -002 \) -o -perm -1000 \) 2>/dev/null)" ] \
       && { [ -z "$mac" ] || { l=$(ls -lde "$1" 2>/dev/null) && ! printf '%s\n' "$l" | sed 1d | grep -q ' allow '; }; }; }
-    trusted() { p=$(cd "$1" 2>/dev/null && pwd -P) || return 1; r=$p
-      while :; do safe "$p" || return 1; [ "$p" = / ] && break; p=$(dirname "$p"); done; printf '%s' "$r"; }
+    trusted() { p=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+      case $p in /*) ;; *) return 1 ;; esac
+      case $p in *[!A-Za-z0-9._/-]*) return 1 ;; esac
+      safe / || return 1; q=; rest=${p#/}
+      while [ -n "$rest" ]; do q=$q/${rest%%/*}; safe "$q" || return 1
+        case $rest in */*) rest=${rest#*/} ;; *) rest= ;; esac; done
+      printf '%s' "$p"; }
     b=${TMPDIR:-}
     case $b in /*) ;; *) b= ;; esac
     case $b in *[!A-Za-z0-9._/-]*) b= ;; esac
