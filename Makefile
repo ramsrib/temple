@@ -17,9 +17,9 @@ build: ## Compile the SwiftPM targets
 	swift build
 	@./Scripts/check-sdk-linkage.sh
 
-test: ## Run the full test suite
+test: ## Run the full test suite (the Mac kept awake: an idle sleep froze one run for an hour)
 	@./Scripts/ghostty-stamp.sh check
-	swift test
+	caffeinate -i swift test
 
 run: ## Run the app straight from SwiftPM (dev loop; stub-free ghostty build required)
 	@./Scripts/ghostty-stamp.sh check
