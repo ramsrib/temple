@@ -258,6 +258,13 @@ final class RemoteHostLauncher: RemoteSessionHost {
         }
     }
 
+    func copyFile(_ file: URL, handle: String, attachment: Int) async -> RemoteFileCopy {
+        switch await sessions.copyFile(file, handle: handle, attachment: attachment) {
+        case .copied(let path): .copied(path: path)
+        case .failed(let reason): .failed(reason)
+        }
+    }
+
     func retire() { sessions.retire() }
 
     func readPeerTemple() async -> PeerRead {

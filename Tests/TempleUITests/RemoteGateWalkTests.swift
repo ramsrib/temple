@@ -33,6 +33,8 @@ final class RemoteGateWalkTests: XCTestCase {
         var tab: SessionTab?
         /// Remove's question or its stops answered.
         var removalAnswered = false
+        /// What a drop onto the tab typed (`.fileCopyResult`).
+        var typed: [String]?
         let hold = Gate()
 
         @MainActor init(host: HostID) throws {
@@ -394,6 +396,16 @@ final class RemoteGateWalkTests: XCTestCase {
                 sheet.confirm()
                 try await Task.sleep(for: .milliseconds(50))
             }, effect: { $0.folderSheet?.check != .checking }),
+
+            Scenario(completion: .fileCopyResult, disruptions: tabDisruptions, arm: { h in
+                h.remote.copyGate = { await h.hold.wait() }
+                let tab = await self.connectedTab(h)
+                let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
+                Task { @MainActor in
+                    h.typed = await surface.simulateFiles([URL(fileURLWithPath: "/Users/me/shot.png")])
+                }
+                await self.settle { !h.remote.copies.isEmpty }
+            }, effect: { $0.typed == ["/host/tmp/shot.png"] }),
         ]
     }
 

@@ -288,6 +288,10 @@ public protocol RemoteSessionHost: HostLauncher {
     func contactLeftRunning() async -> (closed: [String], quit: [String])?
     func noticeLeftRunning() async
     func checkFolder(_ path: String) async -> RemoteFolderCheck
+    /// A file from this Mac (a drop, a ⌘V) on the tab of a run's client
+    /// (`handle`, `attachment`), copied to the host's temporary folder over
+    /// that client's own connection: its path there, or why not.
+    func copyFile(_ file: URL, handle: String, attachment: Int) async -> RemoteFileCopy
     /// The host was removed or edited: nothing queries it again.
     func retire()
 
@@ -321,6 +325,11 @@ public protocol RemoteSessionHost: HostLauncher {
     /// The run store itself, for an obligation to hold (nil when it can't
     /// be opened).
     func runLedger() -> RemoteRunLedger?
+}
+
+public enum RemoteFileCopy: Equatable, Sendable {
+    case copied(path: String)
+    case failed(String)
 }
 
 /// A remote tab's side of its run (memory only; the run row is durable).
@@ -367,6 +376,8 @@ public struct RemoteTabState: Equatable {
     public var evidenceSeen = false
     /// The owned operation staging this open's launch after the spawn.
     public var stageOperation: UUID?
+    /// Files dropped or pasted on the tab, being copied to the host.
+    var copyOperations: Set<UUID> = []
     /// No sign of life within the startup deadline: the header says so.
     public var stillConnecting = false
     /// Identifies one open, so a late answer for an earlier one is dropped.
@@ -975,6 +986,28 @@ public enum RemoteCopy {
     }
 
     public static func stillConnecting(_ host: String) -> String { "Still connecting to \(host)…" }
+
+    /// Files dropped or pasted onto a tab on a host, while they are copied:
+    /// what happens when they are there, too.
+    public static func copyingFiles(_ names: [String], to host: String) -> String {
+        names.count == 1
+            ? "Copying \(names[0]) to \(host), then adding its path to your prompt…"
+            : "Copying \(names.count) files to \(host), then adding their paths to your prompt…"
+    }
+
+    /// A copy failed: no path was typed, not even the files' that arrived,
+    /// and what was typed is as it was.
+    public static func copyFailed(_ name: String, of total: Int, to host: String) -> String {
+        total == 1 ? "Couldn't copy \(name) to \(host). Your prompt is unchanged."
+            : "Couldn't copy \(name) to \(host), so none of the \(total) files were added to your prompt."
+    }
+
+    public static let copyFailedDismiss = "OK"
+
+    /// An image with no file of its own (a screenshot on the clipboard, an
+    /// image dragged from a browser): Temple's name for it is not the
+    /// person's.
+    public static let pastedImage = "the image"
 
     public static func exitedImmediately(_ host: String, agent: Agent) -> String {
         "\(agent.displayName) exited immediately on \(host)."

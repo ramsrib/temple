@@ -139,3 +139,37 @@ final class GhosttyInputEvidenceTests: XCTestCase {
         XCTAssertFalse(GhosttySurfaceView.isStandIn("x", pwd: nil))
     }
 }
+
+/// ⌘V's clipboard read happens inside the key press (libghostty's paste
+/// keybind asks synchronously), so an image paste is told from a program's
+/// own clipboard read (OSC 52), which never hands over a file.
+@MainActor
+final class GhosttyImagePasteTests: XCTestCase {
+    func testCommandVOfAnImageHandsOverAFileFromInsideTheKeyPress() throws {
+        let pasteboard = NSPasteboard(name: .init("temple-test-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        let image = NSImage(size: NSSize(width: 2, height: 2))
+        image.lockFocus(); NSColor.green.drawSwatch(in: NSRect(x: 0, y: 0, width: 2, height: 2)); image.unlockFocus()
+        try XCTSkipUnless(pasteboard.setData(image.tiffRepresentation, forType: .tiff),
+                          "Pasteboard service unavailable in this execution environment")
+        GhosttySurfaceView.clipboard = { pasteboard }
+        defer { GhosttySurfaceView.clipboard = { .general } }
+
+        let surface = GhosttyTerminalSurface(app: GhosttyApp.shared, appearance: .default)
+        let view = try XCTUnwrap(surface.view as? GhosttySurfaceView)
+        try surface.start(TerminalCommand(argv: ["/bin/cat"], cwd: "/"))
+        defer { surface.terminate() }
+        try XCTSkipIf(view.surface == nil, "no native surface in this environment")
+        var handed: [URL]?
+        view.onFiles = { files in handed = files; return nil }
+        let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
+                                   windowNumber: 0, context: nil, characters: "v", charactersIgnoringModifiers: "v",
+                                   isARepeat: false, keyCode: 9)!
+        view.keyDown(with: key)
+        let deadline = Date().addingTimeInterval(2)
+        while handed == nil, Date() < deadline { RunLoop.main.run(until: Date().addingTimeInterval(0.02)) }
+        let files = try XCTUnwrap(handed, "⌘V of an image reached the handoff")
+        XCTAssertEqual(files.map(\.lastPathComponent), ["image.png"])
+        try? FileManager.default.removeItem(at: files[0].deletingLastPathComponent())
+    }
+}

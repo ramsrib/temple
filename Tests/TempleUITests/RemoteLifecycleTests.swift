@@ -267,6 +267,15 @@ final class FakeRemoteHost: RemoteSessionHost {
         if let folderGate { await folderGate() }
         return folder
     }
+    /// What `copyFile` answers for each file (`/host/tmp/<name>` by default).
+    var copyResult: ((URL) -> RemoteFileCopy)?
+    var copyGate: (() async -> Void)?
+    private(set) var copies: [URL] = []
+    func copyFile(_ file: URL, handle: String, attachment: Int) async -> RemoteFileCopy {
+        copies.append(file)
+        if let copyGate { await copyGate() }
+        return copyResult?(file) ?? .copied(path: "/host/tmp/" + file.lastPathComponent)
+    }
     func retire() { retired = true }
 
     // MARK: Codex identity
@@ -545,6 +554,96 @@ final class RemoteLifecycleTests: XCTestCase {
         model.remoteTabs.detach(tab.id)
         await settle(!self.model.tabs.contains { $0 === tab })
         XCTAssertEqual(label(handle), "Running", "detached: running, open nowhere here")
+    }
+
+    // MARK: Files dropped or pasted
+
+    /// The agent on the host reads files there: a dropped screenshot is
+    /// copied first and the host's path is what gets typed; the tab says
+    /// "Copying…" meanwhile and nothing once it is done.
+    func testADroppedFileIsCopiedToTheHostAndItsPathThereIsTyped() async throws {
+        let tab = await openRow()
+        let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
+        let gate = Gate()
+        remote.copyGate = { await gate.wait() }
+        let files = [URL(fileURLWithPath: "/Users/me/Desktop/shot.png"), URL(fileURLWithPath: "/Users/me/log.txt")]
+        var typed: [String]??
+        Task { @MainActor in typed = .some(await surface.simulateFiles(files)) }
+        await settle(!self.remote.copies.isEmpty)
+        XCTAssertEqual(tab.fileCopy?.state, .copying)
+        XCTAssertEqual(tab.fileCopy?.names, ["shot.png", "log.txt"])
+        await gate.open()
+        await settle(typed != nil)
+        XCTAssertEqual(typed, .some(["/host/tmp/shot.png", "/host/tmp/log.txt"]))
+        XCTAssertEqual(remote.copies, files)
+        XCTAssertNil(tab.fileCopy, "done: nothing more to say")
+        XCTAssertTrue(tab.fileCopyFailures.isEmpty)
+    }
+
+    /// A copy that fails types nothing (never a path that isn't there) and
+    /// says why; the files after it are not sent.
+    func testAFailedCopyTypesNothingAndSaysWhy() async throws {
+        let tab = await openRow()
+        let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
+        remote.copyResult = { _ in .failed("only 10 of 20 bytes arrived") }
+        let typed = await surface.simulateFiles([URL(fileURLWithPath: "/a.png"), URL(fileURLWithPath: "/b.png")])
+        XCTAssertNil(typed)
+        XCTAssertEqual(remote.copies.count, 1)
+        XCTAssertEqual(tab.fileCopyFailures.map(\.state), [.failed("only 10 of 20 bytes arrived")])
+        // A second failure waits behind the first rather than replacing it.
+        _ = await surface.simulateFiles([URL(fileURLWithPath: "/c.png")])
+        XCTAssertEqual(tab.fileCopyFailures.map(\.names), [["a.png"], ["c.png"]])
+        XCTAssertEqual(tab.fileCopyFailures.map(\.total), [2, 1])
+        XCTAssertNil(tab.fileCopy)
+        XCTAssertEqual(RemoteCopy.copyFailed("a.png", of: 2, to: "box"),
+                       "Couldn't copy a.png to box, so none of the 2 files were added to your prompt.")
+        XCTAssertEqual(RemoteCopy.copyFailed("the image", of: 1, to: "box"),
+                       "Couldn't copy the image to box. Your prompt is unchanged.")
+    }
+
+    /// The tab's client ended while the file went (a detach, a dropped
+    /// connection): nothing is typed into a terminal with no agent behind it.
+    func testACopyThatOutlivesItsConnectionTypesNothing() async throws {
+        let tab = await openRow()
+        let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
+        let gate = Gate()
+        remote.copyGate = { await gate.wait() }
+        var typed: [String]??
+        Task { @MainActor in typed = .some(await surface.simulateFiles([URL(fileURLWithPath: "/a.png")])) }
+        await settle(!self.remote.copies.isEmpty)
+        surface.simulateExit(status: 0)
+        XCTAssertNil(tab.fileCopy, "the copy was let go with its client")
+        await gate.open()
+        await settle(typed != nil)
+        XCTAssertEqual(typed, .some(nil))
+        XCTAssertTrue(tab.fileCopyFailures.isEmpty, "nothing said about a copy nobody waits for")
+    }
+
+    /// An image with no file of its own is "the image", not Temple's name for it.
+    func testAPastedImageIsCalledTheImage() {
+        let spilled = FileManager.default.temporaryDirectory.appendingPathComponent("Temple/dropped-images/1F2E/image.png")
+        XCTAssertEqual(RemoteTabController.copyName(spilled), "the image")
+        XCTAssertEqual(RemoteTabController.copyName(URL(fileURLWithPath: "/Users/me/dropped-images/diagram.png")),
+                       "diagram.png", "a folder of the person's own with that name")
+        XCTAssertEqual(RemoteTabController.copyName(URL(fileURLWithPath: "/Users/me/shot.png")), "shot.png")
+        XCTAssertEqual(RemoteCopy.copyingFiles(["the image"], to: "box"),
+                       "Copying the image to box, then adding its path to your prompt…")
+    }
+
+    /// A tab on this Mac types this Mac's paths, as before; nothing is copied.
+    func testALocalTabTypesThisMacsPaths() async throws {
+        let local = LocalHostLauncher(binaryPath: { _ in "/bin/claude" }, extraArgs: { _ in [] },
+                                      folderEvidence: { _ in .unknown })
+        makeModel(launcher: { [hostID, remote] in $0 == hostID ? remote : ($0.isLocal ? local : nil) })
+        let row = Fixture.row("l1", project: "/tmp", host: .local)
+        rows[row.id] = row
+        model.openSession(row)
+        let tab = try XCTUnwrap(model.activeTab)
+        let surface = try XCTUnwrap(tab.surface as? FakeTerminalSurface)
+        let typed = await surface.simulateFiles([URL(fileURLWithPath: "/Users/me/shot one.png")])
+        XCTAssertEqual(typed, ["/Users/me/shot one.png"])
+        XCTAssertTrue(remote.copies.isEmpty)
+        XCTAssertNil(tab.fileCopy)
     }
 
     // MARK: Open

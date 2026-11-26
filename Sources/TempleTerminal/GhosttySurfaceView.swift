@@ -27,6 +27,10 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     /// dropped text). Reported even before a surface exists: over-reporting
     /// only costs an early close its shortcut.
     var onInput: (() -> Void)?
+    /// Files from this Mac to hand to the program (a drop, a ⌘V of a file
+    /// or an image): the paths to type, or nil to type nothing. Unset, their
+    /// paths here.
+    var onFiles: (@MainActor ([URL]) async -> [String]?)?
     /// Reports the child exit code (once).
     var onChildExited: ((Int32) -> Void)?
     /// libghostty asks the host to close the surface (e.g. process gone).
@@ -601,6 +605,8 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     ) {
         var key = event.ghosttyKeyEvent(action, translationMods: translationMods)
         key.composing = composing
+        dispatchingKey = true
+        defer { dispatchingKey = false }
         if let text = NSEvent.ghosttyKeyText(text) {
             text.withCString { ptr in
                 key.text = ptr
@@ -749,7 +755,8 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     /// Dropping a file or an image onto an agent types its path into the prompt —
     /// that is how you hand Claude or Codex a screenshot or a log to look at.
     /// (Ported from Ghostty's SurfaceView, extended to cover images that arrive
-    /// as pixels rather than as a file.)
+    /// as pixels rather than as a file.) Files go through `onFiles` first: a
+    /// tab on another machine copies them there and types that machine's paths.
     static let dropTypes: Set<NSPasteboard.PasteboardType> = [.fileURL, .URL, .string, .png, .tiff]
 
     public override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
@@ -763,39 +770,147 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
     }
 
     public override func performDragOperation(_ sender: any NSDraggingInfo) -> Bool {
-        guard let text = Self.droppedText(from: sender.draggingPasteboard) else { return false }
-        DispatchQueue.main.async {
-            self.insertText(text, replacementRange: NSRange(location: 0, length: 0))
+        switch Self.droppedContent(from: sender.draggingPasteboard) {
+        case .files(let files):
+            handOff(files)
+        case .text(let text):
+            // After any handoff still copying: drops land in the order made.
+            enqueue { _ in text }
+        case nil:
+            return false
         }
         return true
     }
 
-    /// The text a drop should type into the terminal.
-    static func droppedText(from pasteboard: NSPasteboard) -> String? {
+    /// What a drop hands the terminal.
+    enum Dropped: Equatable {
+        /// Files on this Mac (and any web links dropped with them, typed as
+        /// they are): their paths are typed, shell-quoted.
+        case files([URL])
+        /// Typed as it is.
+        case text(String)
+    }
+
+    static func droppedContent(from pasteboard: NSPasteboard) -> Dropped? {
         // Files first — an agent reads a path, so a dropped file IS its path.
+        // Web links dropped with them stay in their places, typed as they are.
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL],
-           !urls.isEmpty,
            urls.contains(where: \.isFileURL) {
-            return urls
-                .map { ShellQuoting.quote($0.isFileURL ? $0.path : $0.absoluteString) }
-                .joined(separator: " ")
+            return .files(urls)
         }
         // An image dragged out of a browser or Preview carries pixels, not a path.
         // Nothing downstream can read pixels off a pasteboard, so spill it to a
         // file and hand over that instead.
-        if let path = spillImageToFile(from: pasteboard) {
-            return ShellQuoting.quote(path)
-        }
+        if let file = spillImageToFile(from: pasteboard) { return .files([file]) }
         // A web URL is quoted (its ?query&args would otherwise reach the shell).
         if let urls = pasteboard.readObjects(forClasses: [NSURL.self]) as? [URL], let url = urls.first {
-            return ShellQuoting.quote(url.absoluteString)
+            return .text(ShellQuoting.quote(url.absoluteString))
         }
         // Plain text is left exactly as-is: it may be a command meant to be run.
-        return pasteboard.string(forType: .string)
+        return pasteboard.string(forType: .string).map(Dropped.text)
     }
 
-    /// Write dropped image data to a temp file; returns its path.
-    private static func spillImageToFile(from pasteboard: NSPasteboard) -> String? {
+    /// The text a drop types on this Mac (no handoff).
+    static func droppedText(from pasteboard: NSPasteboard) -> String? {
+        switch droppedContent(from: pasteboard) {
+        case .files(let urls): typed(urls.map { $0.isFileURL ? $0.path : $0.absoluteString })
+        case .text(let text): text
+        case nil: nil
+        }
+    }
+
+    /// ⌘V of what has no text: a file copied in Finder (its path, as a drop
+    /// would type it; Finder's text is only the name), or an image with no
+    /// text (a screenshot taken to the clipboard, ⌘⌃⇧4), spilled to a file.
+    /// Nil: an ordinary paste. Only for a paste the person made with a key
+    /// (`isHandlingKey`): a program reading the clipboard (OSC 52) never
+    /// starts a copy or gets a path.
+    static func pastedFiles(from pasteboard: NSPasteboard) -> [URL]? {
+        let text = pasteboard.string(forType: .string) ?? ""
+        if let files = fileURLs(on: pasteboard), text.isEmpty || isNames(text, of: files) { return files }
+        guard text.isEmpty else { return nil }
+        return spillImageToFile(from: pasteboard).map { [$0] }
+    }
+
+    /// Finder's text for copied files: their names, one per line. Any
+    /// other text with a file on the clipboard is text the person meant.
+    static func isNames(_ text: String, of files: [URL]) -> Bool {
+        let lines = text.split(whereSeparator: \.isNewline).map { $0.trimmingCharacters(in: .whitespaces) }
+        guard lines.count == files.count else { return false }
+        // Each line names one file of its own: by its name first, then as
+        // Finder shows it (an extension it hides left out, a `:` as `/`).
+        var unmatched = files
+        var rest: [String] = []
+        for line in lines {
+            if let index = unmatched.firstIndex(where: { $0.lastPathComponent == line }) {
+                unmatched.remove(at: index)
+            } else {
+                rest.append(line)
+            }
+        }
+        for line in rest {
+            guard let index = unmatched.firstIndex(where: { file in
+                [file.lastPathComponent, file.deletingPathExtension().lastPathComponent]
+                    .map { $0.replacingOccurrences(of: ":", with: "/").trimmingCharacters(in: .whitespaces) }
+                    .contains(line)
+            }) else { return false }
+            unmatched.remove(at: index)
+        }
+        return true
+    }
+
+    /// The clipboard ⌘V reads; a test hands it a private one.
+    static var clipboard: () -> NSPasteboard = { .general }
+
+    /// A key is being handed to libghostty right now: a clipboard read now
+    /// is the person's ⌘V (its paste binding asks synchronously), not the
+    /// program's request (OSC 52 reads arrive on the runtime's tick).
+    var isHandlingKey: Bool { dispatchingKey }
+    private var dispatchingKey = false
+
+    private static func fileURLs(on pasteboard: NSPasteboard) -> [URL]? {
+        guard let urls = pasteboard.readObjects(forClasses: [NSURL.self],
+                                                options: [.urlReadingFileURLsOnly: true]) as? [URL],
+              !urls.isEmpty else { return nil }
+        return urls
+    }
+
+    static func typed(_ paths: [String]) -> String {
+        paths.map(ShellQuoting.quote).joined(separator: " ")
+    }
+
+    /// Drops and handed-over pastes type in the order they were made, each
+    /// after the one before it has answered (a slow copy is not overtaken
+    /// by a quick one, or by text dropped after it).
+    private var lastHandoff: Task<Void, Never>?
+
+    /// Asks `onFiles` for the paths to type, then types them, if the
+    /// terminal is still there.
+    func handOff(_ urls: [URL]) {
+        enqueue { view in
+            let files = urls.filter(\.isFileURL)
+            let paths: [String]?
+            if let onFiles = view.onFiles { paths = await onFiles(files) } else { paths = files.map(\.path) }
+            guard let paths, paths.count == files.count, !paths.isEmpty else { return nil }
+            var next = paths.makeIterator()
+            return Self.typed(urls.map { $0.isFileURL ? next.next()! : $0.absoluteString })
+        }
+    }
+
+    private func enqueue(_ text: @escaping @MainActor (GhosttySurfaceView) async -> String?) {
+        let previous = lastHandoff
+        lastHandoff = Task { @MainActor [weak self] in
+            await previous?.value
+            guard let self, let typed = await text(self), let surface = self.surface, !self.childHasExited else { return }
+            // Typed as a drop's text is (a paste), without touching a
+            // composition the person may have started meanwhile.
+            self.onInput?()
+            ghostty_surface_text(surface, typed, UInt(typed.utf8.count))
+        }
+    }
+
+    /// Write image data to a temp file (`image.png`); returns its URL.
+    private static func spillImageToFile(from pasteboard: NSPasteboard) -> URL? {
         let png: Data?
         if let data = pasteboard.data(forType: .png) {
             png = data
@@ -806,13 +921,16 @@ public final class GhosttySurfaceView: NSView, @preconcurrency NSTextInputClient
         }
         guard let png else { return nil }
 
+        // A folder of its own, so the file can be called what it is: a tab
+        // copying it to another machine shows its name.
         do {
             let directory = FileManager.default.temporaryDirectory
-                .appendingPathComponent("Temple/dropped-images", isDirectory: true)
+                .appendingPathComponent("Temple/\(TerminalHandoff.spilledImagesFolder)/\(UUID().uuidString)",
+                                        isDirectory: true)
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            let file = directory.appendingPathComponent("\(UUID().uuidString).png")
+            let file = directory.appendingPathComponent("image.png")
             try png.write(to: file)
-            return file.path
+            return file
         } catch {
             GhosttyApp.logger.error("dropped image could not be written: \(String(describing: error), privacy: .public)")
             return nil

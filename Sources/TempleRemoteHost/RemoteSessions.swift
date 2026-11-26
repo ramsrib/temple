@@ -193,6 +193,13 @@ public final class RemoteSessions {
     /// Launch scripts planned but not yet staged, by stage name. `sent`:
     /// a write was attempted (it may have landed).
     private var pendingStages: [String: PendingStage] = [:]
+    /// The connection each client of a run was planned over, by handle and
+    /// attachment (one per reservation, so an abandoned plan never stands
+    /// for a later client): a file dropped on that client's tab is copied
+    /// over that connection's master and nothing else, never over one
+    /// re-resolved since (an alias that now names another machine).
+    private var runConnections: [String: (connection: SSHConnection, path: String?)] = [:]
+    private static func clientKey(_ handle: String, _ attachment: Int) -> String { "\(handle)#\(attachment)" }
 
     /// A launch planned for one tab and not yet in place on the host. It
     /// keeps the exact connection its tab uses: it is written over that
@@ -586,8 +593,9 @@ public final class RemoteSessions {
                                     stage: LaunchStage.attachName(marker: marker, nonce: token()))
         let staged: Bool
         do {
-            staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, creating: false,
-                                                script: keepAlive.attachScript(plan), connection: connection)
+            staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, attachment: run.attachment,
+                                                creating: false, script: keepAlive.attachScript(plan),
+                                                connection: connection)
         } catch is CancellationError {
             throw CancellationError()
         } catch {
@@ -642,8 +650,9 @@ public final class RemoteSessions {
         let plan = RemoteLaunchPlan(handle: run.handle, marker: marker, directory: run.directoryIntent,
                                     agentArgv: argv, path: launchPath, claudeConfig: config, codexHome: home, socket: nil,
                                     stage: LaunchStage.creationName(marker: marker, nonce: token()))
-        let staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, creating: true,
-                                                script: keepAlive.createScript(plan), connection: connection)
+        let staged = try await stageBeforeSpawn(plan.stage, handle: run.handle, attachment: run.attachment,
+                                                creating: true, script: keepAlive.createScript(plan),
+                                                connection: connection)
         return OpenPlan(handle: run.handle, attachment: run.attachment, creating: true,
                         argv: localArgv(connection, LaunchStage.command(stage: plan.stage), handle: run.handle, attachment: run.attachment), agentArgv: argv,
                         directoryIntent: run.directoryIntent, evidenceDirectory: nil,
@@ -657,12 +666,15 @@ public final class RemoteSessions {
     /// Temple couldn't put in place. A cancellation stays a cancellation.
     /// Without a master the launch waits for `stage(_:)`, after the tab has
     /// connected.
-    private func stageBeforeSpawn(_ name: String, handle: String, creating: Bool, script: String,
+    private func stageBeforeSpawn(_ name: String, handle: String, attachment: Int, creating: Bool, script: String,
                                   connection: SSHConnection) async throws -> Bool {
         var path: String?
         if case .resolved(let resolved) = launchPath { path = resolved }
         pendingStages[name] = PendingStage(handle: handle, creating: creating, script: script, connection: connection,
                                            path: path, state: .planned)
+        // Only a run's latest client has a tab to drop on.
+        for key in runConnections.keys where key.hasPrefix(handle + "#") { runConnections[key] = nil }
+        runConnections[Self.clientKey(handle, attachment)] = (connection, path)
         guard await masterCheck(connection.masterCheckArgv), !retired else {
             if Task.isCancelled { try await failUnspawned(handle, creating: creating, reason: "the open was cancelled") }
             return false
@@ -1294,6 +1306,17 @@ public final class RemoteSessions {
         do { return await FolderCheck.run(path, using: try await queryExec(refresh: true)) } catch {
             return .transport(error.localizedDescription)
         }
+    }
+
+    /// A file dropped or pasted onto the tab of a run's client (`handle`,
+    /// `attachment`), copied to the host (`FileHandoff`) over the master of
+    /// the connection that client was planned over: its path there, or why
+    /// not.
+    public func copyFile(_ url: URL, handle: String, attachment: Int) async -> FileHandoff.Result {
+        guard !retired, let run = runConnections[Self.clientKey(handle, attachment)] else {
+            return .failed("This tab isn't connected to \(record.name). Reconnect, then try again.")
+        }
+        return await FileHandoff.copy(url, host: record.name, using: makeExec(run.connection, run.path, .overMaster))
     }
 
     /// The other Temple on this host, if one runs here

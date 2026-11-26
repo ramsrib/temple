@@ -363,7 +363,19 @@ public final class GhosttyApp {
     ) -> Bool {
         MainActor.assumeIsolated {
             guard let view = surfaceView(from: userdata), view.surface != nil else { return false }
-            guard let str = NSPasteboard.general.string(forType: .string), !str.isEmpty else {
+            // The person's ⌘V of a file, or of an image with no text: handed
+            // over as files (copied first on a tab on another machine). This
+            // request is answered at once with nothing, and as handled, so
+            // the key is not passed on to the program as well (a paste
+            // binding that went unperformed would be, under kitty's
+            // keyboard protocol).
+            if location == GHOSTTY_CLIPBOARD_STANDARD, view.isHandlingKey,
+               let files = GhosttySurfaceView.pastedFiles(from: GhosttySurfaceView.clipboard()) {
+                view.deliverClipboard("", state: state, confirmed: false)
+                view.handOff(files)
+                return true
+            }
+            guard let str = GhosttySurfaceView.clipboard().string(forType: .string), !str.isEmpty else {
                 return false
             }
             view.deliverClipboard(str, state: state, confirmed: false)

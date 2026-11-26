@@ -1204,3 +1204,48 @@ final class AcceptanceClient {
         for url in [transcript, trace, pidFile, statusFile] { try? FileManager.default.removeItem(at: url) }
     }
 }
+
+/// A dropped screenshot copied to a real host (`FileHandoff`), opt-in as
+/// above: the bytes that land are the bytes sent, in the account's private
+/// temporary folder; the test removes its copy.
+final class FileHandoffAcceptanceTests: XCTestCase {
+    func testAScreenshotSizedFileArrivesWholeOnEachHost() async throws {
+        let hosts = (ProcessInfo.processInfo.environment["TEMPLE_REMOTE_ACCEPTANCE"] ?? "")
+            .split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        guard !hosts.isEmpty else { throw XCTSkip("set TEMPLE_REMOTE_ACCEPTANCE=<alias>[,<alias>] to run") }
+        let state = TempTree("acceptance-handoff")
+        // A Retina screenshot's size, every byte value.
+        let bytes = Data((0..<(6 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 2_654_435_761 >> 7) })
+        let file = state.url.appendingPathComponent("Screenshot 2026-11-26 at 14.03.22.png")
+        try bytes.write(to: file)
+        let local = try await ProcessRunner.run("/usr/bin/shasum", ["-a", "256", file.path], deadline: 10)
+        let digest = String(local.stdout.prefix(64))
+        for name in hosts {
+            precondition(["masterblaster-mentes", "jetson-mentes"].contains(name),
+                         "acceptance runs only against masterblaster-mentes and jetson-mentes")
+            let connection = SSHConnection(record: .config(name), stateDirectory: state.url, sshPath: "/usr/bin/ssh")
+            try connection.prepareSocketDirectory()
+            let exec = SSHExec(connection: connection, path: nil, purpose: .query)
+            let started = Date()
+            let result = await FileHandoff.copy(file, host: name, using: exec)
+            guard case .copied(let path) = result else { XCTFail("\(name): \(result)"); continue }
+            print("\(name): 6 MiB copied in \(String(format: "%.1f", Date().timeIntervalSince(started))) s to \(path)")
+            // Only a path of the copy's own shape is touched, and only its
+            // file and its empty folder are removed.
+            let copyFolder = (path as NSString).deletingLastPathComponent
+            guard path.hasPrefix("/"), path.hasSuffix("/Screenshot-2026-11-26-at-14.03.22.png"),
+                  (copyFolder as NSString).lastPathComponent.hasPrefix("temple-") else {
+                XCTFail("\(name): unexpected path \(path)"); continue
+            }
+            let check = try await exec.run(script: #"""
+            d=$(dirname "$1")
+            (sha256sum "$1" 2>/dev/null || shasum -a 256 "$1") | cut -c1-64
+            stat -c %a "$d" 2>/dev/null || stat -f %Lp "$d"
+            rm -f "$1" && rmdir "$d"
+            """#, args: [path], deadline: 20)
+            let lines = check.stdout.split(separator: "\n").map(String.init)
+            XCTAssertEqual(lines.first, digest, "\(name): the bytes on the host")
+            XCTAssertEqual(lines.dropFirst().first, "700", "\(name): the copy's private folder")
+        }
+    }
+}

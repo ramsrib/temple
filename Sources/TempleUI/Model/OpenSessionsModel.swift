@@ -1511,6 +1511,14 @@ extension OpenSessionsModel: TerminalSurfaceDelegate {
         }
     }
 
+    /// Files dropped or pasted onto a terminal: this Mac's paths for a tab
+    /// here, the host's after a copy for a tab on a host.
+    public func surface(_ surface: TerminalSurface, pathsToType files: [URL]) async -> [String]? {
+        guard !isQuitting, let tab = tab(for: surface) else { return nil }
+        if tab.host.isLocal { return files.map(\.path) }
+        return await remoteTabs.copyFiles(files, for: tab, surface: surface)
+    }
+
     public func surface(_ surface: TerminalSurface, didUpdateTitle title: String) {
         guard !isQuitting, let tab = tab(for: surface) else { return }
         titleChanged(tab, raw: title, shown: true)

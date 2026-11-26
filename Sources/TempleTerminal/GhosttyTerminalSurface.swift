@@ -55,6 +55,11 @@ public final class GhosttyTerminalSurface: TerminalSurface {
             guard let self else { return }
             self.delegate?.surfaceDidReceiveInput(self)
         }
+        ghosttyView.onFiles = { [weak self] files in
+            guard let self else { return nil }
+            guard let delegate = self.delegate else { return files.map(\.path) }
+            return await delegate.surface(self, pathsToType: files)
+        }
         ghosttyView.onChildExited = { [weak self] code in
             self?.markExited(status: code)
         }

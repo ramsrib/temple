@@ -128,8 +128,19 @@ private struct SessionTerminalView: View {
                     // surface keeps its size and the agent's prompt line, at
                     // the bottom, stays clear of it.
                     .overlay(alignment: .topTrailing) {
-                        TerminalFindOverlay(find: tab.find,
-                                            note: tab.host.isLocal ? nil : RemoteCopy.findNote(displayHost))
+                        VStack(alignment: .trailing, spacing: 0) {
+                            TerminalFindOverlay(find: tab.find,
+                                                note: tab.host.isLocal ? nil : RemoteCopy.findNote(displayHost))
+                            // Files dropped or pasted onto a tab on a host.
+                            if let failure = tab.fileCopyFailures.first {
+                                FileCopyNote(status: failure, host: displayHost) {
+                                    tab.fileCopyFailures.removeAll { $0.id == failure.id }
+                                }
+                            }
+                            if let copy = tab.fileCopy {
+                                FileCopyNote(status: copy, host: displayHost) {}
+                            }
+                        }
                     }
             } else {
                 Color.clear.onAppear {

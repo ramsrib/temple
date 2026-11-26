@@ -192,6 +192,88 @@ final class GhosttyRuntimeTests: XCTestCase {
         XCTAssertEqual(GhosttySurfaceView.droppedText(from: pasteboard), "git status --short")
     }
 
+    // ⌘V of a screenshot taken to the clipboard (pixels, no text) hands
+    // over a file, as a drop of it would; text on the clipboard is an
+    // ordinary paste, image or not.
+    @MainActor
+    func testPastingAnImageWithNoTextHandsOverAFile() throws {
+        let image = NSImage(size: NSSize(width: 2, height: 2))
+        image.lockFocus()
+        NSColor.blue.drawSwatch(in: NSRect(x: 0, y: 0, width: 2, height: 2))
+        image.unlockFocus()
+
+        let pasteboard = NSPasteboard(name: .init("temple-test-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        try XCTSkipUnless(pasteboard.setData(image.tiffRepresentation, forType: .tiff),
+                          "Pasteboard service unavailable in this execution environment")
+        let files = try XCTUnwrap(GhosttySurfaceView.pastedFiles(from: pasteboard))
+        XCTAssertEqual(files.count, 1)
+        XCTAssertEqual(files[0].lastPathComponent, "image.png", "named for what it is: a host's tab shows it")
+        XCTAssertTrue(FileManager.default.fileExists(atPath: files[0].path))
+        try? FileManager.default.removeItem(at: files[0].deletingLastPathComponent())
+
+        pasteboard.clearContents()
+        pasteboard.setData(image.tiffRepresentation, forType: .tiff)
+        pasteboard.setString("a caption", forType: .string)
+        XCTAssertNil(GhosttySurfaceView.pastedFiles(from: pasteboard), "text wins: an ordinary paste")
+
+        pasteboard.clearContents()
+        pasteboard.setString("plain", forType: .string)
+        XCTAssertNil(GhosttySurfaceView.pastedFiles(from: pasteboard))
+    }
+
+    // A file copied in Finder pastes as its path (Finder's text is only its
+    // name), as Ghostty's own app does.
+    @MainActor
+    func testPastingACopiedFileHandsOverItsPath() throws {
+        let pasteboard = NSPasteboard(name: .init("temple-test-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        try XCTSkipUnless(pasteboard.writeObjects([URL(fileURLWithPath: "/tmp/shot 1.png") as NSURL]),
+                          "Pasteboard service unavailable in this execution environment")
+        pasteboard.setString("shot 1.png", forType: .string)
+        XCTAssertEqual(GhosttySurfaceView.pastedFiles(from: pasteboard), [URL(fileURLWithPath: "/tmp/shot 1.png")])
+
+        // Finder leaves out an extension it hides.
+        XCTAssertTrue(GhosttySurfaceView.isNames("shot 1", of: [URL(fileURLWithPath: "/tmp/shot 1.png")]))
+        XCTAssertFalse(GhosttySurfaceView.isNames("shot 1\nother", of: [URL(fileURLWithPath: "/tmp/shot 1.png")]))
+        XCTAssertFalse(GhosttySurfaceView.isNames("a.png\na.png", of: [URL(fileURLWithPath: "/tmp/a.png"),
+                                                                       URL(fileURLWithPath: "/tmp/b.png")]),
+                       "each line names a file of its own")
+        XCTAssertTrue(GhosttySurfaceView.isNames("report\nreport.txt", of: [URL(fileURLWithPath: "/tmp/report.txt"),
+                                                                           URL(fileURLWithPath: "/tmp/report")]),
+                      "an exact name is matched before a hidden extension")
+
+        // Text that is more than the file's name is what the person meant.
+        pasteboard.clearContents()
+        pasteboard.writeObjects([URL(fileURLWithPath: "/tmp/shot 1.png") as NSURL])
+        pasteboard.setString("see shot 1.png for the bug", forType: .string)
+        XCTAssertNil(GhosttySurfaceView.pastedFiles(from: pasteboard))
+    }
+
+    // Files and web links dropped together are typed as they always were.
+    @MainActor
+    func testAMixedDropOfFilesAndLinksKeepsBoth() throws {
+        let pasteboard = NSPasteboard(name: .init("temple-test-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        try XCTSkipUnless(pasteboard.writeObjects([URL(fileURLWithPath: "/tmp/a.png") as NSURL,
+                                                   URL(string: "https://example.com/x?y=1")! as NSURL]),
+                          "Pasteboard service unavailable in this execution environment")
+        XCTAssertEqual(GhosttySurfaceView.droppedText(from: pasteboard), "/tmp/a.png 'https://example.com/x?y=1'")
+    }
+
+    // A drop's files reach the handoff, and what it answers is what is typed.
+    @MainActor
+    func testADropIsTypedAsWhatTheHandoffAnswers() throws {
+        let pasteboard = NSPasteboard(name: .init("temple-test-\(UUID().uuidString)"))
+        pasteboard.clearContents()
+        try XCTSkipUnless(pasteboard.writeObjects([URL(fileURLWithPath: "/Users/me/shot.png") as NSURL]),
+                          "Pasteboard service unavailable in this execution environment")
+        XCTAssertEqual(GhosttySurfaceView.droppedContent(from: pasteboard),
+                       .files([URL(fileURLWithPath: "/Users/me/shot.png")]))
+        XCTAssertEqual(GhosttySurfaceView.typed(["/tmp/temple-501-files/ab/shot.png", "/a b"]),
+                       "/tmp/temple-501-files/ab/shot.png '/a b'")
+    }
+
     // T3: clean shutdown. Named to run last — it invalidates the singleton.
     @MainActor
     func testZZZRuntimeShutdown() {

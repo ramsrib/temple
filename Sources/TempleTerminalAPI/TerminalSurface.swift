@@ -72,6 +72,14 @@ public protocol TerminalSurface: AnyObject {
     func endSearch()
 }
 
+/// What a drop or a paste hands over.
+public enum TerminalHandoff {
+    /// The folder (under the temporary directory's `Temple`) where an
+    /// image with no file of its own (pasted, or dragged from a browser)
+    /// is written before its path is handed over.
+    public static let spilledImagesFolder = "dropped-images"
+}
+
 public enum TerminalSearchDirection: Sendable, Equatable {
     case next, previous
 }
@@ -115,6 +123,13 @@ public protocol TerminalSurfaceDelegate: AnyObject {
     /// activity. Default no-op.
     func surfaceDidReceiveInput(_ surface: TerminalSurface)
 
+    /// Files from this Mac handed to the terminal: dropped on it, or pasted
+    /// with ⌘V (a copied file, or an image with no text, such as a
+    /// screenshot taken to the clipboard). Answers the paths to type, in
+    /// order, or nil to type nothing (the delegate has said why). A tab on
+    /// another machine copies them there first. Default: their paths here.
+    func surface(_ surface: TerminalSurface, pathsToType files: [URL]) async -> [String]?
+
     // Search, as seen from the terminal's side. All default to no-ops.
     /// The terminal itself asked for a search (a keybind inside it, e.g. ⌘E
     /// "use selection for find"); `needle` is what it wants searched, if any.
@@ -131,6 +146,7 @@ public extension TerminalSurfaceDelegate {
     func surfaceDidSubmitInput(_ surface: TerminalSurface) {}
     func surface(_ surface: TerminalSurface, didUpdateStandInTitle title: String) {}
     func surfaceDidReceiveInput(_ surface: TerminalSurface) {}
+    func surface(_ surface: TerminalSurface, pathsToType files: [URL]) async -> [String]? { files.map(\.path) }
     func surface(_ surface: TerminalSurface, didStartSearch needle: String?) {}
     func surfaceDidEndSearch(_ surface: TerminalSurface) {}
     func surface(_ surface: TerminalSurface, didUpdateSearchTotal total: Int?) {}

@@ -105,6 +105,11 @@ final class FakeTerminalSurface: TerminalSurface {
     /// real view reports it.
     func simulateClick(captured: Bool) { if captured { delegate?.surfaceDidReceiveInput(self) } }
     func simulateExit(status: Int32 = 0) { exitNow(status: status) }
+    /// Files dropped or pasted: what the real view would type (nil: nothing).
+    func simulateFiles(_ files: [URL]) async -> [String]? {
+        guard let delegate else { return files.map(\.path) }
+        return await delegate.surface(self, pathsToType: files)
+    }
     func simulateSearchStarted(needle: String?) { delegate?.surface(self, didStartSearch: needle) }
     func simulateSearchEnded() { delegate?.surfaceDidEndSearch(self) }
     func simulateSearchTotal(_ total: Int?) { delegate?.surface(self, didUpdateSearchTotal: total) }

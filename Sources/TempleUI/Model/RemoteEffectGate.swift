@@ -84,6 +84,10 @@ public enum RemoteCompletion: String, CaseIterable, Sendable {
     case sheetStopOutcome
     /// The folder sheet received its check (and may start a session).
     case folderCheckResult
+    /// Files dropped or pasted onto a tab reached the host: their paths
+    /// are typed, or the tab says why not. (The tab's "Copying…" line is
+    /// the copy's own and goes whatever the gate says.)
+    case fileCopyResult
     /// Remove asked the host what is still running there: the host goes,
     /// or the alert asks.
     case removalCheck

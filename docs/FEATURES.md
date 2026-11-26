@@ -295,6 +295,11 @@ the terminal; there is no bottom composer and no intervening shell.
 - Files and images dropped onto a terminal are typed into it as shell-escaped
   paths, which is how an agent is handed a screenshot or a log. An image dragged
   from a browser or Preview carries no file, so Temple writes one and passes that.
+  `⌘V` does the same for what has no text of its own: an image on the clipboard
+  (a screenshot taken with `⌘⌃⇧4`) is written to a file and its path pasted, and
+  a file copied in Finder pastes as its path. Clipboard text pastes as before.
+  Drops land in the order you made them.
+  On a tab on a host, the files are copied there first (below).
 - Each session chip shows its agent, title, activity dot, and close control.
   Double-clicking a chip renames the session in place: Enter commits, Esc
   cancels, and an emptied field reverts to the automatic title.
@@ -450,6 +455,17 @@ it. What follows appears for an enabled host only.
   History page (**This Mac** and each host) lists that machine's sessions
   only, and **Show in History** opens the session's own machine's page
   ([ADR-041](./DECISIONS.md#adr-041--a-session-is-its-id-on-a-host)).
+- **Screenshots and files.** Dropping a file or an image on a tab on a host,
+  or pasting a screenshot or a copied file with `⌘V`, copies it to the host
+  first, into a new folder of its own in the host's temporary folder (`$TMPDIR`
+  or `/tmp`) that only your account can read, and types the host's path, so the agent there
+  can open it. "Copying shot.png to <host>, then adding its path to your prompt…"
+  shows over the terminal's top-right corner while it goes (a pasted screenshot is
+  "the image"). If a copy fails, nothing is typed (not even the other files of that
+  drop) and a note names the file, why, and what to do, until you click **OK**.
+  Folders, and files over 100 MB, are not copied.
+  The host clears its temporary folder as it always does; Temple deletes
+  nothing there ([ADR-045](./DECISIONS.md#adr-045--files-dropped-on-a-tab-on-a-host-are-copied-there-first)).
 - **It keeps running.** The agent runs inside a hidden tmux server of
   Temple's own on the host (`tmux -L temple`, tmux 3.2 or newer), so it
   survives a dropped connection, a sleeping Mac and a Temple quit while it

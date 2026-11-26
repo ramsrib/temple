@@ -3143,3 +3143,89 @@ recorded folder wins over that fill. Not yet run on a Linux host.
 
 **Known gaps.** `/clear` is still not followed (ADR-043). A host whose
 `find` is busybox's cannot read any agent's transcripts (task 6482421f).
+
+## ADR-045 — Files dropped on a tab on a host are copied there first
+
+**Date:** 2026-11-26 · **Status:** Accepted
+
+A drop has always typed the dropped file's path, and an image dragged from
+a browser was written to a temporary file first. On a tab on a host that
+path is this Mac's: the agent there reads its own disk and finds nothing.
+Claude Code's own image paste (⌃V) reads the clipboard of the machine it
+runs on, and a host under ssh and tmux has none of this Mac's. The owner's
+use is dropping and pasting screenshots into sessions on hosts.
+
+**Decisions.**
+
+- **The terminal hands files over; the tab decides what to type.**
+  `TerminalSurfaceDelegate.surface(_:pathsToType:)` (default: this Mac's
+  paths) is asked for every drop of files and every `⌘V` of files or an
+  image. A tab here answers this Mac's paths, as before; a tab on a host
+  copies each file there and answers the host's paths. The view types the
+  answer, in the order the drops were made.
+- **`⌘V` of what has no text hands over a file.** An image with no text on
+  the clipboard is written to `…/dropped-images/<uuid>/image.png`; a file
+  copied in Finder is its path (Finder's text is only its name; Ghostty's
+  app pastes the path too), but only when the clipboard's text is just
+  the files' names (Finder's, with a hidden extension left out); other
+  text is what the person meant. Clipboard text is an ordinary paste. Only
+  a paste made with a key does this (libghostty asks for the clipboard
+  while the key is handed to it, `GhosttyImagePasteTests`), so a program
+  reading the clipboard (OSC 52) never starts a copy. The request is
+  answered at once, empty, as handled: an unperformed paste binding would
+  pass ⌘V on to the program too, under kitty's keyboard protocol. Files
+  and web links dropped together are typed as they always were.
+- **Each copy gets a folder of its own in the host's temporary folder,
+  never the project.** `mktemp -d $TMPDIR/temple-<nonce>-XXXXXXXX`, else
+  in `/tmp`. A temporary folder is trusted only when it is an absolute path
+  of plain characters that is either the account's own and writable by
+  nobody else, or sticky and owned by root or the account; otherwise
+  `/tmp`, and if that fails too nothing is written and the tab says so.
+  The copy's folder is entered and checked again (resolved path, owner,
+  mode 0700, no ACL on macOS); every write is relative to it. Review
+  rounds 1 and 2 each found a way around a shared per-account folder
+  (another account preparing it, or swapping it for a link between a
+  check and a `cd`), so there is no shared folder: `mktemp` makes a fresh
+  one atomically, which nobody else can prepare. The file keeps its own
+  name, its stem and extension made safe apart (letters, digits, `.`,
+  `_`, `-`). Nothing lands in a repository, and the host cleans it as any
+  temporary file; Temple deletes nothing there, since a resumed
+  conversation may name the path again.
+- **Over the tab's own connection.** The bytes ride a query's stdin (as a
+  staged launch does) over the master of the connection that tab's client
+  was planned over, by run and attachment (`RemoteSessions.runConnections`;
+  one per reservation, so an abandoned plan never stands for a later
+  client), never a connection re-resolved since: an alias that now names
+  another machine must not get the file while the tab is on the old one.
+  The file is written as `.part`, its length checked, then renamed; a copy
+  cut off is removed. The answer is believed only from a command that
+  ended well, as an absolute path in this copy's own folder under its own
+  name. The deadline is 15 s plus 1 s per 128 KiB.
+- **Only whole files, only into the terminal they were dropped on.** On
+  this Mac a link is copied as its target, only a regular file is read
+  (a pipe would never end), into memory of its own (a mapped log truncated
+  meanwhile would crash the read); folders and files over 100 MB are
+  refused before anything is sent, and at most one byte past the limit is
+  ever read. If any file of a drop fails, nothing is typed and the tab
+  says why, in a sentence that names what to do (`FileHandoff.Reason`);
+  failure notes queue, each staying until **OK**, so a later drop or
+  failure does not hide one. Paths are typed only if the same terminal is still there
+  with its client running; the tab's exit or close cancels its copies (their
+  ssh is killed) and says nothing about them.
+- **One queue per terminal.** Drops (text ones too) and handed-over pastes
+  type in the order made, each after the one before has answered, as a
+  paste (without touching an IME composition in progress), and only while
+  the terminal's process runs. Web links dropped together with files keep
+  their places and are typed as they are.
+- **The copy is owned like any query.** It runs under `RemoteOperations`
+  (a host change or the quit cancels it) and its answer passes the gate as
+  `.fileCopyResult` before anything is typed; the "Copying…" line is the
+  copy's own and goes whatever the gate says. It floats over the terminal's
+  top-right corner (`FileCopyNote`), so a one-second copy does not resize
+  the agent's screen twice, and names an image with no file of its own
+  "the image", not Temple's name for it.
+
+**Not done.** No upload progress bar: a screenshot copies in a second or
+two, and the line with its spinner says it is under way. No removal of
+copies: the host's temporary-file cleanup owns them.
+

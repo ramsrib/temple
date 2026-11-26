@@ -96,6 +96,12 @@ public final class SessionTab: ObservableObject, Identifiable {
     @Published public var isProvisional: Bool
     /// A tab on a host: its side of the run (nil for this Mac's tabs).
     @Published public var remote: RemoteTabState?
+    /// Files dropped or pasted onto a tab on a host, being copied there
+    /// before their paths are typed.
+    @Published public var fileCopy: FileCopyStatus?
+    /// Copies that failed, oldest first, each shown until the person
+    /// dismisses it (a later drop or failure does not hide it).
+    @Published public var fileCopyFailures: [FileCopyStatus] = []
     /// The user has sent this tab's agent something (Return). A new tab
     /// closed before that started no conversation.
     var inputSubmitted = false
@@ -232,6 +238,25 @@ public final class SessionTab: ObservableObject, Identifiable {
         self.surface = surface
         self.spawnedAt = at
         find.surface = surface
+    }
+}
+
+/// Files from this Mac on their way to a tab's host (a drop, a ⌘V).
+public struct FileCopyStatus: Equatable, Identifiable {
+    public enum State: Equatable {
+        case copying
+        /// Nothing was typed; why, in the host's or ssh's words.
+        case failed(String)
+    }
+    public let id = UUID()
+    /// Copying: every file of the drop. Failed: the one that failed.
+    public let names: [String]
+    /// How many files the drop had.
+    public let total: Int
+    public var state: State
+
+    public init(names: [String], total: Int? = nil, state: State) {
+        self.names = names; self.total = total ?? names.count; self.state = state
     }
 }
 

@@ -459,6 +459,8 @@ public final class RemoteTabController {
         if let key = tab.sessionKey, !model.unusedThisRun(tab), tab.remote?.automatic != true {
             model.touchHandler?(key, nil)
         }
+        // The client is gone: its copies have no agent to go to.
+        cancelCopies(tab)
         // The client is gone: a launch not yet staged never will be.
         if let staging = tab.remote?.stageOperation {
             operations.cancel(id: staging)
@@ -879,6 +881,73 @@ public final class RemoteTabController {
         }
     }
 
+    // MARK: Files from this Mac
+
+    /// Files dropped or pasted onto a tab on a host: the agent there reads
+    /// files on its own machine, so each is copied to the host's temporary
+    /// folder first, over the connection this tab was launched over, and
+    /// the host's paths are what get typed. While they copy the tab says
+    /// so; if any fails, nothing is typed and the tab says why. The copy
+    /// is owned (a host change or the quit cancels it), its answer passes
+    /// the gate, and the paths are typed only into the terminal the files
+    /// were dropped on, still connected.
+    func copyFiles(_ files: [URL], for tab: SessionTab, surface: TerminalSurface) async -> [String]? {
+        guard let host = remoteHost(for: tab), let handle = tab.remote?.handle, let attachment = tab.remote?.attachment,
+              tab.remote?.phase == .connected, !isQuitting else { return nil }
+        let status = FileCopyStatus(names: files.map(Self.copyName), state: .copying)
+        tab.fileCopy = status
+        let ticket = gate.ticket(for: tab)
+        var operation: UUID?
+        let results: [RemoteFileCopy] = await withCheckedContinuation { continuation in
+            operation = operations.run(host: tab.host, .query) {
+                var results: [RemoteFileCopy] = []
+                for file in files {
+                    guard !Task.isCancelled else { results.append(.failed("")); break }
+                    let result = await host.copyFile(file, handle: handle, attachment: attachment)
+                    results.append(result)
+                    if case .failed = result { break }
+                }
+                continuation.resume(returning: results)
+            }
+            if let operation { tab.remote?.copyOperations.insert(operation) }
+        }
+        if let operation { tab.remote?.copyOperations.remove(operation) }
+        // The "Copying…" line is this copy's own, whatever became of the tab.
+        if tab.fileCopy?.id == status.id { tab.fileCopy = nil }
+        guard gate.admit(.fileCopyResult, ticket) else { return nil }
+        // Its client ended while the file went (a detach, a dropped
+        // connection, a stop): there is no agent to type into, and the tab
+        // already says what became of it.
+        guard tab.surface === surface, tab.hasLiveProcess, tab.remote?.phase == .connected else { return nil }
+        for (index, result) in results.enumerated() {
+            guard case .failed(let reason) = result else { continue }
+            RemoteLog.error("\(host.hostName) \(handle): a dropped file wasn't copied: \(reason)")
+            tab.fileCopyFailures.append(FileCopyStatus(names: [status.names[index]], total: files.count,
+                                                       state: .failed(reason)))
+            return nil
+        }
+        let paths = results.compactMap { if case .copied(let path) = $0 { path } else { nil } }
+        return paths.count == files.count ? paths : nil
+    }
+
+    /// The tab's client ended or the tab is closing: its copies are not
+    /// wanted any more (their ssh is killed), and nothing about them is said.
+    func cancelCopies(_ tab: SessionTab) {
+        for operation in tab.remote?.copyOperations ?? [] { operations.cancel(id: operation) }
+        tab.remote?.copyOperations = []
+        tab.fileCopy = nil
+        tab.fileCopyFailures = []
+    }
+
+    /// A file's name as the tab says it; an image pasted or dragged with no
+    /// file of its own is "the image", not the name Temple gave it.
+    static func copyName(_ file: URL) -> String {
+        let spilled = FileManager.default.temporaryDirectory
+            .appendingPathComponent("Temple/\(TerminalHandoff.spilledImagesFolder)", isDirectory: true)
+            .standardizedFileURL.path + "/"
+        return file.standardizedFileURL.path.hasPrefix(spilled) ? RemoteCopy.pastedImage : file.lastPathComponent
+    }
+
     /// Cancel, on a tab still connecting past the startup deadline: its
     /// client goes; the exit check decides what is known; nothing is
     /// created in its place.
@@ -929,6 +998,7 @@ public final class RemoteTabController {
     func close(_ tab: SessionTab, _ how: Close) {
         // A close ends the question: nothing asks the host for a tab that went.
         endRecheck(tab)
+        cancelCopies(tab)
         if isPending(tab), tab.remote?.handle != nil {
             closePending(tab, how)
             return
