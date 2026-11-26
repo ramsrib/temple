@@ -260,6 +260,25 @@ final class LinuxAcceptanceTests: XCTestCase {
             return XCTFail("\(name): no ok record: \(collected)\n\(await stalled())")
         }
         XCTAssertEqual(directory, canonicalFolder)
+        // A screenshot dropped on this tab (ADR-045): copied over the master
+        // its own ssh became, whole, and only for this client.
+        let shot = state.url.appendingPathComponent("Screenshot 2026-11-26 at 14.03.22.png")
+        let shotBytes = Data((0..<(4 << 20)).map { UInt8(truncatingIfNeeded: $0 &* 2_654_435_761 >> 9) })
+        try shotBytes.write(to: shot)
+        let copied = await sessions.copyFile(shot, handle: first.handle, attachment: first.attachment)
+        guard case .copied(let shotPath) = copied else { return XCTFail("\(name): \(copied)") }
+        let shotCheck = try await sh("""
+        (sha256sum "$1" 2>/dev/null || shasum -a 256 "$1") | cut -c1-64
+        stat -c %a "$(dirname "$1")" 2>/dev/null || stat -f %Lp "$(dirname "$1")"
+        """, [shotPath])
+        let localDigest = String(try await ProcessRunner.run("/usr/bin/shasum", ["-a", "256", shot.path], deadline: 10)
+            .stdout.prefix(64))
+        log.append("dropped screenshot copied over the tab's master to \(shotPath)")
+        XCTAssertEqual(shotCheck.split(separator: "\n").map(String.init), [localDigest, "700"], "\(name)")
+        _ = try await sh("case $1 in */temple-*/*) rm -f \"$1\" && rmdir \"$(dirname \"$1\")\" ;; esac", [shotPath])
+        let otherClient = await sessions.copyFile(shot, handle: first.handle, attachment: first.attachment + 1)
+        XCTAssertEqual(otherClient, .failed("This tab isn't connected to \(name). Reconnect, then try again."),
+                       "\(name): a client this Temple never planned gets nothing")
         let run = try XCTUnwrap(store.run(first.handle))
         log.append("ok record: dir=\(directory) pane=\(run.panePID ?? -1) start=\(run.paneStart ?? "-") socket=\(run.socketPath ?? "-") server=\(run.serverPID ?? -1)/\(run.serverStart ?? "-")")
         // A config that sets `StdinNull yes` (a throwaway file passed with -F
@@ -1221,8 +1240,8 @@ final class FileHandoffAcceptanceTests: XCTestCase {
         let local = try await ProcessRunner.run("/usr/bin/shasum", ["-a", "256", file.path], deadline: 10)
         let digest = String(local.stdout.prefix(64))
         for name in hosts {
-            precondition(["masterblaster-mentes", "jetson-mentes"].contains(name),
-                         "acceptance runs only against masterblaster-mentes and jetson-mentes")
+            precondition(name.hasSuffix("-mentes") || name.hasPrefix("mac-mini-personal"),
+                         "acceptance runs only against the -mentes agent accounts and the personal Mini")
             let connection = SSHConnection(record: .config(name), stateDirectory: state.url, sshPath: "/usr/bin/ssh")
             try connection.prepareSocketDirectory()
             let exec = SSHExec(connection: connection, path: nil, purpose: .query)
