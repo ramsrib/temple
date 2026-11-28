@@ -531,6 +531,7 @@ create)
     set -s extended-keys on \; set -sq extended-keys-format csi-u \; \
     set -s escape-time 10 \; \
     set -g detach-on-destroy on \; set -g destroy-unattached off \; \
+    set -g mode-keys emacs \; \
     bind -T copy-mode Any if -F '#{!=:#{mouse_pane},}' '' 'send-keys -X cancel' \; \
     new-session -s "$s" -c "$HOME" -e PATH="$PATH" "$pane" \
     2>"$mdir/$m.err"
@@ -637,10 +638,13 @@ natural:
 - `bind -T copy-mode Any if -F '#{!=:#{mouse_pane},}' '' 'send-keys -X cancel'`:
   the first key typed while scrolled back returns to the live screen; that
   key is consumed, the next one types. Mouse events are left alone: `Any`
-  also matches the ones copy-mode doesn't bind (pointer motion, which tmux
-  asks for with `mouse on`, a trackpad's sideways wheel, a click's release),
+  also matches the ones copy-mode doesn't bind (a trackpad's sideways
+  wheel, a click's release, motion when reported),
   and cancelling on those dropped out of history mid-scroll, so the wheel
   never got past the bottom (`[0/N]`) in a pane that doesn't take the mouse.
+  `set -g mode-keys emacs` keeps that binding live: tmux takes the vi table
+  when the host's `VISUAL` or `EDITOR` names a vi, and a typed key then
+  moved the cursor instead.
   Said in the Shortcuts card: "In a session on a host, scrolling up shows
   history; the first key you type returns to the prompt."
 - Drag-select is tmux's: the release copies to tmux's buffer and, with
