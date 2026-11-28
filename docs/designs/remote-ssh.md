@@ -637,11 +637,13 @@ natural:
   back to the bottom leaves copy-mode by itself.
 - `bind -T copy-mode Any if -F '#{!=:#{mouse_pane},}' '' 'send-keys -X cancel'`:
   the first key typed while scrolled back returns to the live screen; that
-  key is consumed, the next one types. Mouse events are left alone: `Any`
-  also matches the ones copy-mode doesn't bind (a trackpad's sideways
-  wheel, a click's release, motion when reported),
-  and cancelling on those dropped out of history mid-scroll, so the wheel
-  never got past the bottom (`[0/N]`) in a pane that doesn't take the mouse.
+  key is consumed, the next one types. Keys copy-mode binds itself (the
+  arrows, Space, Page Up/Down) still move through history; `Any` is only
+  the fallback. Mouse events are left alone: `Any` also matches the ones
+  copy-mode doesn't bind (a trackpad's sideways wheel, a click's release,
+  motion when reported), and cancelling on those dropped out of history
+  mid-scroll, so the wheel never got past the bottom (`[0/N]`) in a pane
+  that doesn't take the mouse.
   `set -g mode-keys emacs` keeps that binding live: tmux takes the vi table
   when the host's `VISUAL` or `EDITOR` names a vi, and a typed key then
   moved the cursor instead.

@@ -645,11 +645,15 @@ it. What follows appears for an enabled host only.
   Cancel connecting) sits at the trailing edge.
 - **Scrolling and find.** tmux keeps a session's history. The wheel scrolls
   the terminal's scrollback, and the first key you type returns to the
-  prompt (the shortcuts panel says so, with the close and Detach rule). A drag selects and
+  prompt (the shortcuts panel says so, with the close and Detach rule);
+  the keys tmux itself uses to move through history (the arrows, Space,
+  Page Up and Page Down) move instead. A drag selects and
   copies (to the Mac clipboard with tmux 3.3 or newer); `⇧`-drag selects in
   Temple's own terminal. `⌘F` searches what the tab has shown since it
-  connected, and its bar says so. Temple's tmux is a server of its own that reads no tmux config,
-  so a tmux already set up on the host changes none of this.
+  connected, and its bar says so. Temple's tmux runs on a socket of its
+  own (`tmux -L temple`) and starts without reading any tmux config, so a
+  tmux already set up on the host, with its own config, changes none of
+  this.
 - **What stays on this Mac.** The usage meter, Reveal in Finder and
   `temple sessions new`. The command line lists, opens and closes sessions on
   hosts; `temple sessions close` refuses one that is working, and `--force`
