@@ -106,7 +106,15 @@ public enum TmuxChain {
         ("escape-time", "set -s escape-time 10"),
         ("detach-on-destroy", "set -g detach-on-destroy on"),
         ("destroy-unattached", "set -g destroy-unattached off"),
-        ("copy-mode Any", "bind -T copy-mode Any send-keys -X cancel"),
+        // The first key typed while scrolled back cancels copy-mode. `Any`
+        // also catches every mouse event copy-mode leaves unbound: with
+        // `mouse on` tmux asks for all motion (1003), so pointer motion, a
+        // trackpad's sideways wheel (66/67) or a click's release cancelled
+        // it mid-scroll, and the next wheel tick re-entered at the bottom
+        // (stuck at `[0/N]`, in any pane without mouse reporting, e.g. agy).
+        // `mouse_pane` is set only for a mouse event (3.2 has it). Measured
+        // on tmux 3.4 and 3.8, 2026-11-28.
+        ("copy-mode Any", "bind -T copy-mode Any if -F '#{!=:#{mouse_pane},}' '' 'send-keys -X cancel'"),
     ]
 
     /// The outer title tmux sets: the pane's title, empty while it is still

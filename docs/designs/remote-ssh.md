@@ -531,7 +531,7 @@ create)
     set -s extended-keys on \; set -sq extended-keys-format csi-u \; \
     set -s escape-time 10 \; \
     set -g detach-on-destroy on \; set -g destroy-unattached off \; \
-    bind -T copy-mode Any send-keys -X cancel \; \
+    bind -T copy-mode Any if -F '#{!=:#{mouse_pane},}' '' 'send-keys -X cancel' \; \
     new-session -s "$s" -c "$HOME" -e PATH="$PATH" "$pane" \
     2>"$mdir/$m.err"
   st=$?
@@ -634,10 +634,15 @@ natural:
   app; otherwise (Claude Code's inline output) `WheelUp` enters copy-mode
   with `-e`, so the wheel scrolls tmux's 50,000-line history and scrolling
   back to the bottom leaves copy-mode by itself.
-- `bind -T copy-mode Any send-keys -X cancel`: the first key typed while
-  scrolled back returns to the live screen; that key is consumed, the next
-  one types. Said in the Shortcuts card: "In a session on a host, scrolling
-  up shows history; the first key you type returns to the prompt."
+- `bind -T copy-mode Any if -F '#{!=:#{mouse_pane},}' '' 'send-keys -X cancel'`:
+  the first key typed while scrolled back returns to the live screen; that
+  key is consumed, the next one types. Mouse events are left alone: `Any`
+  also matches the ones copy-mode doesn't bind (pointer motion, which tmux
+  asks for with `mouse on`, a trackpad's sideways wheel, a click's release),
+  and cancelling on those dropped out of history mid-scroll, so the wheel
+  never got past the bottom (`[0/N]`) in a pane that doesn't take the mouse.
+  Said in the Shortcuts card: "In a session on a host, scrolling up shows
+  history; the first key you type returns to the prompt."
 - Drag-select is tmux's: the release copies to tmux's buffer and, with
   `set-clipboard on` and libghostty's `clipboard-write = allow` for remote
   tabs, to the Mac clipboard through OSC 52. ⇧-drag selects in Temple's own
